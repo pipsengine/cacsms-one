@@ -106,7 +106,7 @@ function ProviderCard({provider,onChange,onCollect,onImport,adminKey,busy}){
   return <article className="sp-provider-card"><div className="sp-panel-head"><div><h3>{provider.display_name}</h3><p>{provider.sport} · {provider.adapter}</p></div><span className={`sp-status ${provider.status==='operational'?'success':'neutral'}`}>{provider.status}</span></div><div className="sp-intel-checks"><label><input type="checkbox" checked={reviewed} onChange={event=>setReviewed(event.target.checked)}/>I reviewed this provider's current terms and data permissions</label><label><input type="checkbox" checked={enabled} onChange={event=>setEnabled(event.target.checked)}/>Enable provider</label></div><label className="sp-intel-block">Configuration JSON<textarea rows="3" value={config} onChange={event=>setConfig(event.target.value)}/></label><div className="sp-intel-actions"><button className="sp-primary" onClick={save} disabled={busy||!adminKey}>Save with admin authorization</button>{provider.adapter==='csv_import'?<><label className="sp-intel-file">Historical basketball results<input type="file" accept=".csv,.json,application/json,text/csv" onChange={event=>setImportFile(event.target.files?.[0]||null)}/></label><button className="sp-secondary" disabled={!importFile||busy||!provider.enabled||!provider.terms_reviewed} onClick={importBasketball}>Import results</button></>:<button className="sp-secondary" onClick={collect} disabled={busy||!provider.enabled||!provider.terms_reviewed}>Collect now</button>}</div><p className="sp-intel-fine">Last successful collection: {date(provider.last_success_at)}. Provider status reflects persisted results.</p>{message&&<p role="status">{message}</p>}{error&&<p className="sp-ops-error" role="alert">{error}</p>}</article>;
 }
 
-function parseCsv(text){
+export function parseCsv(text){
   const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/).filter(Boolean);
   if(lines.length<2)throw Error('CSV must include a header and at least one result.');
   const parseLine=line=>{
@@ -124,9 +124,17 @@ function parseCsv(text){
   const headers=parseLine(lines[0]).map(value=>value.trim().toLowerCase());
   const required=['id','date','home','away','home_score','away_score'];
   if(required.some(key=>!headers.includes(key)))throw Error(`CSV headers must include ${required.join(', ')}.`);
-  return lines.slice(1).map(line=>Object.fromEntries(parseLine(line).map((value,index)=>[headers[index],value.trim()]))).map(row=>({
-    ...row,home_score:Number(row.home_score),away_score:Number(row.away_score),
-  }));
+  return lines.slice(1).map((line,index)=>{
+    const values=parseLine(line);
+    if(values.length!==headers.length)throw Error(`CSV row ${index+2} has an unexpected number of columns.`);
+    const row=Object.fromEntries(values.map((value,column)=>[headers[column],value.trim()]));
+    for(const key of ['home_score','away_score']){
+      const score=Number(row[key]);
+      if(!row[key]||!Number.isInteger(score)||score<0||score>300)throw Error(`CSV row ${index+2} has an invalid ${key}.`);
+      row[key]=score;
+    }
+    return row;
+  });
 }
 
 export function ProviderManager(){

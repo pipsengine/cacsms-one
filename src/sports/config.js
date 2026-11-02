@@ -1,4 +1,4 @@
-import{LayoutDashboard,Activity,CalendarDays,ChartNoAxesCombined,BrainCircuit,Goal,Dribbble,BarChart3,TrendingUp,ScanSearch,Ticket,Layers3,SlidersHorizontal,Hash,Bell,Mail,Clock3,History,ShieldCheck,Database,Settings2,Workflow,Target,BookOpen,ClipboardList,ChartColumnIncreasing,Users,FileClock,MonitorCheck,Code2}from'lucide-react';
+import{LayoutDashboard,Activity,CalendarDays,ChartNoAxesCombined,BrainCircuit,Goal,Dribbble,BarChart3,TrendingUp,ScanSearch,Ticket,Layers3,SlidersHorizontal,Hash,Bell,Mail,Clock3,History,ShieldCheck,Database,Settings2,Workflow,Target,BookOpen,ClipboardList,ChartColumnIncreasing,Users,FileClock,MonitorCheck,Code2,Search}from'lucide-react';
 export const groups=[
 {label:'COMMAND CENTRE',items:[['dashboard','Overview',LayoutDashboard],['activity','Activity & Audit',Activity],['monitor','System Monitoring',MonitorCheck]]},
 {label:'FOOTBALL INTELLIGENCE',items:[['football-fixtures','Fixtures & Statistics',CalendarDays],['football-analysis','Match Analysis',BrainCircuit],['football-predictions','Predictions',Goal]]},
@@ -7,7 +7,8 @@ export const groups=[
 {label:'ACCUMULATOR CENTRE',items:[['tickets','Ticket Builder',Ticket],['tiers','Odds Tiers',Layers3],['optimizer','Ticket Optimizer',SlidersHorizontal]]},
 {label:'SPORTYBET CENTRE',items:[['betslip','Betslip Preparation',ClipboardList],['codes','Booking Codes',Hash],['code-history','Code History',History]]},
 {label:'PERFORMANCE',items:[['results','Match Results',ChartColumnIncreasing],['backtesting','Backtesting',BarChart3],['models','Model Accuracy',BrainCircuit]]},
-{label:'OPERATIONS',items:[['sources','Data Sources',Database],['scheduler','Automation Scheduler',Clock3],['alerts','Alert Centre',Bell],['settings','Model Settings',Settings2],['users','Access & Roles',Users],['documentation','Documentation',BookOpen]]}
+{label:'DATA ACQUISITION',items:[['sources','Source Management Centre',Database],['match-research','Match Research Centre',Search]]},
+{label:'OPERATIONS',items:[['scheduler','Automation Scheduler',Clock3],['alerts','Alert Centre',Bell],['settings','Model Settings',Settings2],['users','Access & Roles',Users],['documentation','Documentation',BookOpen]]}
 ];export const items=groups.flatMap(g=>g.items);export const titleOf=id=>items.find(i=>i[0]===id)?.[1]||'Sports Intelligence';
 export const sections={
 'football-fixtures':['Upcoming Fixtures','Historical Results','Team Statistics','Import Data'],
@@ -16,6 +17,8 @@ export const sections={
 'basketball-analysis':['Pre-Match Intelligence','Points & Pace','Spread & Totals','Model Evidence'],
 'football-predictions':['All Predictions','1X2 & Double Chance','Goals & BTTS','Handicaps'],
 'basketball-predictions':['All Predictions','Moneyline','Totals','Spreads'],
+'sources':['Provider Registry','Website Explorer','Browser Sessions','Extraction Configuration','Data Quality','Collection Scheduler','Collection History','Source Permissions'],
+'match-research':['Match Research'],
 'activity':['Audit Timeline','Analysis Runs','Changes'],
 'monitor':['Service Health','Data Freshness','Failures'],
 'market-scanner':['All Markets','Football','Basketball','Watchlist'],
@@ -30,7 +33,6 @@ export const sections={
 'results':['Completed Matches','Settlement Queue','Exceptions'],
 'backtesting':['Historical Runs','Evaluation','Performance Report'],
 'models':['Calibration','Brier Score','Log Loss','Model Versions'],
-'sources':['Providers','Import Centre','Health & Freshness'],
 'scheduler':['Schedules','Execution History','Failures'],
 'alerts':['Notification Log','Channels','Rules','Test Delivery'],
 'settings':['Football Model','Basketball Model','Edge Rules','Risk Limits'],

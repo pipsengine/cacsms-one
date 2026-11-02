@@ -7,7 +7,9 @@ from typing import Literal
 from fastapi import BackgroundTasks
 from db import connect, initialize, DB
 from engine import evaluate, build_tickets
-from acquisition import CollectionError, collect_fixtures, import_basketball_rows
+from acquisition import CollectionError, import_basketball_rows
+from acquisition_api import build_acquisition_router
+from acquisition_engine import run_collection, validate_public_config
 from prediction_engine import run_analysis, train_model
 
 app=FastAPI(title='CACSMS Sports AI module',version='1.0.0')
@@ -158,6 +160,10 @@ def provider_update(
     require_admin_key(x_sports_admin_key)
     if not isinstance(payload.config,dict):
         raise HTTPException(422,'Provider configuration must be a JSON object')
+    try:
+        validate_public_config(payload.config)
+    except CollectionError as error:
+        raise HTTPException(422,str(error)) from error
     with connect() as c:
         provider=c.execute('SELECT * FROM sports_ai_provider_registry WHERE id=?',(provider_id,)).fetchone()
         if not provider:raise HTTPException(404,'Provider not found')
@@ -174,25 +180,10 @@ def provider_update(
 
 @router.post('/providers/{provider_id}/collect')
 def provider_collect(provider_id:str,user=Depends(auth)):
-    with lock,connect() as c:
-        provider=c.execute('SELECT * FROM sports_ai_provider_registry WHERE id=?',(provider_id,)).fetchone()
-        if not provider:raise HTTPException(404,'Provider not found')
-        if not provider['enabled'] or not provider['terms_reviewed']:
-            raise HTTPException(409,'Provider is disabled or its terms have not been reviewed')
-        try:
-            result=collect_fixtures(dict(provider),c)
-        except (CollectionError,ValueError,TypeError) as error:
-            c.execute("UPDATE sports_ai_provider_registry SET status='error',last_error=? WHERE id=?",
-                      (str(error)[:500],provider_id))
-            audit(c,user,'provider.collect.failed',{'provider_id':provider_id,'error':str(error)[:300]})
-            raise HTTPException(502,str(error)) from error
-        c.execute(
-            """UPDATE sports_ai_provider_registry SET status='operational',
-               last_success_at=?,last_error=NULL WHERE id=?""",
-            (datetime.now(timezone.utc).isoformat(),provider_id),
-        )
-        audit(c,user,'provider.collect',{'provider_id':provider_id,**result})
-    return result
+    try:
+        return run_collection(provider_id,actor=user)
+    except CollectionError as error:
+        raise HTTPException(502,str(error)) from error
 
 @router.post('/providers/{provider_id}/basketball-import')
 def provider_basketball_import(provider_id:str,payload:BasketballImport,user=Depends(auth)):
@@ -631,3 +622,4 @@ def performance(user=Depends(auth)):
     return {'evaluated_predictions':n,'hit_rate':sum(y for x,y in evaluated)/n if n else None,'brier_score':sum((x['probability']-y)**2 for x,y in evaluated)/n if n else None,'log_loss':sum(-(y*__import__('math').log(max(1e-9,min(1-1e-9,x['probability'])))+(1-y)*__import__('math').log(max(1e-9,min(1-1e-9,1-x['probability'])))) for x,y in evaluated)/n if n else None,'note':'Observed historical results only. Multiple runs may include the same fixture; no out-of-sample guarantee.'}
 
 app.include_router(router)
+app.include_router(build_acquisition_router(auth))

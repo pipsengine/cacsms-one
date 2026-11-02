@@ -252,11 +252,24 @@ def import_basketball_rows(connection, provider, rows):
             home, away = str(row['home']).strip(), str(row['away']).strip()
             home_score, away_score = int(row['home_score']), int(row['away_score'])
             competition = str(row.get('competition') or 'Basketball dataset').strip()
-        except (KeyError, TypeError, ValueError) as error:
+            settlement_value = row.get('settled_at')
+            settlement = observed
+            if settlement_value:
+                parsed_settlement = datetime.fromisoformat(
+                    str(settlement_value).replace('Z','+00:00')
+                )
+                if parsed_settlement.tzinfo is None:
+                    raise ValueError('settled_at must include a timezone')
+                settlement = parsed_settlement.astimezone(timezone.utc).isoformat()
+        except KeyError as error:
             raise CollectionError('Rows require id, date, home, away, home_score and away_score') from error
+        except (TypeError, ValueError) as error:
+            raise CollectionError(f'Basketball dataset row is invalid: {error}') from error
         if (not external_id or not home or not away or home_score < 0 or away_score < 0
                 or home_score > 300 or away_score > 300):
             raise CollectionError('Basketball result values are outside the accepted range')
+        if datetime.fromisoformat(settlement.replace('Z','+00:00')) < datetime.fromisoformat(date):
+            raise CollectionError('Basketball result settlement time precedes match kickoff')
         existing = connection.execute(
             'SELECT id FROM sports_ai_fixtures WHERE source=? AND external_id=?',
             (provider['provider_key'],external_id),
@@ -281,7 +294,7 @@ def import_basketball_rows(connection, provider, rows):
                home_score=excluded.home_score,away_score=excluded.away_score,
                source=excluded.source,status='final',settled_at=excluded.settled_at""",
             (str(uuid.uuid4()),fixture_id,home_score,away_score,
-             provider['provider_key'],observed),
+             provider['provider_key'],settlement),
         )
         imported += 1
     return imported

@@ -6,7 +6,8 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from acquisition import CollectionError, collect_fixtures
+from acquisition import CollectionError
+from acquisition_engine import run_collection
 from db import connect, initialize
 from prediction_engine import run_analysis
 
@@ -33,44 +34,24 @@ def _collect_due_providers():
     now=datetime.now(timezone.utc)
     with connect() as connection:
         providers=[dict(row) for row in connection.execute(
-            """SELECT * FROM sports_ai_provider_registry WHERE enabled=1
-               AND terms_reviewed=1 AND adapter IN ('openligadb','openfootball','the_odds_api')""",
+            """SELECT p.* FROM sports_ai_provider_registry p
+               JOIN sports_ai_acquisition_schedules s ON s.provider_id=p.id
+               WHERE p.enabled=1 AND p.terms_reviewed=1 AND s.enabled=1 AND s.paused=0
+               AND p.adapter IN ('openligadb','openfootball','football_data',
+                 'balldontlie','sportsdataverse_csv','the_odds_api')""",
         )]
     for provider in providers:
-        last=provider.get('last_success_at')
+        next_run=provider.get('next_run_at')
         try:
-            if last and now-datetime.fromisoformat(last.replace('Z','+00:00'))<timedelta(hours=6):
+            if next_run and now<datetime.fromisoformat(next_run.replace('Z','+00:00')):
                 continue
         except ValueError:
             pass
-        job_id=str(uuid.uuid4())
-        with connect() as connection:
-            connection.execute(
-                """INSERT INTO sports_ai_job_history
-                   (id,schedule_id,status,details_json) VALUES(?,NULL,'running',?)""",
-                (job_id,json.dumps({'provider_id':provider['id'],'kind':'collection'})),
-            )
         try:
-            with connect() as connection:
-                result=collect_fixtures(provider,connection)
-                completed=datetime.now(timezone.utc).isoformat()
-                connection.execute(
-                    """UPDATE sports_ai_provider_registry SET status='operational',
-                       last_success_at=?,last_error=NULL WHERE id=?""",
-                    (completed,provider['id']),
-                )
-                connection.execute(
-                    """UPDATE sports_ai_job_history SET status='complete',finished_at=?,
-                       details_json=? WHERE id=?""",
-                    (completed,json.dumps(result),job_id),
-                )
-        except (CollectionError,ValueError,TypeError) as error:
-            with connect() as connection:
-                connection.execute(
-                    "UPDATE sports_ai_provider_registry SET status='error',last_error=? WHERE id=?",
-                    (str(error)[:500],provider['id']),
-                )
-            _record_failure(job_id,error)
+            result=run_collection(provider['id'])
+            print('provider collection',provider['provider_key'],
+                  'records',result['records_saved'])
+        except Exception as error:
             print('provider collection failed',provider['provider_key'],str(error))
 
 

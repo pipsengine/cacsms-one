@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Clock3, Eye, Globe2, Pause, Play, Plus, RefreshCw, RotateCw, Save, ShieldCheck, XCircle } from 'lucide-react';
 import { get, post, put } from './api';
+import { parseCsv } from './Intelligence';
 import './acquisition.css';
 
 const providerChoices = [
@@ -8,7 +9,7 @@ const providerChoices = [
   ['openligadb', 'OpenLigaDB'],
   ['openfootball', 'OpenFootball'],
   ['balldontlie', 'BALLDONTLIE'],
-  ['sportsdataverse', 'SportsDataverse'],
+  ['sportsdataverse_csv', 'SportsDataverse dataset CSV'],
   ['the_odds_api', 'The Odds API'],
 ];
 
@@ -71,6 +72,38 @@ function AddSource({ onCreated }) {
       <Feedback value={message} error={error} />
     </form>
   );
+}
+
+function DatasetImport({ source, onImported }) {
+  const [file, setFile] = useState(null);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    if (!file) return;
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      const rows = parseCsv(await file.text());
+      const result = await post(`/providers/${encodeURIComponent(source.id)}/basketball-import`, { rows });
+      setMessage(`${result.imported} real result row(s) stored.`);
+      await onImported();
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <div className="sp-form-grid">
+    <label>Licensed basketball results CSV<input type="file" accept=".csv,text/csv" onChange={(event) => setFile(event.target.files?.[0] || null)} /></label>
+    <div className="sp-actions">
+      <button className="sp-secondary" disabled={!file || busy || !source.enabled || !source.terms_reviewed} onClick={submit}><Upload size={15} />{busy ? 'Importing…' : 'Import Results'}</button>
+      <Feedback value={message} error={error} />
+    </div>
+  </div>;
 }
 
 function ProviderRegistry({ reload, onReload }) {
@@ -143,7 +176,7 @@ function ProviderRegistry({ reload, onReload }) {
     setErrors((current) => ({ ...current, [source.id]: '' }));
     try {
       const job = await post(`/acquisition/sources/${source.id}/collect`, {});
-      setMessages((current) => ({ ...current, [source.id]: `Collection started: ${job.job_id}` }));
+      setMessages((current) => ({ ...current, [source.id]: `${job.status}: ${job.records_saved} record(s) persisted (job ${job.job_id}).` }));
       await onReload();
     } catch (error) {
       setErrors((current) => ({ ...current, [source.id]: error.message }));
@@ -162,6 +195,7 @@ function ProviderRegistry({ reload, onReload }) {
       {sources.map((source) => {
         const form = configs[source.id] || {};
         const browser = source.adapter === 'browser';
+        const manual = source.adapter === 'csv_import';
         return (
           <section className="sp-panel sp-acq-provider" key={source.id}>
             <div className="sp-panel-head">
@@ -183,9 +217,10 @@ function ProviderRegistry({ reload, onReload }) {
                 <label className="sp-acq-check"><input type="checkbox" checked={Boolean(form.enabled)} disabled={!form.termsReviewed} onChange={(event) => update(source.id, 'enabled', event.target.checked)} />Enable scheduled collection.</label>
               </div>
             ) : <p className="sp-muted">BetExplorer is a research reference only. Browser extraction remains off until its hostname has explicit administrator permission.</p>}
+            {manual && source.terms_reviewed && <DatasetImport source={source} onImported={async () => { await refresh(); await onReload(); }} />}
             <div className="sp-actions sp-acq-actions">
-              <button className="sp-secondary" disabled={busy[source.id]} onClick={() => runAction(source, 'test')}><CheckCircle2 size={15} />Test Connection</button>
-              <button className="sp-primary" disabled={busy[source.id] || browser || !source.enabled} onClick={() => collect(source)}><Play size={15} />Run Collection</button>
+              <button className="sp-secondary" disabled={busy[source.id] || browser || manual} onClick={() => runAction(source, 'test')}><CheckCircle2 size={15} />Test Connection</button>
+              <button className="sp-primary" disabled={busy[source.id] || browser || manual || !source.enabled} onClick={() => collect(source)}><Play size={15} />Run Collection</button>
               <button className="sp-secondary" disabled={busy[source.id]} onClick={() => save(source)}><Save size={15} />Save Settings</button>
               <button className="sp-secondary" disabled={busy[source.id]} onClick={() => runAction(source, 'pause')}><Pause size={15} />Pause</button>
               <button className="sp-text-action" disabled={busy[source.id]} onClick={() => runAction(source, 'disable')}>Disable Source</button>
@@ -253,9 +288,23 @@ function BrowserSessions({ reload }) {
   const [selected, setSelected] = useState(null);
   const [evidence, setEvidence] = useState([]);
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  async function refresh() {
+    setSessions(await get('/acquisition/browser/sessions'));
+  }
   useEffect(() => {
-    get('/acquisition/browser/sessions').then(setSessions).catch((requestError) => setError(requestError.message));
+    refresh().catch((requestError) => setError(requestError.message));
   }, [reload]);
+
+  async function retry(session) {
+    try {
+      const result = await post(`/acquisition/browser/sessions/${session.id}/retry`, {});
+      setMessage(`Retry ${result.status}: ${result.session_id}`);
+      await refresh();
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  }
 
   async function viewEvidence(id) {
     setSelected(id);
@@ -270,12 +319,14 @@ function BrowserSessions({ reload }) {
   return <section className="sp-panel">
     <div className="sp-panel-head"><div><h3>Browser Sessions</h3><p>Page visits, extracted evidence and diagnostic screenshots.</p></div><Status value={`${sessions.length} sessions`} /></div>
     {error && <Feedback error={error} />}
+    {message && <Feedback value={message} />}
     {!sessions.length && <p className="sp-muted">No browser research sessions are recorded.</p>}
     {sessions.map((session) => <article className="sp-acq-history" key={session.id}>
       <div><strong>{session.query}</strong><p>{formatDate(session.started_at)} · {session.pages.length} page(s) · <Status value={session.status} /></p></div>
       <button className="sp-secondary" onClick={() => viewEvidence(session.id)}><Eye size={14} />View Evidence</button>
+      {(session.status === 'failed' || session.status === 'partial') && <button className="sp-secondary" onClick={() => retry(session)}><RotateCw size={14} />Retry</button>}
       {session.error && <p className="sp-ops-error">{session.error}</p>}
-      {session.pages.map((page, index) => <div key={`${session.id}-${page.url}`}><a href={page.url} target="_blank" rel="noreferrer">{page.title || page.url}</a>{!page.error && <img className="sp-acq-thumb" src={`${screenshotBase}/${session.id}/screenshots/page-${index + 1}.png`} alt="Browser diagnostic screenshot" />}</div>)}
+      {session.pages.map((page, index) => <div key={`${session.id}-${page.url}`}><a href={page.url} target="_blank" rel="noreferrer">{page.title || page.url}</a>{page.error && <p className="sp-ops-error">{page.error}</p>}{page.screenshot && <img className="sp-acq-thumb" src={`${screenshotBase}/${session.id}/screenshots/page-${index + 1}.png`} alt="Browser diagnostic screenshot" />}</div>)}
     </article>)}
     {selected && <div className="sp-acq-result"><h4>Extracted evidence</h4>{evidence.map((entry) => <div key={entry.id}><strong>{entry.field}</strong> · {entry.captured_at}<p>{entry.value_json}</p><a href={entry.source_url} target="_blank" rel="noreferrer">{entry.source_url}</a></div>)}</div>}
   </section>;
