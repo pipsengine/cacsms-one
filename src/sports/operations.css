@@ -1,0 +1,41 @@
+.sp-ops-form .sp-form-grid select {
+  min-width: 0;
+  border: 1px solid #cdd9ea;
+  border-radius: 9px;
+  padding: 12px;
+  background: #fff;
+  color: #12264d;
+}
+
+.sp-ops-form .sp-form-grid input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 3px 0 0;
+  padding: 0;
+  accent-color: #1457d8;
+}
+
+.sp-ops-form .sp-form-grid input[type="file"] {
+  border: 0;
+  padding: 6px 0;
+}
+
+.sp-ops-form [role="status"] {
+  margin-bottom: 0;
+  color: #315b91;
+  font-size: 13px;
+}
+
+.sp-ops-info {
+  line-height: 1.6;
+}
+
+.sp-ops-stack .sp-text-action {
+  color: #b42335;
+}
+
+.sp-top-context {
+  color: #667892;
+  font-size: 12px;
+  font-weight: 700;
+}
