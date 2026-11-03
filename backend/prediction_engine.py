@@ -240,15 +240,28 @@ def build_features(connection, fixture):
         home_against = _weighted_average(home_games or home_all, 'against', cutoff, half_life)
         away_for = _weighted_average(away_games or away_all, 'for', cutoff, half_life)
         away_against = _weighted_average(away_games or away_all, 'against', cutoff, half_life)
+        league_sd = _sample_sd(
+            [float(row['home_score']) for row in history] + [float(row['away_score']) for row in history],
+        )
+
+        def shrink_sd(sample_sd, sample_size):
+            observed = sample_sd or 0.0
+            if sample_size >= 20 and observed:
+                return observed
+            if not league_sd:
+                return observed or None
+            prior = 8
+            return math.sqrt((sample_size * observed ** 2 + prior * league_sd ** 2) / (sample_size + prior))
+
         features = {
             'home_points_for': home_for, 'home_points_against': home_against,
             'away_points_for': away_for, 'away_points_against': away_against,
             'home_margin': home_for - home_against,
             'away_margin': away_for - away_against,
-            'expected_home_points': league_home * home_for / league_home * away_against / league_home,
-            'expected_away_points': league_away * away_for / league_away * home_against / league_away,
-            'home_score_sd': _sample_sd([row['for'] for row in home_all]),
-            'away_score_sd': _sample_sd([row['for'] for row in away_all]),
+            'expected_home_points': home_for * away_against / league_away,
+            'expected_away_points': away_for * home_against / league_home,
+            'home_score_sd': shrink_sd(_sample_sd([row['for'] for row in home_all]), len(home_all)),
+            'away_score_sd': shrink_sd(_sample_sd([row['for'] for row in away_all]), len(away_all)),
         }
         if not features['home_score_sd'] or not features['away_score_sd']:
             return None
@@ -1159,12 +1172,18 @@ def _rank_score(edge, calibration_error, probability, completeness, fresh):
     return score, uncertainty
 
 
-def run_analysis(connection, actor, audit, deadline=None):
+def run_analysis(connection, actor, audit, deadline=None, fixture_id=None):
     now = datetime.now(timezone.utc)
-    fixtures = [dict(row) for row in connection.execute(
-        """SELECT * FROM sports_ai_fixtures WHERE starts_at>? AND status='scheduled'
-           ORDER BY starts_at""", (now.isoformat(),),
-    )]
+    if fixture_id:
+        selected = connection.execute(
+            'SELECT * FROM sports_ai_fixtures WHERE id=?', (fixture_id,),
+        ).fetchone()
+        fixtures = [dict(selected)] if selected else []
+    else:
+        fixtures = [dict(row) for row in connection.execute(
+            """SELECT * FROM sports_ai_fixtures WHERE starts_at>? AND status='scheduled'
+               ORDER BY starts_at""", (now.isoformat(),),
+        )]
     models = {}
     for sport in ('football', 'basketball'):
         model = connection.execute(
@@ -1264,7 +1283,13 @@ def run_analysis(connection, actor, audit, deadline=None):
                 if canonical:
                     conflicted.add(canonical)
             features = built['features']
-            parameters = json.loads(model['parameters_json'])
+            parameters = json.loads(model['parameters_json'] or '{}')
+            if not model['active']:
+                parameters = {
+                    'ensemble_weights': {'baseline': 1.0},
+                    'dixon_coles_rho': float(parameters.get('dixon_coles_rho') or 0.0),
+                    'temperature': 1.0,
+                }
             temperature = float(parameters.get('temperature', 1.0))
             markets = set(_outcomes(fixture['sport'], features))
             markets.update(market for _, market in mapped if market)

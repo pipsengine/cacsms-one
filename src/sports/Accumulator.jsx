@@ -14,6 +14,7 @@ export default function AccumulatorPage({page,tab=0}){
   const [command,setCommand]=useState(null);
   const [tickets,setTickets]=useState([]);
   const [codes,setCodes]=useState([]);
+  const [bookings,setBookings]=useState([]);
   const [candidates,setCandidates]=useState([]);
   const [config,setConfig]=useState(null);
   const [selected,setSelected]=useState(null);
@@ -30,17 +31,19 @@ export default function AccumulatorPage({page,tab=0}){
   const [codeForm,setCodeForm]=useState({ticket_id:'',code:'',evidence:''});
 
   async function refresh(){
-    const [centre,stored,policy,book,pool]=await Promise.all([
+    const [centre,stored,policy,book,pool,bookingJobs]=await Promise.all([
       get('/accumulator/command'),
       get('/accumulator/tickets'),
       get('/accumulator/config'),
       get('/accumulator/booking-codes'),
       get('/accumulator/candidates?sport_mode=mixed'),
+      get('/bookings').catch(()=>({items:[]})),
     ]);
     setCommand(centre);
     setTickets(stored);
     setConfig(policy);
     setCodes(book);
+    setBookings(bookingJobs.items||[]);
     setCandidates(pool.accepted||[]);
     setError('');
   }
@@ -149,7 +152,7 @@ export default function AccumulatorPage({page,tab=0}){
     </section>}
     {page==='optimizer'&&config&&<Optimizer config={config} setConfig={setConfig} adminKey={adminKey} setAdminKey={setAdminKey} save={saveConfig} busy={busy} tab={tab} tickets={tickets} openTicket={openTicket} runBacktest={async()=>{setBusy(true);try{setBacktest(await post('/accumulator/backtest',{}))}catch(e){setError(e.message)}finally{setBusy(false)}}} backtest={backtest}/>}
     {page==='betslip'&&<Betslip tickets={tickets} selected={selected} betslip={betslip} openTicket={openTicket} tab={tab}/>}
-    {(page==='codes'||page==='code-history')&&<Codes page={page} tab={tab} codes={codes} tickets={tickets} codeForm={codeForm} setCodeForm={setCodeForm} adminKey={adminKey} setAdminKey={setAdminKey} busy={busy} submit={()=>act('/accumulator/tickets/'+encodeURIComponent(codeForm.ticket_id)+'/booking-code',{code:codeForm.code,evidence:codeForm.evidence},adminHeaders)}/>}
+    {(page==='codes'||page==='code-history')&&<Codes page={page} tab={tab} codes={codes} bookings={bookings} tickets={tickets} codeForm={codeForm} setCodeForm={setCodeForm} adminKey={adminKey} setAdminKey={setAdminKey} busy={busy} submit={()=>act('/accumulator/tickets/'+encodeURIComponent(codeForm.ticket_id)+'/booking-code',{code:codeForm.code,evidence:codeForm.evidence},adminHeaders)}/>}
     {(page==='tickets'||page==='tiers'||page==='optimizer')&&<TicketTable tickets={visible} openTicket={openTicket}/>}
     {selected&&(page==='tickets'||page==='tiers')&&<TicketDrawer ticket={selected} history={history} candidates={candidates} busy={busy} onClose={()=>setSelected(null)} onRemove={opportunity=>setConfirm({title:'Remove selection',body:'The current version stays as it is. A new version is created for review.',run:()=>act(`/accumulator/tickets/${selected.id}/legs/remove`,{opportunity_id:opportunity})})} onReplace={add=>act(`/accumulator/tickets/${selected.id}/legs/replace`,{remove_opportunity_id:selected.legs[0].opportunity_id,add_opportunity_id:add})} onRecalculate={()=>act(`/accumulator/tickets/${selected.id}/recalculate`)} onSave={()=>act(`/accumulator/tickets/${selected.id}/save`)} onAccept={()=>act(`/accumulator/tickets/${selected.id}/accept`)} onExport={exportTicket}/>}
     {confirm&&<div className="sp-intel-overlay"><section className="sp-panel sp-intel-dialog"><h2>{confirm.title}</h2><p className="sp-intel-explanation">{confirm.body}</p><div className="sp-intel-actions"><button className="sp-primary" disabled={busy} onClick={confirm.run}>Confirm</button><button className="sp-secondary" onClick={()=>setConfirm(null)}>Cancel</button></div></section></div>}
@@ -249,7 +252,7 @@ function Optimizer({config,setConfig,adminKey,setAdminKey,save,busy,tab,tickets,
 }
 
 function Betslip({tickets,selected,betslip,openTicket,tab}){
-  return <section className="sp-panel"><div className="sp-panel-head"><div><h3>{tab===2?'Integration status':tab===1?'Source verification':'Prepared selections'}</h3><p>SportyBet automation is unavailable. Nothing on this page submits a wager.</p></div><ClipboardList size={18}/></div>
+  return <section className="sp-panel"><div className="sp-panel-head"><div><h3>{tab===2?'Integration status':tab===1?'Source verification':'Prepared selections'}</h3><p>A booking code is requested only for a qualified selection. Nothing on this page submits a wager.</p></div><ClipboardList size={18}/></div>
     <label className="sp-intel-fixture">Ticket<select value={selected?.id||''} onChange={e=>e.target.value&&openTicket(e.target.value)}><option value="">Choose a stored ticket</option>{tickets.map(ticket=><option key={ticket.id} value={ticket.id}>{fmt(ticket.tier)}× · {ticket.sport_mode} · {ticket.status}</option>)}</select></label>
     {!betslip&&<p className="sp-muted">Choose a ticket to prepare the manual betslip.</p>}
     {betslip&&tab===0&&<div>{betslip.selections.map(leg=><div className="sp-leg" key={leg.fixture_id+leg.market}><div><strong>{leg.home} vs {leg.away}</strong><small>{leg.market} · {leg.bookmaker} · recorded price {oddsText(leg.decimal_odds)} · observed {leg.odds_observed_at}</small></div></div>)}<p className="sp-intel-explanation">{betslip.instructions}</p><p className="sp-intel-fine">Booking code: none. Automatic request was not sent.</p></div>}
@@ -258,9 +261,12 @@ function Betslip({tickets,selected,betslip,openTicket,tab}){
   </section>;
 }
 
-function Codes({page,tab,codes,tickets,codeForm,setCodeForm,adminKey,setAdminKey,busy,submit}){
+function Codes({page,tab,codes,bookings,tickets,codeForm,setCodeForm,adminKey,setAdminKey,busy,submit}){
   const filtered=codes.filter(code=>tab===1?code.status==='verified':tab===2?code.status!=='verified':true);
-  return <section className="sp-panel"><div className="sp-panel-head"><div><h3>{page==='code-history'?'Booking-code history':'Manual booking code'}</h3><p>Codes are stored only when you paste one SportyBet has already given you. Unverified means SportyBet was not contacted.</p></div><History size={18}/></div>
+  return <section className="sp-panel"><div className="sp-panel-head"><div><h3>{page==='code-history'?'Booking history':'Booking Centre'}</h3><p>A code appears here only after SportyBet displays it. Qualified games are added with a real click. No wager is placed.</p></div><History size={18}/></div>
+    {bookings.length?<div className="sp-table-scroll"><table className="sp-table"><thead><tr><th>Fixtures</th><th>Pick</th><th>Combined odds</th><th>Probability</th><th>Edge</th><th>Code</th><th>Status</th><th>Updated</th></tr></thead><tbody>
+      {bookings.map(job=><tr key={job.id}><td>{job.selections.map(item=>`${item.home} vs ${item.away}`).join(', ')}</td><td>{job.selections.map(item=>item.selection).join(', ')}</td><td>{oddsText(job.combined_odds)}</td><td>{job.selections.map(item=>pct(item.probability)).join(', ')}</td><td>{job.selections.map(item=>pct(item.edge)).join(', ')}</td><td>{job.code||'—'}</td><td><Status kind={job.status==='CODE_GENERATED'?'success':'warning'}>{job.status}</Status></td><td>{job.updated_at}</td></tr>)}
+    </tbody></table></div>:<p className="sp-muted">No qualified selection has been sent for a booking code.</p>}
     {page==='codes'&&tab!==1&&<div className="sp-intel-filters">
       <label>Ticket<select value={codeForm.ticket_id} onChange={e=>setCodeForm({...codeForm,ticket_id:e.target.value})}><option value="">Choose a ticket</option>{tickets.map(ticket=><option key={ticket.id} value={ticket.id}>{fmt(ticket.tier)}× · {ticket.id.slice(0,8)}</option>)}</select></label>
       <label>Booking code<input value={codeForm.code} onChange={e=>setCodeForm({...codeForm,code:e.target.value})}/></label>

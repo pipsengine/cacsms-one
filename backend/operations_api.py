@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from db import connect
+from acquisition_engine import connection_diagnostics
 from operations_engine import (
     STATES,
     browser_research_status,
@@ -55,6 +56,11 @@ def build_operations_router(auth, require_admin):
 
     def admin(x_sports_admin_key: str | None = Header(default=None)):
         require_admin(x_sports_admin_key)
+
+    @router.get('/diagnostics')
+    def diagnostics(user=Depends(auth)):
+        with connect() as connection:
+            return connection_diagnostics(connection)
 
     @router.get('/command')
     def command(user=Depends(auth)):

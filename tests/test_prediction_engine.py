@@ -18,6 +18,7 @@ from prediction_engine import (
     run_analysis,
     train_model,
 )
+from match_analysis import analyze_fixture
 from prediction_math import simulate_scores
 
 
@@ -116,6 +117,17 @@ class PredictionEngineTests(unittest.TestCase):
         self.assertEqual(built['features']['away_games'],3)
         self.assertNotIn(self.future_id,built['fixture_ids'])
         self.assertEqual(built['source_refs'],['verified-results'])
+
+    def test_match_analysis_uses_stored_results_and_no_invented_odds(self):
+        with db.connect() as connection:
+            report=analyze_fixture(connection,self.fixture_id,'test-user',lambda *args:None)
+        self.assertEqual(report['forecast_level'],'secondary')
+        self.assertAlmostEqual(report['forecast']['outcome_probability_sum'],1.0,places=6)
+        self.assertGreater(report['home_profile']['home_played'],0)
+        self.assertGreater(report['away_profile']['away_played'],0)
+        self.assertTrue(report['markets'])
+        self.assertTrue(all(market['decimal_odds'] is None and market['odds_status']=='Odds Unavailable' for market in report['markets']))
+        self.assertTrue(any('bookmaker' in item.lower() for item in report['missing']))
 
     def test_football_outcomes_and_asian_settlement_are_consistent(self):
         with db.connect() as connection:
@@ -258,6 +270,56 @@ class PredictionEngineTests(unittest.TestCase):
             ).fetchone()['status']
         self.assertEqual(recovered,1)
         self.assertEqual(status,'timed_out')
+
+
+    def test_inactive_basketball_model_stays_near_even_teams(self):
+        kickoff=self.now+timedelta(days=3)
+        with db.connect() as connection:
+            home_scores=((100,98),(124,110),(108,121),(116,104))
+            away_scores=((118,102),(99,114),(125,111),(107,120))
+            for index,(home_score,away_score) in enumerate(home_scores):
+                when=self.now-timedelta(days=20-index)
+                self._insert_basketball(connection,f'bh-{index}','Home Hoops','Other East',when,home_score,away_score)
+            for index,(home_score,away_score) in enumerate(away_scores):
+                when=self.now-timedelta(days=16-index)
+                self._insert_basketball(connection,f'ba-{index}','Other West','Away Hoops',when,home_score,away_score)
+            connection.execute(
+                """INSERT INTO sports_ai_fixtures
+                   (id,external_id,source,sport,competition,home,away,starts_at,status,statistics_json,odds_json,observed_at)
+                   VALUES('bball-target','bball-target','history-source','basketball','NBA Test','Home Hoops','Away Hoops',?,'scheduled','{}','{}',?)""",
+                (kickoff.isoformat(), self.now.isoformat()),
+            )
+            result=run_analysis(connection,'test-user',lambda *args:None,fixture_id='bball-target')
+            probability=connection.execute(
+                """SELECT probability FROM sports_ai_engine_predictions
+                   WHERE fixture_id='bball-target' AND market='MONEYLINE_HOME'
+                   ORDER BY created_at DESC LIMIT 1""",
+            ).fetchone()['probability']
+            edge=connection.execute(
+                """SELECT expected_edge FROM sports_ai_value_opportunities
+                   WHERE prediction_id IN (
+                     SELECT id FROM sports_ai_engine_predictions WHERE fixture_id='bball-target'
+                   ) LIMIT 1""",
+            ).fetchone()['expected_edge']
+        self.assertGreater(result['predictions'],0)
+        self.assertGreater(probability,0.15)
+        self.assertLess(probability,0.85)
+        self.assertIsNone(edge)
+
+    def _insert_basketball(self,connection,external_id,home,away,when,home_score,away_score):
+        fixture_id=str(uuid.uuid4())
+        connection.execute(
+            """INSERT INTO sports_ai_fixtures
+               (id,external_id,source,sport,competition,home,away,starts_at,status,statistics_json,odds_json,observed_at)
+               VALUES(?,?,?,'basketball','NBA Test',?,?,?,'finished','{}','{}',?)""",
+            (fixture_id,external_id,'history-source',home,away,when.isoformat(),self.now.isoformat()),
+        )
+        connection.execute(
+            """INSERT INTO sports_ai_results
+               (id,fixture_id,home_score,away_score,source,status,settled_at)
+               VALUES(?,?,?,?,?,'final',?)""",
+            (str(uuid.uuid4()),fixture_id,home_score,away_score,'verified-results',(when+timedelta(hours=3)).isoformat()),
+        )
 
 
 if __name__=='__main__':

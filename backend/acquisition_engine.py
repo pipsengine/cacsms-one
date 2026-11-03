@@ -233,6 +233,7 @@ def _openfootball(provider, config, limit=MAX_RECORDS):
             'football', payload.get('name') or parsed.path.rsplit('/', 1)[-1],
             item.get('team1'), item.get('team2'), item.get('date'), now, url,
             home_score=scores[0], away_score=scores[1],
+            settled_at=item.get('date') if scores[0] is not None and scores[1] is not None else None,
         ))
     return {'fixtures': fixtures, 'standings': [], 'source_url': url, 'pages': 1}
 
@@ -360,6 +361,56 @@ def _balldontlie(provider, config, limit=MAX_RECORDS):
             'next_cursor':cursor}
 
 
+def _csv_value(row, *names):
+    for name in names:
+        value = row.get(name)
+        if value is not None and str(value).strip() not in ('', 'NA', 'null', 'None'):
+            return str(value).strip()
+    return ''
+
+
+def _optional_score(value):
+    if value is None or str(value).strip() in ('', 'NA', 'null', 'None'):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as error:
+        raise CollectionError('Basketball scores in the dataset must be integers') from error
+    if not number.is_integer() or not 0 <= number <= 300:
+        raise CollectionError('Basketball scores must be whole numbers between 0 and 300')
+    return int(number)
+
+
+def _schedule_final(normalized, home_score, away_score):
+    if 'status_type_completed' in normalized or 'status_type_state' in normalized:
+        completed = str(normalized.get('status_type_completed') or '').strip().lower() == 'true'
+        state = str(normalized.get('status_type_state') or '').strip().lower()
+        return completed or state == 'post'
+    return home_score is not None and away_score is not None
+
+
+def _prefer_upcoming(parsed_rows, limit):
+    now = datetime.now(timezone.utc)
+    upcoming, earlier = [], []
+    for item in parsed_rows:
+        kickoff = str(item[0]).strip()
+        try:
+            when = datetime.fromisoformat(_as_utc(kickoff))
+        except (ValueError, CollectionError):
+            continue
+        date_only = bool(re.fullmatch(r'\d{4}-\d{2}-\d{2}', kickoff))
+        ahead = when.date() >= now.date() if date_only else when >= now
+        if item[4] is None and ahead:
+            upcoming.append(item)
+        else:
+            earlier.append(item)
+    upcoming.sort(key=lambda item: item[0])
+    earlier.sort(key=lambda item: item[0])
+    if len(upcoming) >= limit:
+        return upcoming[:limit]
+    return earlier[-(limit - len(upcoming)):] + upcoming
+
+
 def _sportsdataverse_csv(provider, config, limit=MAX_RECORDS):
     url = str(config.get('dataset_url', ''))
     parsed = urllib.parse.urlsplit(url)
@@ -369,35 +420,49 @@ def _sportsdataverse_csv(provider, config, limit=MAX_RECORDS):
         raise CollectionError(
             'Configure an HTTPS CSV dataset URL hosted by an approved SportsDataverse GitHub repository'
         )
-    body, _ = _request(url, {'Accept': 'text/csv'})
+    body, _ = _request(url, {'Accept': 'text/csv, text/plain'})
     try:
         reader = csv.DictReader(io.StringIO(body.decode('utf-8-sig')))
         rows = list(reader)
     except (UnicodeDecodeError, csv.Error) as error:
         raise CollectionError('SportsDataverse dataset is not a valid UTF-8 CSV') from error
-    if not reader.fieldnames or len(rows) > MAX_RECORDS:
-        raise CollectionError('CSV dataset must have a header and no more than 1000 rows per collection')
-    required = {'id', 'date', 'home', 'away', 'home_score', 'away_score'}
-    if not required.issubset({name.strip().lower() for name in reader.fieldnames}):
-        raise CollectionError('SportsDataverse CSV needs id,date,home,away,home_score,away_score columns')
+    fields = {name.strip().lower() for name in (reader.fieldnames or []) if name}
+    if not fields or not ({'home', 'home_name', 'home_display_name'} & fields) or not (
+            {'away', 'away_name', 'away_display_name'} & fields):
+        raise CollectionError(
+            'SportsDataverse CSV needs team columns such as home/away or home_name/away_name'
+        )
     observed = utc_now()
-    fixtures = []
+    parsed_rows = []
     for row in rows:
-        normalized = {key.strip().lower(): value for key, value in row.items() if key}
-        try:
-            home_score, away_score = int(normalized['home_score']), int(normalized['away_score'])
-        except (TypeError, ValueError) as error:
-            raise CollectionError('Basketball scores in the dataset must be integers') from error
-        if not 0 <= home_score <= 300 or not 0 <= away_score <= 300:
-            raise CollectionError('Basketball scores must be between 0 and 300')
+        normalized = {str(key).strip().lower(): value for key, value in row.items() if key}
+        home = _csv_value(normalized, 'home', 'home_name', 'home_display_name')
+        away = _csv_value(normalized, 'away', 'away_name', 'away_display_name')
+        kickoff = _csv_value(normalized, 'game_date_time', 'date', 'game_date', 'start_date')
+        external_id = _csv_value(normalized, 'id', 'game_id')
+        if not home or not away or not kickoff or not external_id or home == away:
+            continue
+        home_score = _optional_score(normalized.get('home_score'))
+        away_score = _optional_score(normalized.get('away_score'))
+        if (home_score is None) != (away_score is None):
+            continue
+        if not _schedule_final(normalized, home_score, away_score):
+            home_score = away_score = None
+        parsed_rows.append((kickoff, external_id, home, away, home_score, away_score, normalized))
+    row_limit = 1600 if limit >= MAX_RECORDS else limit
+    chosen = _prefer_upcoming(parsed_rows, row_limit)
+    fixtures = []
+    for kickoff, external_id, home, away, home_score, away_score, normalized in chosen:
+        season = _csv_value(normalized, 'season')
         fixtures.append(_record(
-            provider['provider_key'], normalized['id'], 'basketball',
-            normalized.get('competition') or 'SportsDataverse dataset',
-            normalized['home'], normalized['away'], normalized['date'],
-            observed, url, 'FINISHED', home_score, away_score,
-            normalized.get('settled_at') or observed,
+            provider['provider_key'], external_id, 'basketball',
+            normalized.get('competition') or (f'NBA {season}' if season else 'NBA'),
+            home, away, kickoff, observed, url,
+            'FINISHED' if home_score is not None else 'SCHEDULED',
+            home_score, away_score,
+            _csv_value(normalized, 'settled_at') or (kickoff if home_score is not None else None),
         ))
-    return {'fixtures': fixtures[:limit], 'standings': [], 'source_url': url, 'pages': 1}
+    return {'fixtures': fixtures[:row_limit], 'standings': [], 'source_url': url, 'pages': 1}
 
 
 def _normalize(value):
@@ -491,12 +556,14 @@ def _persist(connection, provider, batch):
             )
         connection.execute(
             """INSERT INTO sports_ai_fixture_source_map
-               (id,provider_id,external_id,fixture_id,source_updated_at,observed_at,time_precision)
-               VALUES(?,?,?,?,?,?,?) ON CONFLICT(provider_id,external_id) DO UPDATE SET
+               (id,provider_id,external_id,fixture_id,source_updated_at,observed_at,time_precision,source_url)
+               VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(provider_id,external_id) DO UPDATE SET
                fixture_id=excluded.fixture_id,source_updated_at=excluded.source_updated_at,
-               observed_at=excluded.observed_at,time_precision=excluded.time_precision""",
+               observed_at=excluded.observed_at,time_precision=excluded.time_precision,
+               source_url=excluded.source_url""",
             (str(uuid.uuid4()),provider['id'],record['external_id'],fixture_id,
-             record['observed_at'],now,record.get('time_precision','instant')),
+             record['observed_at'],now,record.get('time_precision','instant'),
+             record.get('source_url', '')),
         )
         if record.get('home_score') is not None and record.get('away_score') is not None:
             connection.execute(
@@ -713,3 +780,99 @@ def run_collection(provider_id, retry_of=None, actor='sports-ai-acquisition'):
                              'error':str(error)[:300]})),
             )
         raise
+
+
+def _availability(provider):
+    if provider['adapter'] == 'browser':
+        return 'Browser Collection Not Authorized'
+    if provider.get('credential_env') and not os.environ.get(provider['credential_env']):
+        return 'Provider Not Configured'
+    if provider.get('last_error'):
+        return 'Connection Failed'
+    if provider.get('status') == 'operational' and provider.get('last_success_at'):
+        return 'Connected'
+    return 'Awaiting Real Data'
+
+
+def browser_runtime():
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return {
+            'installed': False, 'chromium': False,
+            'status': 'Browser Collection Not Authorized',
+            'detail': 'Playwright is not installed. Install backend requirements and run python -m playwright install chromium.',
+        }
+    try:
+        with sync_playwright() as playwright:
+            present = os.path.exists(playwright.chromium.executable_path)
+    except Exception as error:
+        return {
+            'installed': True, 'chromium': False,
+            'status': 'Browser Collection Not Authorized',
+            'detail': str(error)[:240],
+        }
+    return {
+        'installed': True, 'chromium': present,
+        'status': 'Chromium available' if present else 'Browser Collection Not Authorized',
+        'detail': '' if present else 'Chromium is not installed. Run python -m playwright install chromium.',
+    }
+
+
+def connection_diagnostics(connection):
+    """Report stored integration state. Missing credentials are never replaced with sample data."""
+    from sportybet_adapter import integration_status
+    providers = []
+    for row in connection.execute(
+        """SELECT id,provider_key,display_name,sport,adapter,enabled,terms_reviewed,status,
+                  credential_env,last_success_at,last_error,terms_url
+           FROM sports_ai_provider_registry ORDER BY sport, display_name""",
+    ):
+        item = dict(row)
+        item['availability'] = _availability(item)
+        item['credential_configured'] = (not item['credential_env']) or bool(os.environ.get(item['credential_env']))
+        item.pop('credential_env', None)
+        providers.append(item)
+    counts = [dict(row) for row in connection.execute(
+        'SELECT sport, source, COUNT(*) AS fixtures FROM sports_ai_fixtures GROUP BY sport, source ORDER BY sport, source',
+    )]
+    odds = connection.execute('SELECT COUNT(*) FROM sports_ai_odds_snapshots').fetchone()[0]
+    sportybet = integration_status()
+    sportybet['availability'] = (
+        'Connected' if sportybet['automatic_booking_code'] else 'SportyBet Integration Unavailable'
+    )
+    lease = connection.execute(
+        "SELECT owner, expires_at, heartbeat_at FROM sports_ai_worker_leases WHERE id='scheduler-leader'",
+    ).fetchone()
+    jobs = [dict(row) for row in connection.execute(
+        """SELECT id, provider_id, status, started_at, finished_at, records_seen, records_saved, error
+           FROM sports_ai_acquisition_jobs ORDER BY started_at DESC LIMIT 12""",
+    )]
+    return {
+        'backend': 'Connected',
+        'sqlite': 'Connected',
+        'journal_mode': connection.execute('PRAGMA journal_mode').fetchone()[0],
+        'data_mode': 'live',
+        'demo_data_substituted': False,
+        'fixtures_by_source': counts,
+        'football_fixtures': sum(row['fixtures'] for row in counts if row['sport'] == 'football'),
+        'basketball_fixtures': sum(row['fixtures'] for row in counts if row['sport'] == 'basketball'),
+        'odds_status': 'Odds Unavailable' if odds == 0 else 'Quotes stored',
+        'odds_snapshots': odds,
+        'providers': providers,
+        'browser': browser_runtime(),
+        'approved_browser_hosts': connection.execute(
+            "SELECT COUNT(*) FROM sports_ai_source_permissions WHERE approved=1 AND hostname NOT LIKE '%betexplorer%'",
+        ).fetchone()[0],
+        'scheduler': {
+            'leader': dict(lease) if lease else {},
+            'enabled_provider_schedules': connection.execute(
+                """SELECT COUNT(*) FROM sports_ai_acquisition_schedules
+                   WHERE enabled=1 AND paused=0""",
+            ).fetchone()[0],
+            'detail': 'backend/worker.py --loop is the collector. The web process does not run a second scheduler.',
+        },
+        'recent_collections': jobs,
+        'sportybet': sportybet,
+        'prediction_note': 'Predictions are stored only from collected results. A high hit rate is not an expected return, and missing bookmaker prices stay unavailable.',
+    }

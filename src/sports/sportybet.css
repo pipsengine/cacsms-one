@@ -1,0 +1,30 @@
+.sbo{display:grid;gap:14px}
+.sbo-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-end}
+.sbo-head h2{margin:4px 0;font-size:22px;color:#10284f}
+.sbo-head p,.sbo-note{margin:0;color:#6d7f9c;font-size:12px}
+.sbo-kicker{font-size:10px;font-weight:800;letter-spacing:1.2px;color:#0c91a8}
+.sbo-actions{display:flex;gap:8px;flex-wrap:wrap}
+.sbo-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:14px}
+.sbo-card{background:#fff;border:1px solid #d9e6f5;border-radius:12px;padding:14px 16px;box-shadow:0 8px 24px #12305a08}
+.sbo-card header{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px}
+.sbo-card h3{margin:0;font-size:14px;color:#17325c}
+.sbo-state{display:flex;align-items:center;gap:8px;font-weight:800}
+.sbo-dot{width:10px;height:10px;border-radius:50%;background:#94a3b8}
+.sbo-dot.on{background:#12b76a}
+.sbo-dot.wait{background:#f59e0b}
+.sbo-dot.bad{background:#ef4444}
+.sbo-meta{display:grid;grid-template-columns:140px 1fr;gap:6px 10px;font-size:12px}
+.sbo-meta span{color:#6d7f9c}
+.sbo-filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.sbo-filters input,.sbo-filters select,.sbo-form input,.sbo-form select{border:1px solid #d5e2f2;border-radius:8px;padding:8px 10px;background:#fff}
+.sbo-table-wrap{max-height:360px;overflow:auto}
+.sbo-table{width:100%;border-collapse:collapse;font-size:12px}
+.sbo-table th{position:sticky;top:0;background:#f5f9ff;text-align:left;padding:8px;color:#607494}
+.sbo-table td{padding:8px;border-bottom:1px solid #eef3f9;color:#1c355f}
+.sbo-table button{border:0;background:none;color:#1557d9;font-weight:700;padding:0}
+.sbo-pager{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:10px;font-size:12px}
+.sbo-form{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.sbo-shot{width:100%;border-radius:10px;border:1px solid #e1eaf6;background:#f8fbff;min-height:160px;object-fit:contain}
+.sbo-drawer{position:fixed;inset:0;background:#0c245166;display:grid;place-items:center;z-index:40;padding:24px}
+.sbo-dialog{width:min(720px,100%);max-height:80vh;overflow:auto}
+@media(max-width:900px){.sbo-grid,.sbo-form{grid-template-columns:1fr}}

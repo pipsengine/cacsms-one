@@ -14,7 +14,11 @@ from prediction_engine import (
     enqueue_prediction_job, execute_prediction_job, rollback_model, train_model,
 )
 from accumulator_api import build_accumulator_router
+from match_analysis import AnalysisBusy, analyse_upcoming_batch, analyze_fixture, latest_report
 from operations_api import build_operations_router
+from browser_api import build_browser_router
+from sportybet_api import build_sportybet_router
+from sportybet_booking import build_booking_router
 
 app=FastAPI(title='CACSMS Sports AI module',version='1.0.0')
 router=APIRouter(prefix='/api/sports-ai',tags=['Sports AI'])
@@ -111,11 +115,15 @@ def dashboard(user=Depends(auth)):
         counts['recent_predictions']=allrows(c,
             """SELECT f.home||' vs '||f.away AS fixture,f.sport,p.market,
                       q.decimal_odds AS odds,p.probability,o.expected_edge AS edge
-               FROM sports_ai_engine_predictions p
-               JOIN sports_ai_fixtures f ON f.id=p.fixture_id
+               FROM sports_ai_fixtures f
+               JOIN sports_ai_engine_predictions p ON p.id=(
+                 SELECT p2.id FROM sports_ai_engine_predictions p2
+                 WHERE p2.fixture_id=f.id
+                   AND p2.market IN ('HOME','DRAW','AWAY','MONEYLINE_HOME','MONEYLINE_AWAY')
+                 ORDER BY p2.created_at DESC, p2.probability DESC LIMIT 1)
                LEFT JOIN sports_ai_value_opportunities o ON o.prediction_id=p.id
                LEFT JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
-               ORDER BY p.created_at DESC LIMIT 10""")
+               ORDER BY p.created_at DESC LIMIT 8""")
         counts['recent_opportunities']=allrows(c,
             """SELECT f.home||' vs '||f.away AS fixture,f.sport,p.market,
                       q.decimal_odds AS odds,p.probability,o.expected_edge AS edge,o.status
@@ -126,13 +134,419 @@ def dashboard(user=Depends(auth)):
                WHERE o.status='qualified' ORDER BY o.evaluated_at DESC LIMIT 10""")
         row=c.execute('SELECT created_at FROM sports_ai_analysis_runs ORDER BY created_at DESC LIMIT 1').fetchone()
         counts['last_run']=row[0] if row else None
+        counts['last_analysis']=c.execute('SELECT MAX(created_at) FROM sports_ai_match_analyses').fetchone()[0]
+        counts['analyses_today']=c.execute("SELECT COUNT(*) FROM sports_ai_match_analyses WHERE date(created_at)=date('now')").fetchone()[0]
+        counts['predictions_today']=c.execute("SELECT COUNT(*) FROM sports_ai_engine_predictions WHERE date(created_at)=date('now')").fetchone()[0]
+        counts['fixtures_analysed']=c.execute('SELECT COUNT(DISTINCT fixture_id) FROM sports_ai_match_analyses').fetchone()[0]
+        counts['awaiting_odds']=c.execute("SELECT COUNT(*) FROM sports_ai_value_opportunities WHERE status='awaiting_odds'").fetchone()[0]
+        counts['awaiting_calibration']=c.execute("SELECT COUNT(*) FROM sports_ai_value_opportunities WHERE status='awaiting_calibration'").fetchone()[0]
+        counts['odds_snapshots']=c.execute('SELECT COUNT(*) FROM sports_ai_odds_snapshots').fetchone()[0]
+        odds=c.execute("SELECT enabled,status,credential_env FROM sports_ai_provider_registry WHERE provider_key='the-odds-api'").fetchone()
+        counts['odds_provider']=None if not odds else {'enabled':bool(odds['enabled']),'status':odds['status'],'credential_env':odds['credential_env'],'configured':bool(os.environ.get(odds['credential_env'] or ''))}
+        leader=c.execute("SELECT owner,heartbeat_at,expires_at FROM sports_ai_worker_leases WHERE id='scheduler-leader'").fetchone()
+        counts['scheduler']=None if not leader else dict(leader)
+        nxt=c.execute("SELECT name,next_run_at,enabled FROM sports_ai_schedules WHERE enabled=1 ORDER BY COALESCE(next_run_at,'9999') LIMIT 1").fetchone()
+        counts['next_schedule']=None if not nxt else dict(nxt)
+        counts['failed_jobs']=c.execute("SELECT COUNT(*) FROM sports_ai_jobs WHERE status IN ('failed','dead_letter')").fetchone()[0]
+        counts['providers']=[dict(item) for item in c.execute("SELECT provider_key,display_name,enabled,status,last_success_at FROM sports_ai_provider_registry ORDER BY provider_key")]
+        counts['schedules']=[dict(item) for item in c.execute("SELECT name,enabled,job_kind,last_run_at,next_run_at FROM sports_ai_schedules ORDER BY COALESCE(next_run_at,'9999')")]
+        counts['activity_today']={
+            'fixtures':c.execute("SELECT COUNT(*) FROM sports_ai_fixtures WHERE date(observed_at)=date('now')").fetchone()[0],
+            'predictions':counts['predictions_today'],
+            'odds':c.execute("SELECT COUNT(*) FROM sports_ai_odds_snapshots WHERE date(observed_at)=date('now')").fetchone()[0],
+            'opportunities':c.execute("SELECT COUNT(*) FROM sports_ai_value_opportunities WHERE date(evaluated_at)=date('now')").fetchone()[0],
+            'tickets':c.execute("SELECT COUNT(*) FROM sports_ai_accumulator_tickets WHERE date(created_at)=date('now')").fetchone()[0],
+            'results':c.execute("SELECT COUNT(*) FROM sports_ai_results WHERE date(settled_at)=date('now')").fetchone()[0],
+        }
+        counts['prediction_sports']=[dict(item) for item in c.execute("SELECT f.sport AS name, COUNT(*) AS total FROM sports_ai_engine_predictions p JOIN sports_ai_fixtures f ON f.id=p.fixture_id GROUP BY f.sport")]
+        counts['tier_counts']=[dict(item) for item in c.execute("SELECT tier, COUNT(*) AS total FROM sports_ai_accumulator_tickets GROUP BY tier")]
+        counts['highlights']=allrows(c,
+            """SELECT f.id AS fixture_id,f.sport,f.competition,f.home,f.away,f.starts_at,p.market,p.probability,
+                      (SELECT q.decimal_odds FROM sports_ai_odds_snapshots q
+                       WHERE q.fixture_id=f.id AND q.bookmaker='SportyBet'
+                         AND (
+                           (p.market IN ('HOME','MONEYLINE_HOME') AND q.market='h2h' AND q.outcome='home')
+                           OR (p.market IN ('AWAY','MONEYLINE_AWAY') AND q.market='h2h' AND q.outcome='away')
+                           OR (p.market='DRAW' AND q.market='h2h' AND q.outcome='draw')
+                         )
+                       ORDER BY q.observed_at DESC LIMIT 1) AS decimal_odds
+               FROM sports_ai_fixtures f
+               JOIN sports_ai_engine_predictions p ON p.id=(
+                 SELECT p2.id FROM sports_ai_engine_predictions p2
+                 WHERE p2.fixture_id=f.id AND p2.market IN ('HOME','DRAW','AWAY','MONEYLINE_HOME','MONEYLINE_AWAY')
+                 ORDER BY p2.created_at DESC, p2.probability DESC LIMIT 1)
+               WHERE f.status='scheduled' AND f.starts_at>?
+                 AND EXISTS (SELECT 1 FROM sports_ai_match_analyses a WHERE a.fixture_id=f.id)
+               ORDER BY decimal_odds IS NULL, f.starts_at
+               LIMIT 5""", (datetime.now(timezone.utc).isoformat(),))
+        settled=c.execute(
+            """SELECT
+                 SUM(CASE WHEN (p.market IN ('HOME','MONEYLINE_HOME') AND r.home_score>r.away_score)
+                            OR (p.market IN ('AWAY','MONEYLINE_AWAY') AND r.away_score>r.home_score)
+                            OR (p.market='DRAW' AND r.home_score=r.away_score) THEN 1 ELSE 0 END) AS won,
+                 SUM(CASE WHEN (p.market IN ('HOME','MONEYLINE_HOME') AND r.home_score<r.away_score)
+                            OR (p.market IN ('AWAY','MONEYLINE_AWAY') AND r.away_score<r.home_score)
+                            OR (p.market='DRAW' AND r.home_score!=r.away_score) THEN 1 ELSE 0 END) AS lost
+               FROM sports_ai_engine_predictions p
+               JOIN sports_ai_fixtures f ON f.id=p.fixture_id
+               JOIN sports_ai_results r ON r.fixture_id=f.id AND r.status='final'
+               WHERE p.market IN ('HOME','DRAW','AWAY','MONEYLINE_HOME','MONEYLINE_AWAY')
+                 AND p.created_at<f.starts_at"""
+        ).fetchone()
+        counts['settled_outcomes']={'won':settled['won'] or 0,'lost':settled['lost'] or 0}
+        from browser_jobs import browser_summary
+        counts['browser']=browser_summary(c)
         return counts
 
+def _fixture_select():
+    return '''SELECT f.id,f.external_id,f.sport,f.competition,f.home,f.away,f.starts_at AS kickoff_at,
+                    f.status,f.source,f.observed_at,
+                    (SELECT m.source_url FROM sports_ai_fixture_source_map m
+                     WHERE m.fixture_id=f.id AND m.source_url<>'' ORDER BY m.observed_at DESC LIMIT 1) AS source_url,
+                    (SELECT p.display_name FROM sports_ai_fixture_source_map m
+                     JOIN sports_ai_provider_registry p ON p.id=m.provider_id
+                     WHERE m.fixture_id=f.id ORDER BY m.observed_at DESC LIMIT 1) AS provider_name
+             FROM sports_ai_fixtures f'''
+
+
+def _fixture_window(window, now):
+    today = now.date().isoformat()
+    instant = now.replace(microsecond=0).isoformat()
+    date_only = """IFNULL((
+        SELECT m.time_precision FROM sports_ai_fixture_source_map m
+        WHERE m.fixture_id=f.id ORDER BY m.observed_at DESC LIMIT 1
+    ), 'instant')='date'"""
+    ahead = f"""(
+        ({date_only} AND date(f.starts_at)>=?)
+        OR (NOT ({date_only}) AND f.starts_at>=?)
+    )"""
+    if window == 'upcoming':
+        return f"f.status='scheduled' AND {ahead}", [today, instant], 'f.starts_at'
+    if window == 'results':
+        return f"(f.status='finished' OR NOT {ahead})", [today, instant], 'f.starts_at DESC'
+    if window in (None, 'all'):
+        return '', [], 'f.starts_at'
+    raise HTTPException(422, 'window must be upcoming, results or all')
+
+
 @router.get('/fixtures')
-def fixtures(sport:str|None=None,user=Depends(auth)):
+def fixtures(
+    sport: str | None = None,
+    window: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+    team: str | None = None,
+    competition: str | None = None,
+    provider: str | None = None,
+    fixture_id: str | None = None,
+    user=Depends(auth),
+):
+    if sport and sport not in ('football', 'basketball'):
+        raise HTTPException(422, 'Sport must be football or basketball')
+    now = datetime.now(timezone.utc)
+    window_sql, window_args, order = _fixture_window(window, now)
+    filters, args = [], []
+    if sport:
+        filters.append('f.sport=?')
+        args.append(sport)
+    if team:
+        filters.append('(f.home LIKE ? OR f.away LIKE ?)')
+        args.extend([f'%{team}%', f'%{team}%'])
+    if competition:
+        filters.append('f.competition LIKE ?')
+        args.append(f'%{competition}%')
+    if provider:
+        filters.append('f.source LIKE ?')
+        args.append(f'%{provider}%')
+    if fixture_id:
+        filters.append('f.id=?')
+        args.append(fixture_id)
+    if window_sql:
+        filters.append(window_sql)
+        args.extend(window_args)
+    clause = (' WHERE ' + ' AND '.join(filters)) if filters else ''
     with connect() as c:
-        q='SELECT id,external_id,sport,competition,home,away,starts_at AS kickoff_at,status,source,observed_at FROM sports_ai_fixtures'
-        return allrows(c,q+' WHERE sport=? ORDER BY starts_at' if sport else q+' ORDER BY starts_at',(sport,) if sport else ())
+        if window is None:
+            return allrows(c, _fixture_select() + clause + ' ORDER BY ' + order, args)
+        total = c.execute(
+            'SELECT COUNT(*) FROM sports_ai_fixtures f' + clause, args,
+        ).fetchone()[0]
+        rows = allrows(
+            c,
+            _fixture_select() + clause + f' ORDER BY {order} LIMIT ? OFFSET ?',
+            args + [page_size, (page - 1) * page_size],
+        )
+        return {'items': rows, 'total': total, 'page': page, 'page_size': page_size}
+
+def _clock_names(left, right):
+    from sportybet_research import _tokens
+    first, second = _tokens(left), _tokens(right)
+    if not first or not second:
+        return False
+    if first <= second or second <= first:
+        return True
+    short, long = (first, second) if len(first) <= len(second) else (second, first)
+
+    def hit(token):
+        return any(
+            token == other or other.endswith(token) or token.endswith(other)
+            or (len(token) >= 3 and other.startswith(token))
+            or (len(other) >= 3 and token.startswith(other))
+            for other in long
+        )
+
+    return all(hit(token) for token in short)
+
+
+def _attach_display_clock(connection, items):
+    """Prefer a stored SportyBet start, then show that instant on the Nigeria clock in the UI."""
+    dated = [item for item in items if item.get('starts_at') and item.get('home')]
+    if not dated:
+        return
+    start = min(item['starts_at'] for item in dated)[:10]
+    end = max(item['starts_at'] for item in dated)[:10]
+    observed = connection.execute(
+        """SELECT home, away, starts_at FROM sports_ai_sportybet_observations
+           WHERE starts_at IS NOT NULL AND date(starts_at) BETWEEN date(?, '-1 day') AND date(?, '+1 day')
+           GROUP BY home, away, starts_at""",
+        (start, end),
+    ).fetchall()
+    for item in dated:
+        linked = connection.execute(
+            """SELECT starts_at FROM sports_ai_sportybet_observations
+               WHERE fixture_id=? AND starts_at IS NOT NULL ORDER BY observed_at DESC LIMIT 1""",
+            (item.get('id'),),
+        ).fetchone()
+        if linked:
+            item['quoted_starts_at'] = linked['starts_at']
+            continue
+        times = {
+            row['starts_at'] for row in observed
+            if _clock_names(row['home'], item['home']) and _clock_names(row['away'], item['away'])
+        }
+        item['quoted_starts_at'] = next(iter(times)) if len(times) == 1 else None
+
+
+@router.get('/fixtures/board')
+def fixtures_board(
+    sport: str = 'football',
+    view: str = 'upcoming',
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+    team: str | None = None,
+    competition: str | None = None,
+    starts_after: str | None = None,
+    starts_before: str | None = None,
+    analysis: str = 'all',
+    user=Depends(auth),
+):
+    if sport not in ('football', 'basketball'):
+        raise HTTPException(422, 'Sport must be football or basketball')
+    if view not in ('upcoming', 'results', 'standings', 'opportunities', 'tickets', 'logs'):
+        raise HTTPException(422, 'Unknown fixtures view')
+    if analysis not in ('all', 'analysed', 'pending'):
+        raise HTTPException(422, 'Analysis filter must be all, analysed or pending')
+    now = datetime.now(timezone.utc)
+    today = now.date().isoformat()
+    week = (now + timedelta(days=7)).isoformat()
+    markets = "('HOME','DRAW','AWAY')" if sport == 'football' else "('MONEYLINE_HOME','MONEYLINE_AWAY')"
+    with connect() as connection:
+        summary = {
+            'total': connection.execute('SELECT COUNT(*) FROM sports_ai_fixtures WHERE sport=?', (sport,)).fetchone()[0],
+            'today': connection.execute('SELECT COUNT(*) FROM sports_ai_fixtures WHERE sport=? AND date(starts_at)=?', (sport, today)).fetchone()[0],
+            'live': connection.execute("SELECT COUNT(*) FROM sports_ai_fixtures WHERE sport=? AND status IN ('live','inplay')", (sport,)).fetchone()[0],
+            'upcoming_7d': connection.execute(
+                "SELECT COUNT(*) FROM sports_ai_fixtures WHERE sport=? AND status='scheduled' AND starts_at>=? AND starts_at<?",
+                (sport, now.isoformat(), week),
+            ).fetchone()[0],
+            'competitions': connection.execute('SELECT COUNT(DISTINCT competition) FROM sports_ai_fixtures WHERE sport=?', (sport,)).fetchone()[0],
+            'analysed': connection.execute(
+                """SELECT COUNT(DISTINCT a.fixture_id) FROM sports_ai_match_analyses a
+                   JOIN sports_ai_fixtures f ON f.id=a.fixture_id WHERE f.sport=?""",
+                (sport,),
+            ).fetchone()[0],
+            'opportunities': connection.execute(
+                """SELECT COUNT(*) FROM sports_ai_value_opportunities o
+                   JOIN sports_ai_engine_predictions p ON p.id=o.prediction_id
+                   JOIN sports_ai_fixtures f ON f.id=p.fixture_id
+                   WHERE f.sport=? AND o.status='qualified'""",
+                (sport,),
+            ).fetchone()[0],
+            'tickets': connection.execute('SELECT COUNT(*) FROM sports_ai_accumulator_tickets').fetchone()[0],
+            'odds': connection.execute(
+                """SELECT COUNT(*) FROM sports_ai_odds_snapshots q
+                   JOIN sports_ai_fixtures f ON f.id=q.fixture_id WHERE f.sport=?""",
+                (sport,),
+            ).fetchone()[0],
+        }
+        leader = connection.execute("SELECT heartbeat_at FROM sports_ai_worker_leases WHERE id='scheduler-leader'").fetchone()
+        heartbeat = None if not leader else leader['heartbeat_at']
+        fresh = False
+        if heartbeat:
+            try:
+                seen = datetime.fromisoformat(str(heartbeat).replace('Z', '+00:00'))
+                fresh = (now - seen).total_seconds() < 120
+            except ValueError:
+                fresh = False
+        last_odds = connection.execute(
+            """SELECT MAX(q.observed_at) FROM sports_ai_odds_snapshots q
+               JOIN sports_ai_fixtures f ON f.id=q.fixture_id WHERE f.sport=?""",
+            (sport,),
+        ).fetchone()[0]
+        settled = connection.execute(
+            """SELECT
+                 SUM(CASE WHEN (p.market IN ('HOME','MONEYLINE_HOME') AND r.home_score>r.away_score)
+                            OR (p.market IN ('AWAY','MONEYLINE_AWAY') AND r.away_score>r.home_score)
+                            OR (p.market='DRAW' AND r.home_score=r.away_score) THEN 1 ELSE 0 END) AS won,
+                 SUM(CASE WHEN (p.market IN ('HOME','MONEYLINE_HOME') AND r.home_score<r.away_score)
+                            OR (p.market IN ('AWAY','MONEYLINE_AWAY') AND r.away_score<r.home_score)
+                            OR (p.market='DRAW' AND r.home_score!=r.away_score) THEN 1 ELSE 0 END) AS lost
+               FROM sports_ai_engine_predictions p
+               JOIN sports_ai_fixtures f ON f.id=p.fixture_id
+               JOIN sports_ai_results r ON r.fixture_id=f.id AND r.status='final'
+               WHERE f.sport=? AND p.market IN ('HOME','DRAW','AWAY','MONEYLINE_HOME','MONEYLINE_AWAY')
+                 AND p.created_at<f.starts_at""",
+            (sport,),
+        ).fetchone()
+        won, lost = (settled['won'] or 0), (settled['lost'] or 0)
+        competitions = [row['competition'] for row in connection.execute(
+            "SELECT DISTINCT competition FROM sports_ai_fixtures WHERE sport=? AND competition<>'' ORDER BY competition LIMIT 300",
+            (sport,),
+        )]
+        logs = [dict(row) for row in connection.execute(
+            'SELECT created_at, actor, action FROM sports_ai_audit_events ORDER BY created_at DESC LIMIT 20',
+        )]
+        logs.extend(
+            {'created_at': row['finished_at'] or row['started_at'] or row['created_at'], 'actor': 'sports-ai-worker',
+             'action': f"{row['status']} {row['title'] or 'browser'} ({row['observations'] or 0} observations)"}
+            for row in connection.execute(
+                'SELECT created_at, started_at, finished_at, status, title, observations FROM sports_ai_browser_jobs ORDER BY created_at DESC LIMIT 12',
+            )
+        )
+        logs.extend(
+            {'created_at': row['started_at'], 'actor': 'scheduler', 'action': f"{row['status']} {row['schedule_id'] or 'job'}"}
+            for row in connection.execute(
+                'SELECT started_at, status, schedule_id FROM sports_ai_job_history ORDER BY started_at DESC LIMIT 12',
+            )
+        )
+        logs.sort(key=lambda row: row['created_at'] or '', reverse=True)
+        logs = logs[:24]
+        items, total = [], 0
+        if view in ('upcoming', 'results'):
+            window_sql, window_args, order = _fixture_window('upcoming' if view == 'upcoming' else 'results', now)
+            filters, args = ['f.sport=?', window_sql], [sport, *window_args]
+            if team:
+                filters.append('(f.home LIKE ? OR f.away LIKE ?)')
+                args.extend([f'%{team}%', f'%{team}%'])
+            if competition:
+                filters.append('f.competition=?')
+                args.append(competition)
+            if starts_after:
+                filters.append('date(f.starts_at)>=?')
+                args.append(starts_after)
+            if starts_before:
+                filters.append('date(f.starts_at)<=?')
+                args.append(starts_before)
+            if analysis == 'analysed':
+                filters.append('EXISTS (SELECT 1 FROM sports_ai_match_analyses a WHERE a.fixture_id=f.id)')
+            elif analysis == 'pending':
+                filters.append('NOT EXISTS (SELECT 1 FROM sports_ai_match_analyses a WHERE a.fixture_id=f.id)')
+            clause = ' WHERE ' + ' AND '.join(filters)
+            total = connection.execute('SELECT COUNT(*) FROM sports_ai_fixtures f' + clause, args).fetchone()[0]
+            items = allrows(
+                connection,
+                f"""SELECT f.id, f.home, f.away, f.competition, f.starts_at, f.status, f.source,
+                           IFNULL((SELECT m.time_precision FROM sports_ai_fixture_source_map m
+                                   WHERE m.fixture_id=f.id ORDER BY m.observed_at DESC LIMIT 1), 'instant') AS time_precision,
+                           EXISTS (SELECT 1 FROM sports_ai_match_analyses a WHERE a.fixture_id=f.id) AS analysed,
+                           (SELECT q.decimal_odds FROM sports_ai_odds_snapshots q
+                            WHERE q.fixture_id=f.id AND q.market='h2h' AND q.outcome='home'
+                            ORDER BY q.observed_at DESC LIMIT 1) AS odds_home,
+                           (SELECT q.decimal_odds FROM sports_ai_odds_snapshots q
+                            WHERE q.fixture_id=f.id AND q.market='h2h' AND q.outcome='draw'
+                            ORDER BY q.observed_at DESC LIMIT 1) AS odds_draw,
+                           (SELECT q.decimal_odds FROM sports_ai_odds_snapshots q
+                            WHERE q.fixture_id=f.id AND q.market='h2h' AND q.outcome='away'
+                            ORDER BY q.observed_at DESC LIMIT 1) AS odds_away,
+                           (SELECT p.market FROM sports_ai_engine_predictions p
+                            WHERE p.fixture_id=f.id AND p.market IN {markets}
+                            ORDER BY substr(p.created_at,1,19) DESC, p.probability DESC LIMIT 1) AS market,
+                           (SELECT p.probability FROM sports_ai_engine_predictions p
+                            WHERE p.fixture_id=f.id AND p.market IN {markets}
+                            ORDER BY substr(p.created_at,1,19) DESC, p.probability DESC LIMIT 1) AS probability,
+                           (SELECT p.probability FROM sports_ai_engine_predictions p
+                            WHERE p.fixture_id=f.id AND p.market IN ('HOME','MONEYLINE_HOME')
+                            ORDER BY p.created_at DESC LIMIT 1) AS probability_home,
+                           (SELECT p.probability FROM sports_ai_engine_predictions p
+                            WHERE p.fixture_id=f.id AND p.market='DRAW'
+                            ORDER BY p.created_at DESC LIMIT 1) AS probability_draw,
+                           (SELECT p.probability FROM sports_ai_engine_predictions p
+                            WHERE p.fixture_id=f.id AND p.market IN ('AWAY','MONEYLINE_AWAY')
+                            ORDER BY p.created_at DESC LIMIT 1) AS probability_away,
+                           (SELECT o.expected_edge FROM sports_ai_value_opportunities o
+                            JOIN sports_ai_engine_predictions p ON p.id=o.prediction_id
+                            WHERE p.fixture_id=f.id AND o.expected_edge IS NOT NULL
+                            ORDER BY o.evaluated_at DESC LIMIT 1) AS expected_edge
+                    FROM sports_ai_fixtures f{clause}
+                    ORDER BY {order} LIMIT ? OFFSET ?""",
+                args + [page_size, (page - 1) * page_size],
+            )
+        elif view == 'standings':
+            items = allrows(
+                connection,
+                """SELECT competition, season, team, position, played, won, drawn, lost, points, goal_difference, observed_at
+                   FROM sports_ai_standings_snapshots
+                   WHERE competition IN (SELECT DISTINCT competition FROM sports_ai_fixtures WHERE sport=?)
+                   ORDER BY observed_at DESC, competition, position LIMIT ? OFFSET ?""",
+                (sport, page_size, (page - 1) * page_size),
+            )
+            total = connection.execute(
+                """SELECT COUNT(*) FROM sports_ai_standings_snapshots
+                   WHERE competition IN (SELECT DISTINCT competition FROM sports_ai_fixtures WHERE sport=?)""",
+                (sport,),
+            ).fetchone()[0]
+        elif view == 'opportunities':
+            items = allrows(
+                connection,
+                """SELECT f.id AS fixture_id, f.home, f.away, f.competition, f.starts_at,
+                          p.market, p.probability, o.status, o.expected_edge, o.reason, o.evaluated_at
+                   FROM sports_ai_value_opportunities o
+                   JOIN sports_ai_engine_predictions p ON p.id=o.prediction_id
+                   JOIN sports_ai_fixtures f ON f.id=p.fixture_id
+                   WHERE f.sport=?
+                   ORDER BY o.evaluated_at DESC LIMIT ? OFFSET ?""",
+                (sport, page_size, (page - 1) * page_size),
+            )
+            total = connection.execute(
+                """SELECT COUNT(*) FROM sports_ai_value_opportunities o
+                   JOIN sports_ai_engine_predictions p ON p.id=o.prediction_id
+                   JOIN sports_ai_fixtures f ON f.id=p.fixture_id WHERE f.sport=?""",
+                (sport,),
+            ).fetchone()[0]
+        elif view == 'tickets':
+            items = allrows(
+                connection,
+                'SELECT id, tier, status, created_at FROM sports_ai_accumulator_tickets ORDER BY created_at DESC LIMIT ? OFFSET ?',
+                (page_size, (page - 1) * page_size),
+            )
+            total = summary['tickets']
+        if any(item.get('home') for item in items):
+            _attach_display_clock(connection, items)
+    return {
+        'summary': summary,
+        'engine': {'running': fresh, 'heartbeat_at': heartbeat, 'last_odds_at': last_odds, 'places_wager': False},
+        'performance': {
+            'won': won, 'lost': lost, 'settled': won + lost,
+            'accuracy': None if won + lost == 0 else round(won / (won + lost), 4),
+            'roi': None,
+        },
+        'competitions': competitions,
+        'logs': logs,
+        'items': items,
+        'total': total,
+        'page': page,
+        'page_size': page_size,
+    }
 
 @router.post('/fixtures/import')
 def import_fixtures(items:list[FixtureIn],user=Depends(auth)):
@@ -356,6 +770,12 @@ def model_rollback(
         audit(c,user,'models.rollback',{'model_id':model_id,**result})
     return result
 
+@router.post('/analysis/cycle')
+def analysis_cycle(user=Depends(auth)):
+    with lock, connect() as c:
+        return analyse_upcoming_batch(c, user, audit, limit=8)
+
+
 @router.post('/engine/run')
 @router.post('/analysis/run')
 def prediction_engine_run(
@@ -420,6 +840,24 @@ def opportunities(
             +'o.rank_score IS NULL,o.rank_score DESC,o.expected_edge DESC,o.evaluated_at DESC LIMIT ?',
             tuple(args+[limit]))
 
+@router.get('/fixtures/{fixture_id}/match-analysis')
+def stored_match_analysis(fixture_id:str,user=Depends(auth)):
+    with connect() as c:
+        if not c.execute('SELECT 1 FROM sports_ai_fixtures WHERE id=?',(fixture_id,)).fetchone():
+            raise HTTPException(404,'Fixture not found')
+        report=latest_report(c,fixture_id)
+    return report or {'fixture_id':fixture_id,'stored_status':None,'missing':['No match analysis has been run for this fixture.']}
+
+@router.post('/fixtures/{fixture_id}/analyze')
+def run_match_analysis(fixture_id:str,user=Depends(auth)):
+    with lock,connect() as c:
+        try:
+            return analyze_fixture(c,fixture_id,user,audit)
+        except AnalysisBusy:
+            raise HTTPException(409,'An analysis job is already running for this fixture')
+        except LookupError:
+            raise HTTPException(404,'Fixture not found')
+
 @router.get('/fixtures/{fixture_id}/analysis')
 def fixture_analysis(fixture_id:str,user=Depends(auth)):
     with connect() as c:
@@ -435,8 +873,50 @@ def fixture_analysis(fixture_id:str,user=Depends(auth)):
                WHERE p.fixture_id=? ORDER BY p.created_at DESC,p.market""",(fixture_id,))
 
 @router.get('/predictions')
-def predictions(user=Depends(auth)):
+def predictions(
+    group: str | None = None,
+    sport: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+    user=Depends(auth),
+):
     with connect() as c:
+        if group == 'fixture':
+            filters, args = ["f.starts_at>datetime('now')"], []
+            if sport:
+                filters.append('f.sport=?')
+                args.append(sport)
+            where = ' AND '.join(filters)
+            total = c.execute(
+                f"""SELECT COUNT(*) FROM sports_ai_fixtures f
+                    WHERE {where} AND EXISTS (
+                      SELECT 1 FROM sports_ai_engine_predictions p WHERE p.fixture_id=f.id
+                    )""",
+                args,
+            ).fetchone()[0]
+            rows = allrows(c, f"""
+                SELECT f.id AS fixture_id, f.sport, f.competition, f.home, f.away, f.starts_at, f.status AS fixture_status,
+                       m.model_name, m.version AS model_version, m.status AS model_status, m.active AS model_active,
+                       p.market, p.probability, p.run_id, o.expected_edge AS edge, o.status AS opportunity_status,
+                       q.decimal_odds AS odds,
+                       (SELECT COUNT(*) FROM sports_ai_engine_predictions x
+                        WHERE x.fixture_id=f.id AND x.run_id=p.run_id) AS market_count,
+                       (SELECT a.status FROM sports_ai_match_analyses a
+                        WHERE a.fixture_id=f.id ORDER BY a.created_at DESC LIMIT 1) AS analysis_status
+                FROM sports_ai_fixtures f
+                JOIN sports_ai_engine_predictions p ON p.id=(
+                    SELECT p2.id FROM sports_ai_engine_predictions p2
+                    WHERE p2.fixture_id=f.id
+                      AND p2.market IN ('HOME','DRAW','AWAY','MONEYLINE_HOME','MONEYLINE_AWAY')
+                    ORDER BY p2.created_at DESC, p2.probability DESC LIMIT 1
+                )
+                JOIN sports_ai_model_registry m ON m.id=p.model_id
+                LEFT JOIN sports_ai_value_opportunities o ON o.prediction_id=p.id
+                LEFT JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
+                WHERE {where}
+                ORDER BY f.starts_at
+                LIMIT ? OFFSET ?""", args + [page_size, (page - 1) * page_size])
+            return {'items': rows, 'total': total, 'page': page, 'page_size': page_size}
         rows=allrows(c,
             """SELECT p.id,p.fixture_id,f.sport,p.market,p.probability,
                       f.home||' vs '||f.away AS fixture,f.starts_at,
@@ -704,3 +1184,6 @@ app.include_router(router)
 app.include_router(build_acquisition_router(auth))
 app.include_router(build_accumulator_router(auth, require_admin_key))
 app.include_router(build_operations_router(auth, require_admin_key))
+app.include_router(build_sportybet_router(auth, require_admin_key))
+app.include_router(build_browser_router(auth))
+app.include_router(build_booking_router(auth))

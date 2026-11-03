@@ -18,13 +18,15 @@ def integration_status():
         'bookmaker': BOOKMAKER,
         'automatic_booking_code': False,
         'automatic_wager_placement': False,
+        'booking_module': 'installed',
         'manual_registration': True,
+        'supervised_browser': True,
+        'unattended_collection': False,
         'verified': False,
         'reason': (
-            'No authorized SportyBet booking-code integration is configured. '
-            'The service does not request codes from SportyBet, does not generate them, '
-            'and does not place wagers. A genuine code obtained by the user can be registered manually '
-            'and remains unverified.'
+            'Displayed SportyBet prices are collected from the public page. '
+            'A booking code is requested only for a selection the value engine has qualified, '
+            'and only by clicking the booking-code control. No wager is placed, and no code is invented.'
         ),
     }
 

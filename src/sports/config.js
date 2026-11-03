@@ -1,13 +1,13 @@
-import{LayoutDashboard,Activity,CalendarDays,ChartNoAxesCombined,BrainCircuit,Goal,Dribbble,BarChart3,TrendingUp,ScanSearch,Ticket,Layers3,SlidersHorizontal,Hash,Bell,Mail,Clock3,History,ShieldCheck,Database,Settings2,Workflow,Target,BookOpen,ClipboardList,ChartColumnIncreasing,Users,FileClock,MonitorCheck,Code2,Search}from'lucide-react';
+import{LayoutDashboard,Activity,CalendarDays,ChartNoAxesCombined,BrainCircuit,Goal,Dribbble,BarChart3,TrendingUp,ScanSearch,Ticket,Layers3,SlidersHorizontal,Hash,Bell,Mail,Clock3,History,ShieldCheck,Database,Settings2,Workflow,Target,BookOpen,ClipboardList,ChartColumnIncreasing,Users,FileClock,MonitorCheck,Code2,Search,Globe}from'lucide-react';
 export const groups=[
 {label:'COMMAND CENTRE',items:[['dashboard','Overview',LayoutDashboard],['activity','Activity & Audit',Activity],['monitor','System Monitoring',MonitorCheck]]},
 {label:'FOOTBALL INTELLIGENCE',items:[['football-fixtures','Fixtures & Statistics',CalendarDays],['football-analysis','Match Analysis',BrainCircuit],['football-predictions','Predictions',Goal]]},
 {label:'BASKETBALL INTELLIGENCE',items:[['basketball-fixtures','Fixtures & Statistics',Dribbble],['basketball-analysis','Match Analysis',BrainCircuit],['basketball-predictions','Predictions',Target]]},
-{label:'VALUE INTELLIGENCE',items:[['market-scanner','Market Scanner',ScanSearch],['odds','Odds Intelligence',TrendingUp],['value','Value Opportunities',ChartNoAxesCombined]]},
+{label:'VALUE INTELLIGENCE',items:[['market-scanner','Market Scanner',ScanSearch],['odds','Odds Intelligence',TrendingUp],['value','Value Opportunities',ChartNoAxesCombined],['sportybet-browser','SportyBet Browser Operator',Globe]]},
 {label:'ACCUMULATOR CENTRE',items:[['tickets','Ticket Builder',Ticket],['tiers','Odds Tiers',Layers3],['optimizer','Ticket Optimizer',SlidersHorizontal]]},
 {label:'SPORTYBET CENTRE',items:[['betslip','Betslip Preparation',ClipboardList],['codes','Booking Codes',Hash],['code-history','Code History',History]]},
 {label:'PERFORMANCE',items:[['results','Match Results',ChartColumnIncreasing],['backtesting','Backtesting',BarChart3],['models','Model Accuracy',BrainCircuit]]},
-{label:'DATA ACQUISITION',items:[['sources','Source Management Centre',Database],['match-research','Match Research Centre',Search]]},
+{label:'DATA ACQUISITION',items:[['diagnostics','Connection & Diagnostics',MonitorCheck],['sources','Source Management Centre',Database],['match-research','Match Research Centre',Search]]},
 {label:'OPERATIONS',items:[['scheduler','Automation Scheduler',Clock3],['alerts','Alert Centre',Bell],['settings','Model Settings',Settings2],['users','Access & Roles',Users],['documentation','Documentation',BookOpen]]}
 ];export const items=groups.flatMap(g=>g.items);export const titleOf=id=>items.find(i=>i[0]===id)?.[1]||'Sports Intelligence';
 export const sections={
@@ -17,6 +17,7 @@ export const sections={
 'basketball-analysis':['Pre-Match Intelligence','Points & Pace','Spread & Totals','Model Evidence'],
 'football-predictions':['All Predictions','1X2 & Double Chance','Goals & BTTS','Handicaps'],
 'basketball-predictions':['All Predictions','Moneyline','Totals','Spreads'],
+'diagnostics':['Providers','Browser & SportyBet','Collection Log'],
 'sources':['Provider Registry','Website Explorer','Browser Sessions','Extraction Configuration','Data Quality','Collection Scheduler','Collection History','Source Permissions'],
 'match-research':['Match Research'],
 'activity':['Audit Timeline','Analysis Runs','Changes'],
@@ -24,6 +25,7 @@ export const sections={
 'market-scanner':['All Markets','Football','Basketball','Watchlist'],
 'odds':['Latest Odds','Price History','Implied Probability','Source Quality'],
 'value':['All Opportunities','High Edge','By Sport','Rejected'],
+'sportybet-browser':['Browser Workspace','Fixtures & Markets','Odds Observations','Matching & Validation','Activity & Audit'],
 'tickets':['Generated Tickets','Ticket Details','Manual Builder'],
 'tiers':['2×','5×','10×','25×','100×','1,000×','5,000×','25,000×'],
 'optimizer':['Constraints','Candidate Tickets','Risk Review'],

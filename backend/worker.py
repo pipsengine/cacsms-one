@@ -76,6 +76,22 @@ def tick():
         monitor=_monitor_accumulators,
     )
     print('orchestrator', result.get('status'), result.get('reason', ''))
+    _process_browser_queue()
+
+
+def _process_browser_queue():
+    try:
+        from browser_jobs import process_browser_queue
+        result = process_browser_queue()
+        print('browser queue', result.get('status'), result.get('job_id', ''), result.get('error', ''))
+        from sportybet_feed import collect_displayed_odds
+        collected = collect_displayed_odds()
+        print('sportybet feed', collected.get('status'), 'imported', collected.get('imported', 0), collected.get('error', ''))
+        from sportybet_booking import process_booking_queue
+        booked = process_booking_queue()
+        print('sportybet booking', booked.get('status'), 'qualified', booked.get('qualified', ''), 'places_wager', booked.get('places_wager'))
+    except Exception as error:
+        print('browser queue failed', str(error))
 
 
 def _monitor_accumulators():

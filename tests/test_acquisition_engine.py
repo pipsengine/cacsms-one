@@ -260,6 +260,25 @@ class AcquisitionEngineTests(unittest.TestCase):
         finally:
             os.environ.pop('SPORTS_BALLDONTLIE_API_KEY',None)
 
+    def test_sportsdataverse_unplayed_zero_scores_stay_scheduled(self):
+        provider=self._provider(
+            adapter='sportsdataverse_csv',
+            config={'dataset_url':'https://raw.githubusercontent.com/sportsdataverse/example/main/games.csv'},
+        )
+        csv_body=(
+            b'id,date,home_name,away_name,home_score,away_score,status_type_completed,status_type_state\n'
+            b'1,2020-01-01T00:00Z,Old Home,Old Away,101,99,true,post\n'
+            b'2,2099-01-01T00:00Z,Future Home,Future Away,0,0,false,pre\n'
+        )
+        with patch.object(acquisition_engine,'_request',return_value=(csv_body,{})):
+            batch=acquisition_engine._sportsdataverse_csv(
+                provider,json.loads(provider['config_json']),limit=1,
+            )
+        self.assertEqual(len(batch['fixtures']),1)
+        self.assertEqual(batch['fixtures'][0]['status'],'scheduled')
+        self.assertNotIn('home_score',batch['fixtures'][0])
+        self.assertEqual(batch['fixtures'][0]['home'],'Future Home')
+
     def test_sportsdataverse_dataset_csv_normalizes_actual_rows(self):
         provider=self._provider(
             adapter='sportsdataverse_csv',

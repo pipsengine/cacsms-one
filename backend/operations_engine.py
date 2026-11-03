@@ -16,7 +16,7 @@ from email.message import EmailMessage
 
 from accumulator_engine import monitor_accumulators, settle_result
 from db import connect
-from prediction_engine import execute_prediction_job, recover_timed_out_jobs, train_model
+from prediction_engine import recover_timed_out_jobs, train_model
 
 STATES = (
     'DISCOVERED', 'DATA_COLLECTION_PENDING', 'COLLECTING', 'DATA_VALIDATION', 'DATA_INCOMPLETE',
@@ -462,7 +462,8 @@ def _error_code(error):
 
 def _execute_kind(connection, kind, audit, idempotency_key, now):
     if kind == 'prediction':
-        return execute_prediction_job(connection, 'sports-ai-worker', audit, idempotency_key, 'schedule')
+        from match_analysis import analyse_upcoming_batch
+        return analyse_upcoming_batch(connection, 'sports-ai-worker', audit, limit=8)
     if kind in ('accumulator', 'settlement'):
         return monitor_accumulators(connection, 'sports-ai-worker', audit, idempotency_key, now)
     if kind == 'model_evaluation':
@@ -471,6 +472,11 @@ def _execute_kind(connection, kind, audit, idempotency_key, now):
         return {'status': 'skipped', 'reason': 'Retraining runs only from an explicit evaluation request and does not promote a model'}
     if kind == 'browser_research':
         return browser_research_status(connection)
+    if kind == 'browser_queue':
+        from browser_jobs import enqueue_authorized_jobs
+        return enqueue_authorized_jobs(connection)
+    if kind == 'booking_queue':
+        return {'status': 'deferred', 'places_wager': False, 'reason': 'Booking runs after the scheduler transaction and only for qualified selections'}
     if kind == 'collection':
         return {'status': 'skipped', 'reason': 'Collection stays on the provider schedule and is not repeated by a generic cron row'}
     if kind == 'notification_dispatch':
