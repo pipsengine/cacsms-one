@@ -119,13 +119,34 @@ def _team_tokens(name):
         tokens.append('turkey' if token == 'turkiye' else token)
     if tokens == ['psg']:
         return ['paris', 'saint', 'germain']
+    if tokens == ['inter']:
+        return ['internazionale']
+    if tokens == ['man', 'united']:
+        return ['manchester', 'united']
     if tokens == ['czechia']:
         return ['czech', 'republic']
-    return tokens
+    folded = {
+        'praha': 'prague', 'rennais': 'rennes', 'olympiacos': 'olympiakos',
+        'nikosia': 'nicosia',
+    }
+    return [folded.get(token, token) for token in tokens]
+
+
+def _names_for_club(team, rows):
+    """Spellings of one club, including a trailing country code such as (ENG)."""
+    chosen = _aligned_team(team, rows)
+    wanted = _team_tokens(chosen)
+    names = {chosen, team}
+    for name in {row['home'] for row in rows} | {row['away'] for row in rows}:
+        tokens = _team_tokens(name)
+        extra = [token for token in tokens if token not in wanted]
+        if wanted and set(wanted).issubset(tokens) and all(len(token) == 3 for token in extra):
+            names.add(name)
+    return names
 
 
 def _token_fits(left, right):
-    return left == right or right.startswith(left) or left.startswith(right)
+    return left == right
 
 
 def _teams_align(left, right):
@@ -139,14 +160,31 @@ def _teams_align(left, right):
 
 
 def _aligned_team(team, history):
-    """Use the one historical club spelling when the short name is unambiguous."""
+    """Use the historical club that covers this name, preferring the closest spelling."""
     if sum(1 for row in history if row['home'] == team or row['away'] == team) >= MIN_TEAM_GAMES:
         return team
-    candidates = sorted({row['home'] for row in history} | {row['away'] for row in history})
-    matches = [name for name in candidates if name != team and _teams_align(team, name)]
-    if len(matches) == 1:
-        return matches[0]
-    return team
+    counts = {}
+    for row in history:
+        counts[row['home']] = counts.get(row['home'], 0) + 1
+        counts[row['away']] = counts.get(row['away'], 0) + 1
+    query = _team_tokens(team)
+    ranked = []
+    for name in counts:
+        if name == team or not _teams_align(team, name):
+            continue
+        tokens = _team_tokens(name)
+        covered = sum(1 for token in query if token in tokens)
+        extra = sum(1 for token in tokens if token not in query)
+        ranked.append((covered, -extra, counts[name], name, tuple(tokens)))
+    if not ranked:
+        return team
+    ranked.sort(reverse=True)
+    best_cover, best_extra = ranked[0][0], ranked[0][1]
+    tied = [item for item in ranked if item[0] == best_cover and item[1] == best_extra]
+    spellings = {item[4] for item in tied}
+    if len(spellings) > 1:
+        return team
+    return max(tied)[3]
 
 
 def competitions_for_league(connection, sport, competition):
@@ -163,6 +201,7 @@ DOMESTIC_KEYS = frozenset({
     'bundesliga-1', 'bundesliga-2', 'championship', 'premier-league', 'serie-a',
     'la-liga', 'ligue-1', 'primeira', 'eredivisie', 'eliteserien',
 })
+EUROPEAN_KEYS = frozenset({'ucl', 'uel', 'uecl'})
 
 
 def _final_rows(connection, sport, cutoff, keys):
@@ -191,21 +230,30 @@ def _final_rows(connection, sport, cutoff, keys):
     return kept
 
 
-def _club_split(team, rows):
-    """Games for the one historical club that matches team, in that club's main league."""
-    aligned = _aligned_team(team, rows)
+def _games_for_names(names, rows):
     games = []
     for row in rows:
-        if row['home'] == aligned:
+        if row['home'] in names:
             games.append({
                 **row, 'venue': 'home', 'for': float(row['home_score']), 'against': float(row['away_score']),
             })
-        elif row['away'] == aligned:
+        elif row['away'] in names:
             games.append({
                 **row, 'venue': 'away', 'for': float(row['away_score']), 'against': float(row['home_score']),
             })
+    return games
+
+
+def _all_club_games(team, rows):
+    return _games_for_names(_names_for_club(team, rows), rows)
+
+
+def _club_split(team, rows):
+    """Games for the one historical club that matches team, in that club's main league."""
+    names = _names_for_club(team, rows)
+    games = _games_for_names(names, rows)
     if not games:
-        return aligned, [], []
+        return names, [], []
     counts = {}
     for game in games:
         key = league_key(game['competition'])
@@ -213,21 +261,20 @@ def _club_split(team, rows):
     main_key = max(counts, key=counts.get)
     chosen = [game for game in games if league_key(game['competition']) == main_key]
     baseline = [row for row in rows if league_key(row['competition']) == main_key]
-    return aligned, chosen, baseline
+    return names, chosen, baseline
 
 
 def domestic_team_rows(connection, sport, team, cutoff):
     """Stored league matches for a club when its current competition sample is short."""
     rows = _final_rows(connection, sport, cutoff, DOMESTIC_KEYS)
-    aligned, games, _baseline = _club_split(team, rows)
+    names, games, _baseline = _club_split(team, rows)
     copied = []
     for game in games:
         item = dict(game)
-        if aligned != team:
-            if item['home'] == aligned:
-                item['home'] = team
-            elif item['away'] == aligned:
-                item['away'] = team
+        if item['home'] in names and item['home'] != team:
+            item['home'] = team
+        elif item['away'] in names and item['away'] != team:
+            item['away'] = team
         copied.append(item)
     return copied
 
@@ -395,44 +442,50 @@ def build_features(connection, fixture):
     for row in history:
         row['_metrics'] = metric_rows.get(row['id'], {})
 
-    def team_games(team):
+    home_names = _names_for_club(fixture['home'], history)
+    away_names = _names_for_club(fixture['away'], history)
+
+    def team_games(names):
         games = []
         for row in history:
-            if row['home'] == team:
+            if row['home'] in names:
                 games.append({
                     **row, 'venue': 'home', 'for': float(row['home_score']),
                     'against': float(row['away_score']),
                 })
-            elif row['away'] == team:
+            elif row['away'] in names:
                 games.append({
                     **row, 'venue': 'away', 'for': float(row['away_score']),
                     'against': float(row['home_score']),
                 })
         return games
 
-    home_name = _aligned_team(fixture['home'], history)
-    away_name = _aligned_team(fixture['away'], history)
-    home_all, away_all = team_games(home_name), team_games(away_name)
+    home_all, away_all = team_games(home_names), team_games(away_names)
     home_games = [row for row in home_all if row['venue'] == 'home']
     away_games = [row for row in away_all if row['venue'] == 'away']
     if fixture['sport'] == 'football':
         notes = []
-        domestic = None
 
         def side_rates(team, games, all_games, venue):
             if len(games) >= MIN_TEAM_GAMES:
                 return all_games, games, history
-            nonlocal domestic
-            if domestic is None:
-                domestic = _final_rows(connection, fixture['sport'], cutoff, DOMESTIC_KEYS)
-            _aligned, club_games, baseline = _club_split(team, domestic)
-            venue_games = [row for row in club_games if row['venue'] == venue]
-            if len(venue_games) < MIN_TEAM_GAMES:
-                return None, None, None
-            notes.append(
-                f"{team} uses {len(venue_games)} stored league {venue} matches because this competition has {len(games)}"
-            )
-            return club_games, venue_games, baseline
+            pools = [('stored league matches', DOMESTIC_KEYS, True)]
+            if league_key(fixture['competition']) in EUROPEAN_KEYS:
+                pools.insert(0, ('European club matches', EUROPEAN_KEYS, False))
+            for label, keys, split_league in pools:
+                rows = _final_rows(connection, fixture['sport'], cutoff, keys)
+                if split_league:
+                    _aligned, club_games, baseline = _club_split(team, rows)
+                else:
+                    club_games, baseline = _all_club_games(team, rows), rows
+                venue_games = [row for row in club_games if row['venue'] == venue]
+                if len(venue_games) < MIN_TEAM_GAMES:
+                    continue
+                notes.append(
+                    f"{team} uses {len(venue_games)} {label} at {venue} because this competition has {len(games)}"
+                )
+                return club_games, venue_games, baseline
+            return None, None, None
 
         home_all, home_games, home_baseline = side_rates(fixture['home'], home_games, home_all, 'home')
         away_all, away_games, away_baseline = side_rates(fixture['away'], away_games, away_all, 'away')

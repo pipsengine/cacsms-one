@@ -329,8 +329,8 @@ def _tickets(connection):
         'edge': None if row['estimated_edge'] is None else round(100 * float(row['estimated_edge']), 1),
         'created_at': row['created_at'],
         'picks': legs.get(row['id'], []),
-        'booking_code': (codes.get(row['id']) or {}).get('code'),
-        'code_status': (codes.get(row['id']) or {}).get('status'),
+        'booking_code': codes[row['id']]['code'] if row['id'] in codes else None,
+        'code_status': codes[row['id']]['status'] if row['id'] in codes else None,
     } for row in tickets]
 
 

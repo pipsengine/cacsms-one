@@ -13,6 +13,7 @@ from prediction_engine import (
     _aligned_team,
     competitions_for_league,
     domestic_team_rows,
+    _names_for_club,
     league_key,
     parse_time,
     run_analysis,
@@ -44,10 +45,10 @@ def _rows_before(connection, team, competition, cutoff, sport='football'):
            ORDER BY f.starts_at""",
         (sport, *names),
     )]
-    team_name = _aligned_team(team, league)
+    club_names = _names_for_club(team, league)
     rows = []
     for row in league:
-        if row['home'] != team_name and row['away'] != team_name:
+        if row['home'] not in club_names and row['away'] not in club_names:
             continue
         try:
             kickoff = parse_time(row['starts_at'])
@@ -56,11 +57,10 @@ def _rows_before(connection, team, competition, cutoff, sport='football'):
             continue
         if kickoff < cutoff and settled < cutoff:
             row['_kickoff'] = kickoff
-            if team_name != team:
-                if row['home'] == team_name:
-                    row['home'] = team
-                elif row['away'] == team_name:
-                    row['away'] = team
+            if row['home'] in club_names and row['home'] != team:
+                row['home'] = team
+            elif row['away'] in club_names and row['away'] != team:
+                row['away'] = team
             rows.append(row)
     if len(rows) < MIN_TEAM_GAMES:
         seen = {row['id'] for row in rows}
