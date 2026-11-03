@@ -4,22 +4,13 @@ import argparse
 import json
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from acquisition import CollectionError
 from acquisition_engine import run_collection
 from db import connect, initialize
-from prediction_engine import run_analysis
-
-
-def _record_failure(job_id, error):
-    with connect() as connection:
-        connection.execute(
-            """UPDATE sports_ai_job_history SET status='failed',finished_at=?,
-               details_json=? WHERE id=?""",
-            (datetime.now(timezone.utc).isoformat(),
-             json.dumps({'error':str(error)[:500]}),job_id),
-        )
+from accumulator_engine import monitor_accumulators
+from prediction_engine import execute_prediction_job, recover_timed_out_jobs
 
 
 def _audit(connection, actor, action, details):
@@ -55,54 +46,49 @@ def _collect_due_providers():
             print('provider collection failed',provider['provider_key'],str(error))
 
 
-def _run_schedule(schedule):
-    job_id=str(uuid.uuid4())
+def _process_prediction_queue():
     with connect() as connection:
-        connection.execute(
-            """INSERT INTO sports_ai_job_history
-               (id,schedule_id,status) VALUES(?,?,'running')""",
-            (job_id,schedule['id']),
+        recover_timed_out_jobs(connection)
+        running=connection.execute(
+            "SELECT COUNT(*) FROM sports_ai_prediction_jobs WHERE status='running'",
+        ).fetchone()[0]
+        if running:
+            return
+        job=connection.execute(
+            """SELECT * FROM sports_ai_prediction_jobs
+               WHERE status='queued'
+                  OR (status IN ('failed','timed_out') AND attempt<3)
+               ORDER BY created_at LIMIT 1""",
+        ).fetchone()
+        if not job:
+            return
+        result=execute_prediction_job(
+            connection,'sports-ai-worker',_audit,job['idempotency_key'],job['trigger'],
         )
-    try:
-        with connect() as connection:
-            result=run_analysis(connection,'sports-ai-worker',_audit)
-            completed=datetime.now(timezone.utc).isoformat()
-            connection.execute(
-                'UPDATE sports_ai_schedules SET last_run_at=? WHERE id=?',
-                (completed,schedule['id']),
-            )
-            connection.execute(
-                """UPDATE sports_ai_job_history SET status='complete',finished_at=?,
-                   details_json=? WHERE id=?""",
-                (completed,json.dumps(result),job_id),
-            )
-        print('completed scheduled analysis',schedule['name'],
-              'predictions',result['predictions'],'qualified',result['qualified'])
-    except Exception as error:
-        _record_failure(job_id,error)
-        print('scheduled analysis failed',schedule['name'],str(error))
+        print('prediction queue',job['trigger'],result.get('status'))
 
 
 def tick():
     initialize()
-    _collect_due_providers()
-    now=datetime.now(timezone.utc)
-    with connect() as connection:
-        schedules=[dict(row) for row in connection.execute(
-            'SELECT * FROM sports_ai_schedules WHERE enabled=1',
-        )]
-    for schedule in schedules:
-        last=schedule.get('last_run_at')
-        try:
-            if last:
-                parsed=datetime.fromisoformat(last.replace('Z','+00:00'))
-                if parsed.tzinfo is None:
-                    parsed=parsed.replace(tzinfo=timezone.utc)
-                if now-parsed<timedelta(minutes=schedule['interval_minutes']):
-                    continue
-        except ValueError:
-            pass
-        _run_schedule(schedule)
+    from operations_engine import orchestrate_once
+    result=orchestrate_once(
+        _audit, collect=_collect_due_providers, predict=_process_prediction_queue,
+        monitor=_monitor_accumulators,
+    )
+    print('orchestrator', result.get('status'), result.get('reason', ''))
+
+
+def _monitor_accumulators():
+    try:
+        hour=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H')
+        with connect() as connection:
+            result=monitor_accumulators(
+                connection,'sports-ai-worker',_audit,f'accumulator-monitor:{hour}',
+            )
+        print('accumulator monitor',result.get('status'),
+              'settled',result.get('settled',0),'expired',result.get('expired',0))
+    except Exception as error:
+        print('accumulator monitor failed',str(error))
 
 
 if __name__=='__main__':

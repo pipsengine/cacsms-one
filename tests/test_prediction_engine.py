@@ -11,11 +11,14 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'backend'))
 import db
 from prediction_engine import (
     build_features,
+    execute_prediction_job,
     expected_value,
     market_probability,
+    recover_timed_out_jobs,
     run_analysis,
     train_model,
 )
+from prediction_math import simulate_scores
 
 
 class PredictionEngineTests(unittest.TestCase):
@@ -35,10 +38,14 @@ class PredictionEngineTests(unittest.TestCase):
     def setUp(self):
         with db.connect() as connection:
             for table in (
-                'sports_ai_value_opportunities','sports_ai_engine_predictions',
-                'sports_ai_feature_snapshots','sports_ai_model_registry',
-                'sports_ai_calibration_results','sports_ai_training_runs',
-                'sports_ai_analysis_runs','sports_ai_results','sports_ai_fixtures',
+                'sports_ai_value_opportunities','sports_ai_prediction_explanations',
+                'sports_ai_engine_predictions','sports_ai_feature_snapshots',
+                'sports_ai_calibration_results','sports_ai_validation_results',
+                'sports_ai_training_datasets','sports_ai_model_versions',
+                'sports_ai_model_registry','sports_ai_training_runs',
+                'sports_ai_prediction_jobs','sports_ai_market_mappings',
+                'sports_ai_odds_snapshots','sports_ai_analysis_runs',
+                'sports_ai_results','sports_ai_fixtures',
             ):
                 connection.execute(f'DELETE FROM {table}')
             connection.execute("DELETE FROM sports_ai_settings WHERE key='engine'")
@@ -163,6 +170,94 @@ class PredictionEngineTests(unittest.TestCase):
         self.assertEqual(result['qualified'],0)
         self.assertTrue(result['model_activation_required'])
         self.assertIn('awaiting_calibration',{row['status'] for row in statuses})
+
+    def test_binary_expected_value_matches_edge_identity(self):
+        settlement={'p_win':.55,'p_half_win':0,'p_push':0,'p_half_loss':0,'p_loss':.45}
+        self.assertAlmostEqual(expected_value(settlement,2.0),.55*2-1,places=10)
+
+    def test_missing_expected_goals_are_not_invented(self):
+        with db.connect() as connection:
+            built=build_features(connection,self.fixture)
+        self.assertIsNone(built['features']['home_xg_for'])
+        self.assertIsNone(built['features']['away_xg_for'])
+        self.assertIsNone(built['features']['h2h_avg_goals'])
+        self.assertIn('home_xg_for',built['missing'])
+
+    def test_first_half_market_requires_source_data(self):
+        features={
+            'expected_home_points':112.0,'expected_away_points':106.0,
+            'home_score_sd':11.0,'away_score_sd':12.0,'total_sd':(11**2+12**2)**.5,
+            'expected_home_h1':None,'expected_away_h1':None,'h1_total_sd':None,
+        }
+        self.assertIsNone(market_probability('basketball','FIRST_HALF_OVER_110.5',features))
+        features.update({'expected_home_h1':56.0,'expected_away_h1':52.0,'h1_total_sd':8.0})
+        priced=market_probability('basketball','FIRST_HALF_OVER_110.5',features)
+        self.assertAlmostEqual(priced['p_win']+priced['p_loss']+priced['p_push'],1.0,places=10)
+
+    def test_monte_carlo_scores_are_reproducible(self):
+        first=simulate_scores(110,104,11,12,draws=200,seed=17)
+        second=simulate_scores(110,104,11,12,draws=200,seed=17)
+        self.assertEqual(first,second)
+        self.assertEqual(len(first),200)
+
+    def test_stale_quotes_are_rejected_and_snapshots_are_reused(self):
+        observed=(self.now-timedelta(hours=3)).isoformat()
+        with db.connect() as connection:
+            connection.execute(
+                """UPDATE sports_ai_provider_registry
+                   SET enabled=1,terms_reviewed=1,status='operational' WHERE id=?""",
+                ('provider-manual-odds',),
+            )
+            connection.execute(
+                """INSERT INTO sports_ai_odds_snapshots
+                   (id,fixture_id,provider_id,bookmaker,market,outcome,line,decimal_odds,source_url,observed_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                ('quote-stale',self.fixture_id,'provider-manual-odds','Example Book',
+                 'h2h','home',None,2.4,'https://example.test/quote',observed),
+            )
+            first=run_analysis(connection,'test-user',lambda *args:None)
+            second=run_analysis(connection,'test-user',lambda *args:None)
+            statuses={row['status'] for row in connection.execute(
+                'SELECT status FROM sports_ai_value_opportunities',
+            )}
+            snapshots=connection.execute(
+                'SELECT COUNT(*) FROM sports_ai_feature_snapshots',
+            ).fetchone()[0]
+            summary=connection.execute(
+                'SELECT summary FROM sports_ai_prediction_explanations LIMIT 1',
+            ).fetchone()['summary']
+        self.assertIn('expired',statuses)
+        self.assertNotIn('qualified',statuses)
+        self.assertGreater(second['snapshots_reused'],0)
+        self.assertEqual(snapshots,1)
+        self.assertGreater(first['predictions'],0)
+        self.assertIn('expected goals',summary)
+
+    def test_repeated_job_is_idempotent(self):
+        with db.connect() as connection:
+            first=execute_prediction_job(connection,'test-user',lambda *args:None,'job-1','manual')
+            second=execute_prediction_job(connection,'test-user',lambda *args:None,'job-1','manual')
+            runs=connection.execute('SELECT COUNT(*) FROM sports_ai_prediction_jobs').fetchone()[0]
+        self.assertEqual(first['status'],'complete')
+        self.assertEqual(second['status'],'skipped')
+        self.assertEqual(second['reason'],'idempotent_replay')
+        self.assertEqual(runs,1)
+
+    def test_running_job_past_timeout_is_recovered(self):
+        started=(self.now-timedelta(hours=2)).isoformat()
+        with db.connect() as connection:
+            connection.execute(
+                """INSERT INTO sports_ai_prediction_jobs
+                   (id,idempotency_key,trigger,status,attempt,started_at,timeout_seconds)
+                   VALUES('job-old','old','manual','running',1,?,60)""",
+                (started,),
+            )
+            recovered=recover_timed_out_jobs(connection,self.now)
+            status=connection.execute(
+                "SELECT status FROM sports_ai_prediction_jobs WHERE id='job-old'",
+            ).fetchone()['status']
+        self.assertEqual(recovered,1)
+        self.assertEqual(status,'timed_out')
 
 
 if __name__=='__main__':

@@ -10,7 +10,11 @@ from engine import evaluate, build_tickets
 from acquisition import CollectionError, import_basketball_rows
 from acquisition_api import build_acquisition_router
 from acquisition_engine import run_collection, validate_public_config
-from prediction_engine import run_analysis, train_model
+from prediction_engine import (
+    enqueue_prediction_job, execute_prediction_job, rollback_model, train_model,
+)
+from accumulator_api import build_accumulator_router
+from operations_api import build_operations_router
 
 app=FastAPI(title='CACSMS Sports AI module',version='1.0.0')
 router=APIRouter(prefix='/api/sports-ai',tags=['Sports AI'])
@@ -92,6 +96,9 @@ def dashboard(user=Depends(auth)):
     with connect() as c:
         counts={}
         for key,table in [('fixtures','fixtures'),('tickets','tickets'),('booking_codes','booking_codes')]:counts[key]=c.execute('SELECT COUNT(*) FROM sports_ai_'+table).fetchone()[0]
+        counts['legacy_tickets']=counts['tickets']
+        counts['accumulator_tickets']=c.execute('SELECT COUNT(*) FROM sports_ai_accumulator_tickets').fetchone()[0]
+        counts['tickets']=counts['legacy_tickets']+counts['accumulator_tickets']
         counts['predictions']=c.execute('SELECT COUNT(*) FROM sports_ai_engine_predictions').fetchone()[0]
         counts['qualified_opportunities']=c.execute("SELECT COUNT(*) FROM sports_ai_value_opportunities WHERE status='qualified'").fetchone()[0]
         counts['value_candidates']=counts['qualified_opportunities']
@@ -254,6 +261,7 @@ def odds_import(items:list[OddsQuoteIn],user=Depends(auth)):
                 (datetime.now(timezone.utc).isoformat(),item.provider_id),
             )
         audit(c,user,'odds.import',{'count':len(items)})
+        enqueue_prediction_job(c,'odds_updated')
     return {'imported':len(items)}
 
 @router.post('/legacy-analysis/run')
@@ -336,11 +344,28 @@ def model_activate(
         audit(c,user,'models.activate',{'model_id':model_id,'sport':model['sport']})
     return {'activated':True,'model_id':model_id}
 
+@router.post('/models/{model_id}/rollback')
+def model_rollback(
+    model_id:str,x_sports_admin_key:str|None=Header(default=None),user=Depends(auth),
+):
+    require_admin_key(x_sports_admin_key)
+    with lock,connect() as c:
+        result=rollback_model(c,model_id)
+        if result is None:raise HTTPException(404,'Model not found')
+        if not result['rolled_back']:raise HTTPException(409,result['reason'])
+        audit(c,user,'models.rollback',{'model_id':model_id,**result})
+    return result
+
 @router.post('/engine/run')
 @router.post('/analysis/run')
-def prediction_engine_run(user=Depends(auth)):
+def prediction_engine_run(
+    user=Depends(auth),
+    idempotency_key:str|None=Header(default=None,alias='Idempotency-Key'),
+):
+    key=idempotency_key or str(uuid.uuid4())
+    if len(key)>160:raise HTTPException(422,'Idempotency key is too long')
     with lock,connect() as c:
-        return run_analysis(c,user,audit)
+        return execute_prediction_job(c,user,audit,key,'manual')
 
 @router.get('/opportunities')
 def opportunities(
@@ -350,6 +375,7 @@ def opportunities(
     bookmaker:str|None=None,
     competition:str|None=None,
     min_edge:float|None=Query(default=None,ge=-1,le=100),
+    max_calibration_error:float|None=Query(default=None,ge=0,le=1),
     starts_after:datetime|None=None,
     starts_before:datetime|None=None,
     limit:int=Query(default=500,ge=1,le=1000),
@@ -361,7 +387,12 @@ def opportunities(
     if status:conditions.append('o.status=?');args.append(status)
     if bookmaker:conditions.append('q.bookmaker=?');args.append(bookmaker)
     if competition:conditions.append('f.competition LIKE ?');args.append('%'+competition+'%')
-    if min_edge is not None:conditions.append('o.expected_edge>=?');args.append(min_edge)
+    if min_edge is not None:
+        conditions.append('(o.expected_edge IS NULL OR o.expected_edge>=?)')
+        args.append(min_edge)
+    if max_calibration_error is not None:
+        conditions.append("json_extract(m.metrics_json,'$.calibration_error')<=?")
+        args.append(max_calibration_error)
     if starts_after:
         if starts_after.tzinfo is None:raise HTTPException(422,'Date filter must include a timezone')
         conditions.append('f.starts_at>=?');args.append(starts_after.isoformat())
@@ -372,20 +403,22 @@ def opportunities(
     with connect() as c:
         return allrows(c,
             """SELECT o.id,o.status,o.reason,o.implied_probability,o.expected_edge,
+                      o.rank_score,o.uncertainty,o.data_completeness,
                       q.decimal_odds,q.bookmaker,q.observed_at AS odds_observed_at,
                       (julianday('now')-julianday(q.observed_at))*1440 AS odds_age_minutes,
                       p.id AS prediction_id,p.market,p.outcome,p.probability,p.settlement_json,
                       p.explanation_json,p.created_at AS predicted_at,
                       f.id AS fixture_id,f.sport,f.competition,f.home,f.away,f.starts_at,
-                      m.model_name,m.version AS model_version,m.status AS model_status,
-                      m.metrics_json AS model_metrics,q.source_url
+                      m.id AS model_id,m.model_name,m.version AS model_version,m.status AS model_status,
+                      m.metrics_json AS model_metrics,m.artifact_ref,q.source_url
                FROM sports_ai_value_opportunities o
                JOIN sports_ai_engine_predictions p ON p.id=o.prediction_id
                JOIN sports_ai_fixtures f ON f.id=p.fixture_id
                JOIN sports_ai_model_registry m ON m.id=p.model_id
                LEFT JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id"""
             +where+' ORDER BY CASE o.status WHEN "qualified" THEN 0 ELSE 1 END,'
-            +'o.expected_edge DESC,o.evaluated_at DESC LIMIT ?',tuple(args+[limit]))
+            +'o.rank_score IS NULL,o.rank_score DESC,o.expected_edge DESC,o.evaluated_at DESC LIMIT ?',
+            tuple(args+[limit]))
 
 @router.get('/fixtures/{fixture_id}/analysis')
 def fixture_analysis(fixture_id:str,user=Depends(auth)):
@@ -405,14 +438,15 @@ def fixture_analysis(fixture_id:str,user=Depends(auth)):
 def predictions(user=Depends(auth)):
     with connect() as c:
         rows=allrows(c,
-            """SELECT p.id,p.fixture_id,p.sport,p.market,p.probability,
+            """SELECT p.id,p.fixture_id,f.sport,p.market,p.probability,
                       f.home||' vs '||f.away AS fixture,f.starts_at,
-                      m.model_name,o.decimal_odds AS odds,o.expected_edge AS edge,
+                      m.model_name,q.decimal_odds AS odds,o.expected_edge AS edge,
                       o.status AS opportunity_status
                FROM sports_ai_engine_predictions p
                JOIN sports_ai_fixtures f ON f.id=p.fixture_id
                JOIN sports_ai_model_registry m ON m.id=p.model_id
                LEFT JOIN sports_ai_value_opportunities o ON o.prediction_id=p.id
+               LEFT JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
                ORDER BY p.created_at DESC LIMIT 500""")
         if rows:return rows
         return allrows(c,'SELECT * FROM sports_ai_predictions ORDER BY rowid DESC LIMIT 500')
@@ -465,6 +499,7 @@ class SettingsIn(BaseModel):
     max_legs:int=Field(ge=1,le=8)
     odds_tolerance:float=Field(ge=0.01,le=0.5)
     odds_max_age_minutes:int=Field(default=15,ge=1,le=1440)
+    form_half_life_days:float=Field(default=180,gt=0,le=3650)
 class RoleIn(BaseModel):
     role_name:str=Field(min_length=2,max_length=80)
     permissions:list[str]
@@ -495,6 +530,7 @@ def save_result(p:ResultIn,user=Depends(auth)):
             (str(uuid.uuid4()),p.fixture_id,p.home_score,p.away_score,p.source,
              settled_at.isoformat()))
         audit(c,user,'results.upsert',p.model_dump(mode='json'))
+        enqueue_prediction_job(c,'results_updated')
     return {'saved':True}
 @router.get('/odds-history')
 def odds_history(fixture_id:str|None=None,user=Depends(auth)):
@@ -560,7 +596,8 @@ def notifications(user=Depends(auth)):
 def settings(user=Depends(auth)):
     with connect() as c:
         r=c.execute("SELECT value_json FROM sports_ai_settings WHERE key='engine'").fetchone()
-    return json.loads(r[0]) if r else {'min_edge':0.05,'max_legs':6,'odds_tolerance':0.15,'odds_max_age_minutes':15}
+    defaults={'min_edge':0.05,'max_legs':6,'odds_tolerance':0.15,'odds_max_age_minutes':15,'form_half_life_days':180}
+    return {**defaults, **(json.loads(r[0]) if r else {})}
 @router.put('/settings')
 def settings_save(p:SettingsIn,user=Depends(auth)):
     with lock,connect() as c:
@@ -589,7 +626,7 @@ def engine_predictions(
     user=Depends(auth),
 ):
     with connect() as c:
-        query="""SELECT p.id,p.fixture_id,p.sport,p.market,p.outcome,p.probability,
+        query="""SELECT p.id,p.fixture_id,f.sport,p.market,p.outcome,p.probability,
                         p.settlement_json,p.explanation_json,p.created_at,
                         f.home||' vs '||f.away AS fixture,f.competition,f.starts_at,
                         m.model_name,m.version AS model_version,m.status AS model_status,
@@ -598,8 +635,50 @@ def engine_predictions(
                  FROM sports_ai_engine_predictions p
                  JOIN sports_ai_fixtures f ON f.id=p.fixture_id
                  JOIN sports_ai_model_registry m ON m.id=p.model_id"""
-        if sport:query+=' WHERE p.sport=?'
+        if sport:query+=' WHERE f.sport=?'
         return allrows(c,query+' ORDER BY p.created_at DESC LIMIT 1000',(sport,) if sport else ())
+@router.get('/engine/jobs')
+def prediction_jobs(user=Depends(auth)):
+    with connect() as c:
+        return allrows(c,'SELECT * FROM sports_ai_prediction_jobs ORDER BY created_at DESC LIMIT 200')
+
+@router.get('/odds/intelligence')
+def odds_intelligence(user=Depends(auth)):
+    with connect() as c:
+        latest=allrows(c,"""
+            SELECT q.fixture_id,f.sport,f.competition,f.home,f.away,f.starts_at,q.bookmaker,
+                   q.market,q.outcome,q.line,q.decimal_odds,q.observed_at,q.source_url,
+                   p.display_name AS provider,p.status AS provider_status,
+                   (julianday('now')-julianday(q.observed_at))*1440 AS age_minutes,
+                   (SELECT o.decimal_odds FROM sports_ai_odds_snapshots o
+                    WHERE o.fixture_id=q.fixture_id AND o.bookmaker=q.bookmaker
+                      AND o.market=q.market AND o.outcome=q.outcome
+                      AND IFNULL(o.line,-999999)=IFNULL(q.line,-999999)
+                    ORDER BY o.observed_at ASC LIMIT 1) AS opening_decimal_odds
+            FROM sports_ai_odds_snapshots q
+            JOIN sports_ai_fixtures f ON f.id=q.fixture_id
+            JOIN sports_ai_provider_registry p ON p.id=q.provider_id
+            WHERE q.observed_at=(
+                SELECT MAX(observed_at) FROM sports_ai_odds_snapshots x
+                WHERE x.fixture_id=q.fixture_id AND x.bookmaker=q.bookmaker
+                  AND x.market=q.market AND x.outcome=q.outcome
+                  AND IFNULL(x.line,-999999)=IFNULL(q.line,-999999)
+            )
+            ORDER BY q.observed_at DESC LIMIT 500""")
+        providers=allrows(c,"""
+            SELECT id,provider_key,display_name,sport,adapter,enabled,terms_reviewed,status,
+                   last_success_at,last_error,last_attempt_at
+            FROM sports_ai_provider_registry ORDER BY display_name""")
+        duplicates=allrows(c,"""
+            SELECT fixture_id,bookmaker,market,outcome,line,observed_at,COUNT(*) AS quotes,
+                   MIN(decimal_odds) AS low_odds,MAX(decimal_odds) AS high_odds
+            FROM sports_ai_odds_snapshots
+            GROUP BY fixture_id,bookmaker,market,outcome,line,observed_at
+            HAVING COUNT(*)>1 AND MIN(decimal_odds)<>MAX(decimal_odds)
+            LIMIT 100""")
+    return {'quotes':latest,'providers':providers,'conflicting_duplicates':duplicates,
+            'note':'Only imported provider quotes are listed. Missing prices are not estimated.'}
+
 @router.get('/performance')
 def performance(user=Depends(auth)):
     with connect() as c:
@@ -623,3 +702,5 @@ def performance(user=Depends(auth)):
 
 app.include_router(router)
 app.include_router(build_acquisition_router(auth))
+app.include_router(build_accumulator_router(auth, require_admin_key))
+app.include_router(build_operations_router(auth, require_admin_key))

@@ -1,16 +1,46 @@
 """Source-backed, cutoff-safe football and basketball modeling."""
 
-import itertools
+import hashlib
 import json
 import math
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-MODEL_NAMES = {'football': 'sports-ai-football-poisson', 'basketball': 'sports-ai-basketball-normal'}
-VERSION = '1'
+from prediction_math import (
+    apply_isotonic,
+    apply_sigmoid,
+    fit_gradient_boosting,
+    fit_isotonic,
+    fit_ridge,
+    fit_sigmoid,
+    monte_carlo_settlement,
+    predict_gradient_boosting,
+    predict_ridge,
+    simulate_scores,
+)
+
+MODEL_NAMES = {'football': 'sports-ai-football-ensemble', 'basketball': 'sports-ai-basketball-ensemble'}
+VERSION = '2'
 MIN_TEAM_GAMES = 3
 MIN_VALIDATION_FIXTURES = 30
+MAX_CONCURRENT_JOBS = 1
+GOAL_FLOOR, GOAL_CEILING = 0.05, 6.5
+POINT_FLOOR, POINT_CEILING = 60.0, 170.0
+FOOTBALL_RIDGE_COLUMNS = (
+    'intercept', 'expected_home_goals', 'expected_away_goals', 'home_rest_days',
+    'away_rest_days', 'home_games_7d', 'away_games_7d', 'home_form', 'away_form',
+)
+BASKETBALL_RIDGE_COLUMNS = (
+    'intercept', 'expected_home_points', 'expected_away_points', 'home_rest_days',
+    'away_rest_days', 'home_games_3d', 'away_games_3d', 'home_form', 'away_form',
+)
+FOOTBALL_XG_KEYS = {'home_xg', 'away_xg', 'xg_home', 'xg_away'}
+BASKETBALL_STAT_KEYS = {
+    'possessions', 'pace', 'home_possessions', 'away_possessions', 'home_h1', 'away_h1',
+    'home_first_half', 'away_first_half', 'injuries_out_home', 'injuries_out_away',
+    'lineup_known_home', 'lineup_known_away',
+}
 FOOTBALL_MARKETS = (
     'HOME', 'DRAW', 'AWAY', 'DOUBLE_CHANCE_1X', 'DOUBLE_CHANCE_12',
     'DOUBLE_CHANCE_X2', 'DNB_HOME', 'DNB_AWAY', 'BTTS_YES', 'BTTS_NO',
@@ -32,9 +62,20 @@ def parse_time(value):
     return result.astimezone(timezone.utc)
 
 
-def _weighted_average(records, field, cutoff, default=None):
+def _half_life_days(connection):
+    row = connection.execute("SELECT value_json FROM sports_ai_settings WHERE key='engine'").fetchone()
+    if not row:
+        return 180.0
+    try:
+        value = float(json.loads(row['value_json']).get('form_half_life_days', 180))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return 180.0
+    return value if math.isfinite(value) and value > 0 else 180.0
+
+
+def _weighted_average(records, field, cutoff, half_life, default=None):
     values = [
-        (float(row[field]), math.exp(-max(0, (cutoff - row['_kickoff']).total_seconds() / 86400) / 180))
+        (float(row[field]), math.exp(-max(0, (cutoff - row['_kickoff']).total_seconds() / 86400) / half_life))
         for row in records if row.get(field) is not None
     ]
     if not values:
@@ -50,12 +91,71 @@ def _sample_sd(values):
     return math.sqrt(sum((value - mean) ** 2 for value in values) / (len(values) - 1))
 
 
+def _json_object(value):
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _finite(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _metric_map(connection, fixture_ids, cutoff):
+    metrics = {fixture_id: {} for fixture_id in fixture_ids}
+    if not fixture_ids:
+        return metrics
+    for start in range(0, len(fixture_ids), 200):
+        chunk = fixture_ids[start:start + 200]
+        placeholders = ','.join('?' for _ in chunk)
+        rows = connection.execute(
+            f"""SELECT fixture_id,metric,value_json,observed_at
+                FROM sports_ai_match_statistics
+                WHERE fixture_id IN ({placeholders})""",
+            chunk,
+        ).fetchall()
+        for row in rows:
+            try:
+                observed = parse_time(row['observed_at'])
+            except (TypeError, ValueError):
+                continue
+            if observed >= cutoff:
+                continue
+            payload = _json_object(row['value_json'])
+            number = _finite(payload.get('value', payload.get(row['metric'])))
+            if number is None and len(payload) == 1:
+                number = _finite(next(iter(payload.values())))
+            if number is None:
+                number = _finite(row['value_json'])
+            if number is not None:
+                metrics[row['fixture_id']][row['metric']] = number
+    return metrics
+
+
+def _stat_number(statistics, metrics, *keys):
+    for key in keys:
+        if key in metrics and metrics[key] is not None:
+            return metrics[key]
+        if key in statistics:
+            return _finite(statistics[key])
+    return None
+
+
 def build_features(connection, fixture):
     """Historical rows with kickoff and settlement strictly before the fixture cutoff."""
     cutoff = parse_time(fixture['starts_at'])
+    half_life = _half_life_days(connection)
     rows = connection.execute(
-        """SELECT f.id,f.competition,f.home,f.away,f.starts_at,r.home_score,
-                  r.away_score,r.source,r.settled_at
+        """SELECT f.id,f.competition,f.home,f.away,f.starts_at,f.statistics_json,f.observed_at,
+                  r.home_score,r.away_score,r.source,r.settled_at
            FROM sports_ai_fixtures f
            JOIN sports_ai_results r ON r.fixture_id=f.id
            WHERE f.sport=? AND f.competition=? AND r.status='final'
@@ -71,7 +171,15 @@ def build_features(connection, fixture):
         except (TypeError, ValueError):
             continue
         if row['_kickoff'] < cutoff and settled < cutoff:
+            try:
+                stats_observed = parse_time(row['observed_at']) if row.get('observed_at') else None
+            except (TypeError, ValueError):
+                stats_observed = None
+            row['_statistics'] = _json_object(row.get('statistics_json')) if stats_observed and stats_observed < cutoff else {}
             history.append(row)
+    metric_rows = _metric_map(connection, [row['id'] for row in history], cutoff)
+    for row in history:
+        row['_metrics'] = metric_rows.get(row['id'], {})
 
     def team_games(team):
         games = []
@@ -96,18 +204,18 @@ def build_features(connection, fixture):
             return None
         league_home = _weighted_average(
             [{'home_score': row['home_score'], '_kickoff': row['_kickoff']} for row in history],
-            'home_score', cutoff,
+            'home_score', cutoff, half_life,
         )
         league_away = _weighted_average(
             [{'away_score': row['away_score'], '_kickoff': row['_kickoff']} for row in history],
-            'away_score', cutoff,
+            'away_score', cutoff, half_life,
         )
         if not league_home or not league_away:
             return None
-        home_attack = _weighted_average(home_games, 'for', cutoff) / league_home
-        home_defence = _weighted_average(home_games, 'against', cutoff) / league_away
-        away_attack = _weighted_average(away_games, 'for', cutoff) / league_away
-        away_defence = _weighted_average(away_games, 'against', cutoff) / league_home
+        home_attack = _weighted_average(home_games, 'for', cutoff, half_life) / league_home
+        home_defence = _weighted_average(home_games, 'against', cutoff, half_life) / league_away
+        away_attack = _weighted_average(away_games, 'for', cutoff, half_life) / league_away
+        away_defence = _weighted_average(away_games, 'against', cutoff, half_life) / league_home
         features = {
             'home_attack': home_attack, 'home_defence': home_defence,
             'away_attack': away_attack, 'away_defence': away_defence,
@@ -120,18 +228,18 @@ def build_features(connection, fixture):
             return None
         league_home = _weighted_average(
             [{'home_score': row['home_score'], '_kickoff': row['_kickoff']} for row in history],
-            'home_score', cutoff,
+            'home_score', cutoff, half_life,
         )
         league_away = _weighted_average(
             [{'away_score': row['away_score'], '_kickoff': row['_kickoff']} for row in history],
-            'away_score', cutoff,
+            'away_score', cutoff, half_life,
         )
         if not league_home or not league_away:
             return None
-        home_for = _weighted_average(home_games or home_all, 'for', cutoff)
-        home_against = _weighted_average(home_games or home_all, 'against', cutoff)
-        away_for = _weighted_average(away_games or away_all, 'for', cutoff)
-        away_against = _weighted_average(away_games or away_all, 'against', cutoff)
+        home_for = _weighted_average(home_games or home_all, 'for', cutoff, half_life)
+        home_against = _weighted_average(home_games or home_all, 'against', cutoff, half_life)
+        away_for = _weighted_average(away_games or away_all, 'for', cutoff, half_life)
+        away_against = _weighted_average(away_games or away_all, 'against', cutoff, half_life)
         features = {
             'home_points_for': home_for, 'home_points_against': home_against,
             'away_points_for': away_for, 'away_points_against': away_against,
@@ -154,16 +262,148 @@ def build_features(connection, fixture):
         latest = max(row['_kickoff'] for row in games)
         return (cutoff - latest).total_seconds() / 86400
 
+    def recent_count(games, days):
+        return float(sum(1 for row in games if (cutoff - row['_kickoff']).total_seconds() <= days * 86400))
+
+    def form_points(games):
+        if not games:
+            return None
+        total_weight = 0.0
+        total = 0.0
+        for row in games:
+            age = max(0, (cutoff - row['_kickoff']).total_seconds() / 86400)
+            weight = math.exp(-age / half_life)
+            if fixture['sport'] == 'football':
+                value = 3.0 if row['for'] > row['against'] else 1.0 if row['for'] == row['against'] else 0.0
+            else:
+                value = 1.0 if row['for'] > row['against'] else 0.0
+            total += value * weight
+            total_weight += weight
+        return total / total_weight if total_weight else None
+
+    def optional_average(games, picker):
+        values = []
+        for row in games:
+            value = picker(row)
+            if value is not None:
+                values.append((value, row))
+        if len(values) < 3:
+            return None
+        return _weighted_average(
+            [{'_kickoff': row['_kickoff'], 'value': value} for value, row in values],
+            'value', cutoff, half_life,
+        )
+
+    h2h = [
+        row for row in history
+        if {row['home'], row['away']} == {fixture['home'], fixture['away']}
+    ]
+    h2h_home_wins = sum(
+        1 for row in h2h
+        if (row['home'] == fixture['home'] and row['home_score'] > row['away_score'])
+        or (row['away'] == fixture['home'] and row['away_score'] > row['home_score'])
+    )
+    h2h_draws = sum(1 for row in h2h if row['home_score'] == row['away_score'])
+    sport_rows = connection.execute(
+        """SELECT f.starts_at,r.home_score,r.away_score,r.settled_at
+           FROM sports_ai_fixtures f
+           JOIN sports_ai_results r ON r.fixture_id=f.id
+           WHERE f.sport=? AND r.status='final'""",
+        (fixture['sport'],),
+    ).fetchall()
+    competition_totals, sport_totals = [], []
+    for row in sport_rows:
+        try:
+            kickoff = parse_time(row['starts_at'])
+            settled = parse_time(row['settled_at'])
+        except (TypeError, ValueError):
+            continue
+        if kickoff < cutoff and settled < cutoff:
+            sport_totals.append(float(row['home_score']) + float(row['away_score']))
+    for row in history:
+        competition_totals.append(float(row['home_score']) + float(row['away_score']))
+    league_strength = None
+    if competition_totals and sport_totals and sum(sport_totals) > 0:
+        league_strength = (sum(competition_totals) / len(competition_totals)) / (sum(sport_totals) / len(sport_totals))
+
     features.update({
         'home_rest_days': rest(home_all), 'away_rest_days': rest(away_all),
         'home_games': len(home_all), 'away_games': len(away_all),
+        'home_games_7d': recent_count(home_all, 7), 'away_games_7d': recent_count(away_all, 7),
+        'home_games_3d': recent_count(home_all, 3), 'away_games_3d': recent_count(away_all, 3),
+        'home_form': form_points(home_all), 'away_form': form_points(away_all),
+        'h2h_games': len(h2h), 'h2h_home_wins': h2h_home_wins, 'h2h_draws': h2h_draws,
+        'h2h_away_wins': len(h2h) - h2h_home_wins - h2h_draws,
+        'h2h_avg_goals': (
+            sum(row['home_score'] + row['away_score'] for row in h2h) / len(h2h)
+        ) if h2h else None,
+        'league_strength': league_strength,
+        'form_half_life_days': half_life,
         'historical_games': len(history),
     })
+    if fixture['sport'] == 'football':
+        features['home_xg_for'] = optional_average(home_games, lambda row: _stat_number(
+            row['_statistics'], row['_metrics'], 'home_xg', 'xg_home') if row['venue'] == 'home' else _stat_number(
+            row['_statistics'], row['_metrics'], 'away_xg', 'xg_away'))
+        features['away_xg_for'] = optional_average(away_games, lambda row: _stat_number(
+            row['_statistics'], row['_metrics'], 'away_xg', 'xg_away') if row['venue'] == 'away' else _stat_number(
+            row['_statistics'], row['_metrics'], 'home_xg', 'xg_home'))
+    else:
+        features['home_pace'] = optional_average(home_all, lambda row: _stat_number(
+            row['_statistics'], row['_metrics'], 'pace', 'possessions', 'home_possessions'))
+        features['away_pace'] = optional_average(away_all, lambda row: _stat_number(
+            row['_statistics'], row['_metrics'], 'pace', 'possessions', 'away_possessions'))
+        features['home_h1_for'] = optional_average(home_all, lambda row: _stat_number(
+            row['_statistics'], row['_metrics'], 'home_h1' if row['venue'] == 'home' else 'away_h1',
+            'home_first_half' if row['venue'] == 'home' else 'away_first_half'))
+        features['away_h1_for'] = optional_average(away_all, lambda row: _stat_number(
+            row['_statistics'], row['_metrics'], 'away_h1' if row['venue'] == 'away' else 'home_h1',
+            'away_first_half' if row['venue'] == 'away' else 'home_first_half'))
+        features['injuries_out_home'] = optional_average(home_all, lambda row: _stat_number(
+            row['_statistics'], row['_metrics'], 'injuries_out_home' if row['venue'] == 'home' else 'injuries_out_away'))
+        features['injuries_out_away'] = optional_average(away_all, lambda row: _stat_number(
+            row['_statistics'], row['_metrics'], 'injuries_out_away' if row['venue'] == 'away' else 'injuries_out_home'))
+        home_h1_against = optional_average(home_all, lambda row: _stat_number(
+            row['_statistics'], row['_metrics'], 'away_h1' if row['venue'] == 'home' else 'home_h1',
+            'away_first_half' if row['venue'] == 'home' else 'home_first_half'))
+        away_h1_against = optional_average(away_all, lambda row: _stat_number(
+            row['_statistics'], row['_metrics'], 'home_h1' if row['venue'] == 'away' else 'away_h1',
+            'home_first_half' if row['venue'] == 'away' else 'away_first_half'))
+        h1_totals = []
+        for row in history:
+            home_half = _stat_number(row['_statistics'], row['_metrics'], 'home_h1', 'home_first_half')
+            away_half = _stat_number(row['_statistics'], row['_metrics'], 'away_h1', 'away_first_half')
+            if home_half is not None and away_half is not None:
+                h1_totals.append(home_half + away_half)
+        if features['home_h1_for'] is not None and features['away_h1_for'] is not None and home_h1_against is not None and away_h1_against is not None:
+            features['expected_home_h1'] = (features['home_h1_for'] + away_h1_against) / 2
+            features['expected_away_h1'] = (features['away_h1_for'] + home_h1_against) / 2
+            features['h1_total_sd'] = _sample_sd(h1_totals)
+        else:
+            features['expected_home_h1'] = None
+            features['expected_away_h1'] = None
+            features['h1_total_sd'] = None
+        if features['home_pace'] and features['away_pace'] and features['home_points_for'] and features['away_points_for']:
+            pace = (features['home_pace'] + features['away_pace']) / 2
+            features['expected_pace'] = pace
+        else:
+            features['expected_pace'] = None
+    missing = sorted(key for key, value in features.items() if value is None)
+    present = len(features) - len(missing)
+    fingerprint_source = json.dumps({
+        'ids': [row['id'] for row in history],
+        'scores': [[row['home_score'], row['away_score'], row['settled_at']] for row in history],
+        'half_life': half_life,
+        'metrics': {row['id']: row['_metrics'] for row in history},
+    }, sort_keys=True, default=str)
     return {
         'features': features,
         'source_refs': sorted({row['source'] for row in history}),
         'fixture_ids': sorted({row['id'] for row in home_all + away_all}),
         'cutoff_at': cutoff.isoformat(),
+        'completeness': present / len(features) if features else 0,
+        'missing': missing,
+        'fingerprint': hashlib.sha256(fingerprint_source.encode()).hexdigest(),
     }
 
 
@@ -300,6 +540,20 @@ def basketball_market(features, market):
             win = 1 - normal_cdf((line + .5 - mean) / margin_sd)
             return {'p_win': win, 'p_half_win': 0, 'p_push': push, 'p_half_loss': 0, 'p_loss': 1 - win - push}
         probability = 1 - normal_cdf((line - mean) / margin_sd)
+    elif (first_half := re.fullmatch(r'FIRST_HALF_(OVER|UNDER)_(\d+(?:\.\d+)?)', market)):
+        mean = features.get('expected_home_h1')
+        away_half = features.get('expected_away_h1')
+        sd = features.get('h1_total_sd')
+        if mean is None or away_half is None or not sd:
+            return None
+        line = float(first_half.group(2))
+        over = first_half.group(1) == 'OVER'
+        total_mean = mean + away_half
+        if line.is_integer():
+            push = normal_cdf((line + .5 - total_mean) / sd) - normal_cdf((line - .5 - total_mean) / sd)
+            win = 1 - normal_cdf((line + .5 - total_mean) / sd) if over else normal_cdf((line - .5 - total_mean) / sd)
+            return {'p_win': win, 'p_half_win': 0, 'p_push': push, 'p_half_loss': 0, 'p_loss': 1 - win - push}
+        probability = (1 - normal_cdf((line - total_mean) / sd)) if over else normal_cdf((line - total_mean) / sd)
     else:
         return None
     return {'p_win': probability, 'p_half_win': 0, 'p_push': 0, 'p_half_loss': 0, 'p_loss': 1 - probability}
@@ -329,7 +583,7 @@ def calibration_metrics(samples):
         return {'sample_size': 0, 'brier_score': None, 'log_loss': None, 'calibration_error': None, 'bins': []}
     count = len(samples)
     brier = log_loss = calibration_error = 0.0
-    bins = [{'n': 0, 'p': 0.0, 'y': 0.0} for _ in range(10)]
+    bins = [{'n': 0, 'p': 0.0, 'y': 0.0, 'lower': index / 10, 'upper': (index + 1) / 10} for index in range(10)]
     for probability, outcome in samples:
         p = min(1 - 1e-15, max(1e-15, probability))
         brier += (p - outcome) ** 2
@@ -384,6 +638,158 @@ def _fit_dixon_coles_rho(rows):
     return best_rho
 
 
+def _with_rates(features, home_rate, away_rate, sport):
+    adjusted = dict(features)
+    floor, ceiling = (GOAL_FLOOR, GOAL_CEILING) if sport == 'football' else (POINT_FLOOR, POINT_CEILING)
+    home_key = 'expected_home_goals' if sport == 'football' else 'expected_home_points'
+    away_key = 'expected_away_goals' if sport == 'football' else 'expected_away_points'
+    adjusted[home_key] = min(ceiling, max(floor, home_rate))
+    adjusted[away_key] = min(ceiling, max(floor, away_rate))
+    return adjusted
+
+
+def _family_rates(features, sport, family, ridge, booster):
+    home_key = 'expected_home_goals' if sport == 'football' else 'expected_home_points'
+    away_key = 'expected_away_goals' if sport == 'football' else 'expected_away_points'
+    floor, ceiling = (GOAL_FLOOR, GOAL_CEILING) if sport == 'football' else (POINT_FLOOR, POINT_CEILING)
+    if family == 'ridge' and ridge:
+        home, away = predict_ridge(ridge.get('home'), features), predict_ridge(ridge.get('away'), features)
+        if home is None or away is None:
+            return None
+        return min(ceiling, max(floor, home)), min(ceiling, max(floor, away))
+    if family == 'gradient_boosting' and booster:
+        return predict_gradient_boosting(booster, features, floor, ceiling)
+    return features[home_key], features[away_key]
+
+
+def _score_seed(features, sport):
+    home_key = 'expected_home_goals' if sport == 'football' else 'expected_home_points'
+    away_key = 'expected_away_goals' if sport == 'football' else 'expected_away_points'
+    key = f"{sport}:{features.get(home_key)}:{features.get(away_key)}:{features.get('home_score_sd')}"
+    return int(hashlib.sha256(key.encode()).hexdigest()[:8], 16)
+
+
+def basketball_monte_carlo_market(features, market, draws=2000):
+    if not features.get('home_score_sd') or not features.get('away_score_sd'):
+        return None
+    samples = [
+        (round(home), round(away))
+        for home, away in simulate_scores(
+            features['expected_home_points'], features['expected_away_points'],
+            features['home_score_sd'], features['away_score_sd'], draws=draws,
+            seed=_score_seed(features, 'basketball'),
+        )
+    ]
+    market = market.upper()
+
+    def settle(home, away):
+        if market in ('HOME', 'MONEYLINE_HOME'):
+            return 1 if home > away else 0 if home == away else -1
+        if market in ('AWAY', 'MONEYLINE_AWAY'):
+            return 1 if away > home else 0 if home == away else -1
+        total = re.fullmatch(r'(OVER|UNDER)_(\d+(?:\.\d+)?)', market)
+        team = re.fullmatch(r'(HOME|AWAY)_(OVER|UNDER)_(\d+(?:\.\d+)?)', market)
+        spread = re.fullmatch(r'(HOME|AWAY)_SPREAD_(-?\d+(?:\.\d+)?)', market)
+        first_half = re.fullmatch(r'FIRST_HALF_(OVER|UNDER)_(\d+(?:\.\d+)?)', market)
+        if total:
+            return _line_settlement(home + away, float(total.group(2)), total.group(1) == 'OVER')
+        if team:
+            score = home if team.group(1) == 'HOME' else away
+            return _line_settlement(score, float(team.group(3)), team.group(2) == 'OVER')
+        if spread:
+            margin = home - away if spread.group(1) == 'HOME' else away - home
+            return _line_settlement(margin, -float(spread.group(2)), True)
+        if first_half and features.get('expected_home_h1') is not None and features.get('h1_total_sd'):
+            return None
+        return None
+
+    if market.startswith('FIRST_HALF_'):
+        return market_probability('basketball', market, features)
+    return monte_carlo_settlement(samples, settle)
+
+
+def _outcome_probabilities(sport, features, home_score, away_score, rho, family, ridge, booster):
+    rates = _family_rates(features, sport, 'baseline' if family == 'monte_carlo' else family, ridge, booster)
+    if not rates or rates[0] is None:
+        return None, None
+    adjusted = _with_rates(features, rates[0], rates[1], sport)
+    if sport == 'football':
+        probabilities = [
+            market_probability('football', name, adjusted, rho)['p_win']
+            for name in ('HOME', 'DRAW', 'AWAY')
+        ]
+        actual = 0 if home_score > away_score else 2 if home_score < away_score else 1
+    elif family == 'monte_carlo':
+        settlement = basketball_monte_carlo_market(adjusted, 'MONEYLINE_HOME', draws=800)
+        if not settlement:
+            return None, None
+        probabilities = [settlement['p_win'], max(0.0, 1 - settlement['p_win'] - settlement['p_push'])]
+        actual = int(home_score > away_score)
+    else:
+        home = market_probability('basketball', 'MONEYLINE_HOME', adjusted)
+        probabilities = [home['p_win'], 1 - home['p_win']]
+        actual = int(home_score > away_score)
+    if any(value is None or not math.isfinite(value) or value < 0 for value in probabilities):
+        return None, None
+    return probabilities, actual
+
+
+def _mean_logloss(sport, rows, rho, family, ridge, booster):
+    if not rows:
+        return None
+    loss = 0.0
+    for row in rows:
+        probabilities, actual = _outcome_probabilities(
+            sport, row['features'], row['home_score'], row['away_score'], rho, family, ridge, booster,
+        )
+        if not probabilities:
+            return None
+        loss -= math.log(max(1e-15, probabilities[actual]))
+    return loss / len(rows)
+
+
+def _fit_structural_models(sport, train_rows):
+    tuples = [(row['features'], row['home_score'], row['away_score']) for row in train_rows]
+    rho = _fit_dixon_coles_rho(tuples) if sport == 'football' else 0.0
+    columns = FOOTBALL_RIDGE_COLUMNS if sport == 'football' else BASKETBALL_RIDGE_COLUMNS
+    home_target = 'home_score'
+    ridge = None
+    home_model = fit_ridge([(row['features'], row['home_score']) for row in train_rows], columns, home_target)
+    away_model = fit_ridge([(row['features'], row['away_score']) for row in train_rows], columns, 'away_score')
+    if home_model and away_model:
+        ridge = {'home': home_model, 'away': away_model}
+    booster = None
+    names = [column for column in columns if column != 'intercept']
+    if sport == 'football':
+        booster = fit_gradient_boosting(
+            tuples, names, 'home', 'away', 'expected_home_goals', 'expected_away_goals',
+        )
+    else:
+        booster = fit_gradient_boosting(
+            tuples, names, 'home', 'away', 'expected_home_points', 'expected_away_points',
+        )
+    return rho, ridge, booster
+
+
+def _walk_forward(sport, observations):
+    folds = []
+    if len(observations) < 15:
+        return folds
+    start = max(10, len(observations) // 2)
+    step = max(1, len(observations) // 5)
+    fold_index = 0
+    while start < len(observations) and fold_index < 5:
+        end = min(len(observations), start + step)
+        loss = _mean_logloss(sport, observations[start:end], 0.0, 'baseline', None, None)
+        folds.append({
+            'fold_index': fold_index, 'model_family': 'baseline', 'market': 'match_outcome',
+            'sample_size': end - start, 'log_loss': loss,
+        })
+        fold_index += 1
+        start = end
+    return folds
+
+
 def train_model(connection, sport):
     fixtures = [dict(row) for row in connection.execute(
         """SELECT f.*,r.home_score,r.away_score,r.settled_at
@@ -391,101 +797,184 @@ def train_model(connection, sport):
            WHERE f.sport=? AND r.status='final' ORDER BY f.starts_at""", (sport,),
     )]
     observations = []
-    timestamps = []
     for fixture in fixtures:
         try:
-            if parse_time(fixture['settled_at']) >= parse_time(fixture['starts_at']):
-                continue
+            kickoff = parse_time(fixture['starts_at'])
+            settled = parse_time(fixture['settled_at'])
         except (TypeError, ValueError):
+            continue
+        if settled < kickoff:
             continue
         built = build_features(connection, fixture)
         if not built:
             continue
-        features = built['features']
-        observations.append((features,fixture['home_score'],fixture['away_score']))
-        timestamps.append(fixture['starts_at'])
-    split = int(len(observations) * .7)
-    calibration_set, holdout = observations[:split], observations[split:]
-    rho = _fit_dixon_coles_rho(calibration_set) if sport == 'football' else 0.0
-    def probabilities_for(observation):
-        features, home_score, away_score = observation
-        if sport == 'football':
-            probabilities = [
-                market_probability('football',name,features,rho)['p_win']
-                for name in ('HOME','DRAW','AWAY')
-            ]
-            actual = 0 if home_score > away_score else 2 if home_score < away_score else 1
-        else:
-            home = market_probability('basketball','MONEYLINE_HOME',features)
-            probabilities = [home['p_win'],1-home['p_win']]
-            actual = int(home_score > away_score)
-        return probabilities,actual
-    temperature, best_loss = 1.0, float('inf')
+        observations.append({
+            'features': built['features'], 'home_score': fixture['home_score'],
+            'away_score': fixture['away_score'], 'fixture_id': fixture['id'],
+            'kickoff': fixture['starts_at'], 'missing': built['missing'],
+        })
+    count = len(observations)
+    train_end = int(count * .5) if count >= 40 else int(count * .7)
+    calibration_end = int(count * .7)
+    train_rows = observations[:train_end]
+    calibration_rows = observations[train_end:calibration_end]
+    holdout = observations[calibration_end:]
+    rho, ridge, booster = _fit_structural_models(sport, train_rows)
+    family_losses = {}
+    for family in ('baseline', 'ridge', 'gradient_boosting', 'monte_carlo'):
+        if family == 'ridge' and not ridge:
+            continue
+        if family == 'gradient_boosting' and not booster:
+            continue
+        if family == 'monte_carlo' and sport != 'basketball':
+            continue
+        loss = _mean_logloss(sport, holdout, rho, family, ridge, booster)
+        if loss is not None:
+            family_losses[family] = loss
+    if not family_losses:
+        family_losses['baseline'] = _mean_logloss(sport, holdout, rho, 'baseline', None, None)
+    usable = {name: loss for name, loss in family_losses.items() if loss is not None}
+    if usable:
+        best_loss = min(usable.values())
+        kept = {name: loss for name, loss in usable.items() if loss <= best_loss * 1.02 or name == 'baseline'}
+        inverse = {name: 1 / max(loss, 1e-6) for name, loss in kept.items()}
+        weight_total = sum(inverse.values())
+        ensemble_weights = {name: value / weight_total for name, value in inverse.items()}
+        selected_family = min(usable, key=usable.get)
+    else:
+        ensemble_weights, selected_family = {'baseline': 1.0}, 'baseline'
+    temperature_rows = calibration_rows or train_rows
+    temperature, best_temperature_loss = 1.0, float('inf')
     for step in range(50, 201, 2):
         candidate = step / 100
         loss = 0.0
-        for observation in calibration_set:
-            probabilities,actual = probabilities_for(observation)
+        scored = 0
+        for row in temperature_rows:
+            probabilities, actual = _outcome_probabilities(
+                sport, row['features'], row['home_score'], row['away_score'], rho, 'baseline', None, None,
+            )
+            if not probabilities:
+                continue
             calibrated = _temperature(probabilities, candidate)
             loss -= math.log(max(1e-15, calibrated[actual]))
-        if calibration_set and loss < best_loss:
-            temperature, best_loss = candidate, loss
-    samples = []
-    multiclass_logloss = 0.0
-    for observation in holdout:
-        probabilities,actual = probabilities_for(observation)
+            scored += 1
+        if scored and loss < best_temperature_loss:
+            temperature, best_temperature_loss = candidate, loss
+    binary_pairs = []
+    for row in temperature_rows:
+        probabilities, actual = _outcome_probabilities(
+            sport, row['features'], row['home_score'], row['away_score'], rho, 'baseline', None, None,
+        )
+        if not probabilities:
+            continue
+        binary_pairs.append((probabilities[0], 1.0 if actual == 0 else 0.0))
+    sigmoid_model = fit_sigmoid(binary_pairs)
+    isotonic_blocks = fit_isotonic(binary_pairs) if len(binary_pairs) >= 8 else []
+    calibration_method = 'temperature_scaling'
+    samples, multiclass_logloss = [], 0.0
+    for row in holdout:
+        probabilities, actual = _outcome_probabilities(
+            sport, row['features'], row['home_score'], row['away_score'], rho,
+            'baseline' if selected_family == 'monte_carlo' else selected_family, ridge, booster,
+        )
+        if not probabilities:
+            continue
         calibrated = _temperature(probabilities, temperature)
         multiclass_logloss -= math.log(max(1e-15, calibrated[actual]))
         samples.extend((value, float(index == actual)) for index, value in enumerate(calibrated))
     metrics = calibration_metrics(samples)
     metrics.update({
-        'fixtures_scored': len(observations), 'calibration_fixtures': len(calibration_set),
+        'fixtures_scored': count, 'calibration_fixtures': len(temperature_rows),
         'holdout_fixtures': len(holdout),
         'multiclass_log_loss': multiclass_logloss / len(holdout) if holdout else None,
+        'family_log_loss': family_losses,
+        'walk_forward_folds': len(_walk_forward(sport, observations)),
+        'gradient_boosting': 'trained' if booster else 'not_trained_insufficient_rows',
+        'ridge': 'trained' if ridge else 'not_trained_insufficient_rows',
+        'selected_family': selected_family,
     })
     validated = (
-        len(observations) >= MIN_VALIDATION_FIXTURES
+        count >= MIN_VALIDATION_FIXTURES
         and len(holdout) >= 10
         and metrics['calibration_error'] is not None
         and metrics['calibration_error'] <= .20
     )
+    folds = _walk_forward(sport, observations) if validated or count >= 15 else _walk_forward(sport, observations)
     run_id, model_id = str(uuid.uuid4()), str(uuid.uuid4())
     model_name = MODEL_NAMES[sport]
     version = str(connection.execute(
         'SELECT COUNT(*)+1 FROM sports_ai_training_runs WHERE sport=? AND model_name=?',
         (sport, model_name),
     ).fetchone()[0])
+    timestamps = [row['kickoff'] for row in observations]
     window = {'start': min(timestamps) if timestamps else None, 'end': max(timestamps) if timestamps else None}
-    params = {'calibration': 'temperature_scaling', 'temperature': temperature,
-              'fit_partition': 'chronological first 70%', 'dixon_coles_rho': rho}
+    feature_schema = sorted({key for row in observations for key in row['features']}) if observations else []
+    params = {
+        'calibration': calibration_method, 'temperature': temperature,
+        'sigmoid': sigmoid_model, 'isotonic': isotonic_blocks,
+        'fit_partition': 'chronological 50/20/30 when 40 or more fixtures, otherwise 70/30',
+        'dixon_coles_rho': rho, 'selected_family': selected_family,
+        'ensemble_weights': ensemble_weights, 'ridge': ridge,
+        'gradient_boosting': booster, 'feature_schema': feature_schema,
+    }
     created = datetime.now(timezone.utc).isoformat()
     status = 'validated' if validated else 'insufficient_data'
+    artifact = f'sqlite:sports_ai_model_registry:{model_id}'
     connection.execute(
         """INSERT INTO sports_ai_training_runs
            (id,sport,model_name,version,status,training_window_json,parameters_json,metrics_json,sample_size,created_at)
            VALUES(?,?,?,?,?,?,?,?,?,?)""",
-        (run_id,sport,model_name,version,status,json.dumps(window),json.dumps(params),
-         json.dumps(metrics),len(observations),created),
+        (run_id, sport, model_name, version, status, json.dumps(window), json.dumps(params),
+         json.dumps(metrics), count, created),
     )
     connection.execute(
         """INSERT INTO sports_ai_model_registry
-           (id,training_run_id,sport,model_name,version,status,active,parameters_json,metrics_json,created_at)
-           VALUES(?,?,?,?,?,?,0,?,?,?)""",
-        (model_id,run_id,sport,model_name,version,
-         'validated' if validated else 'unvalidated',json.dumps(params),json.dumps(metrics),created),
+           (id,training_run_id,sport,model_name,version,market,status,active,parameters_json,metrics_json,
+            feature_schema_json,artifact_ref,calibration_status,created_at)
+           VALUES(?,?,?,?,?,'match_outcome',?,0,?,?,?,?,?,?)""",
+        (model_id, run_id, sport, model_name, version,
+         'validated' if validated else 'unvalidated', json.dumps(params), json.dumps(metrics),
+         json.dumps(feature_schema), artifact,
+         'validated' if validated else 'uncalibrated', created),
+    )
+    connection.execute(
+        """INSERT INTO sports_ai_model_versions
+           (id,model_id,version,status,parameters_json,metrics_json,artifact_ref,created_at)
+           VALUES(?,?,?,?,?,?,?,?)""",
+        (str(uuid.uuid4()), model_id, version, status, json.dumps(params), json.dumps(metrics), artifact, created),
     )
     connection.execute(
         """INSERT INTO sports_ai_calibration_results
            (id,model_id,market,method,sample_size,metrics_json,held_out_start,held_out_end)
            VALUES(?,?,?,?,?,?,?,?)""",
-        (str(uuid.uuid4()),model_id,'match_outcome','temperature_scaling',
-         len(holdout),json.dumps(metrics),
-         timestamps[split] if split < len(timestamps) else None,
-         timestamps[-1] if timestamps else None),
+        (str(uuid.uuid4()), model_id, 'match_outcome', calibration_method,
+         len(holdout), json.dumps(metrics),
+         holdout[0]['kickoff'] if holdout else None,
+         holdout[-1]['kickoff'] if holdout else None),
     )
+    for index, row in enumerate(observations):
+        split = 'train' if index < train_end else 'calibration' if index < calibration_end else 'holdout'
+        connection.execute(
+            """INSERT INTO sports_ai_training_datasets
+               (id,training_run_id,fixture_id,kickoff_at,features_json,label_json,split)
+               VALUES(?,?,?,?,?,?,?)""",
+            (str(uuid.uuid4()), run_id, row['fixture_id'], row['kickoff'],
+             json.dumps(row['features']), json.dumps({
+                 'home_score': row['home_score'], 'away_score': row['away_score'],
+                 'missing': row['missing'],
+             }), split),
+        )
+    for fold in folds:
+        connection.execute(
+            """INSERT INTO sports_ai_validation_results
+               (id,training_run_id,model_family,market,fold_index,metrics_json,sample_size)
+               VALUES(?,?,?,?,?,?,?)""",
+            (str(uuid.uuid4()), run_id, fold['model_family'], fold['market'], fold['fold_index'],
+             json.dumps({'log_loss': fold['log_loss']}), fold['sample_size']),
+        )
     return {
-        'model_id': model_id, 'sport': sport, 'model_name': model_name,
-        'version': version, 'status': status, 'active': False,
+        'model_id': model_id, 'training_run_id': run_id, 'sport': sport,
+        'model_name': model_name, 'version': version, 'status': status, 'active': False,
         'metrics': metrics, 'parameters': params, 'training_window': window,
     }
 
@@ -519,19 +1008,158 @@ def normalize_quote_market(sport, fixture, quote):
     return None
 
 
-def _outcomes(sport):
+def _outcomes(sport, features=None):
     if sport == 'football':
-        return list(FOOTBALL_MARKETS)
-    return ['MONEYLINE_HOME', 'MONEYLINE_AWAY'] + [
+        markets = list(FOOTBALL_MARKETS)
+        for line in ('-1.5', '-1', '-0.75', '-0.5', '-0.25', '0', '0.25', '0.5', '0.75', '1', '1.5'):
+            markets.append(f'HOME_HANDICAP_{line}')
+            markets.append(f'AWAY_HANDICAP_{line}')
+        return markets
+    markets = ['MONEYLINE_HOME', 'MONEYLINE_AWAY'] + [
         f'{side}_{line}' for line in ('199.5', '209.5', '219.5', '229.5', '239.5')
         for side in ('OVER', 'UNDER')
     ] + [
         f'{team}_{side}_{line}' for team in ('HOME', 'AWAY')
         for side in ('OVER', 'UNDER') for line in ('79.5', '89.5', '99.5', '109.5')
-    ] + ['HOME_SPREAD_-5.5', 'AWAY_SPREAD_5.5']
+    ] + ['HOME_SPREAD_-5.5', 'AWAY_SPREAD_5.5', 'HOME_SPREAD_-3.5', 'AWAY_SPREAD_3.5']
+    if features and features.get('h1_total_sd') and features.get('expected_home_h1') is not None and features.get('expected_away_h1') is not None:
+        line = math.floor(features['expected_home_h1'] + features['expected_away_h1']) + 0.5
+        markets.extend([f'FIRST_HALF_OVER_{line:g}', f'FIRST_HALF_UNDER_{line:g}'])
+    return markets
 
 
-def run_analysis(connection, actor, audit):
+def _select_quotes(quotes):
+    grouped = {}
+    for quote in quotes:
+        grouped.setdefault((quote['bookmaker'], quote['market'], quote['outcome'], quote.get('line')), []).append(quote)
+    selected, conflicts = [], []
+    for key, items in grouped.items():
+        items.sort(key=lambda item: item['observed_at'])
+        current = [item for item in items if item['observed_at'] == items[-1]['observed_at']]
+        prices = {round(float(item['decimal_odds']), 4) for item in current}
+        if len(prices) > 1:
+            conflicts.append({'bookmaker': key[0], 'market': key[1], 'outcome': key[2], 'line': key[3]})
+            continue
+        chosen = dict(current[-1])
+        chosen['opening_decimal_odds'] = float(items[0]['decimal_odds'])
+        chosen['quote_count'] = len(items)
+        selected.append(chosen)
+    return selected, conflicts
+
+
+def _blend(left, right, weight):
+    return {
+        key: left[key] * (1 - weight) + right[key] * weight
+        for key in ('p_win', 'p_half_win', 'p_push', 'p_half_loss', 'p_loss')
+    }
+
+
+def settle_market(sport, market, features, parameters):
+    weights = parameters.get('ensemble_weights') or {'baseline': 1.0}
+    rho = float(parameters.get('dixon_coles_rho') or 0.0)
+    home = away = used = 0.0
+    for family, weight in weights.items():
+        if family == 'monte_carlo':
+            continue
+        rates = _family_rates(features, sport, family, parameters.get('ridge'), parameters.get('gradient_boosting'))
+        if not rates or rates[0] is None or rates[1] is None:
+            continue
+        home += weight * rates[0]
+        away += weight * rates[1]
+        used += weight
+    adjusted = _with_rates(features, home / used, away / used, sport) if used else dict(features)
+    analytical = market_probability(sport, market, adjusted, rho)
+    monte_carlo_weight = float(weights.get('monte_carlo', 0.0)) if sport == 'basketball' else 0.0
+    if sport != 'basketball' or monte_carlo_weight <= 0 or not analytical:
+        return adjusted, analytical
+    simulated = basketball_monte_carlo_market(adjusted, market)
+    if not simulated:
+        return adjusted, analytical
+    if monte_carlo_weight >= 0.999:
+        return adjusted, simulated
+    return adjusted, _blend(analytical, simulated, monte_carlo_weight)
+
+
+def _scorelines(sport, features, rho):
+    if sport == 'football':
+        ranked = sorted(_football_score_grid(features, rho), key=lambda item: item[2], reverse=True)[:8]
+        return [{'home_goals': home, 'away_goals': away, 'probability': probability} for home, away, probability in ranked]
+    mean = features['expected_home_points'] + features['expected_away_points']
+    deviation = features['total_sd']
+    ranges = []
+    for center in (mean - 12, mean - 4, mean + 4, mean + 12):
+        low, high = center - 4, center + 4
+        probability = normal_cdf((high - mean) / deviation) - normal_cdf((low - mean) / deviation)
+        ranges.append({'low_points': round(low, 1), 'high_points': round(high, 1), 'probability': probability})
+    return ranges
+
+
+def _explain(sport, market, features, settlement, missing):
+    if sport == 'football':
+        summary = (
+            f"{market} probability {settlement['p_win']:.3f} uses opponent-adjusted expected goals "
+            f"{features['expected_home_goals']:.2f}-{features['expected_away_goals']:.2f}. "
+            f"Home attack is {features['home_attack']:.2f} and away attack is {features['away_attack']:.2f}, "
+            f"against league averages of {features['league_home_goals']:.2f} home goals and "
+            f"{features['league_away_goals']:.2f} away goals. "
+            f"Samples: {int(features['home_games'])} home-team matches and {int(features['away_games'])} away-team matches. "
+        )
+        if features.get('h2h_games'):
+            summary += (
+                f"Head-to-head matches before cutoff: {int(features['h2h_games'])}, "
+                f"averaging {features['h2h_avg_goals']:.2f} goals. "
+            )
+        else:
+            summary += 'No head-to-head match is stored before the cutoff. '
+        if features.get('home_xg_for') is None and features.get('away_xg_for') is None:
+            summary += 'No source expected-goals values are available, so rates use goals scored and conceded.'
+        else:
+            summary += 'Source expected goals were included where at least three historical values existed.'
+        factors = [{
+            'name': 'opponent_adjusted_expected_goals',
+            'home': features['expected_home_goals'], 'away': features['expected_away_goals'],
+            'home_attack': features['home_attack'], 'away_attack': features['away_attack'],
+            'home_defence': features['home_defence'], 'away_defence': features['away_defence'],
+        }]
+    else:
+        summary = (
+            f"{market} probability {settlement['p_win']:.3f} uses opponent-adjusted expected points "
+            f"{features['expected_home_points']:.1f}-{features['expected_away_points']:.1f} "
+            f"and scoring standard deviations {features['home_score_sd']:.1f} and {features['away_score_sd']:.1f}. "
+        )
+        if features.get('expected_pace') is None:
+            summary += 'Pace and possessions were not in the source data and were not imputed. '
+        else:
+            summary += f"Recorded pace average is {features['expected_pace']:.1f}. "
+        if features.get('injuries_out_home') is None and features.get('injuries_out_away') is None:
+            summary += 'Injury and lineup figures were not supplied.'
+        factors = [{
+            'name': 'opponent_adjusted_expected_points',
+            'home': features['expected_home_points'], 'away': features['expected_away_points'],
+            'home_score_sd': features['home_score_sd'], 'away_score_sd': features['away_score_sd'],
+            'expected_pace': features.get('expected_pace'),
+        }]
+    if features.get('home_rest_days') is not None and features.get('away_rest_days') is not None:
+        summary += (
+            f" Rest before cutoff: home {features['home_rest_days']:.1f} days, away {features['away_rest_days']:.1f} days."
+            f" Matches in the previous seven days: home {int(features['home_games_7d'])}, away {int(features['away_games_7d'])}."
+        )
+    return summary, factors, missing
+
+
+def _rank_score(edge, calibration_error, probability, completeness, fresh):
+    reliability = 0.0 if calibration_error is None else max(0.0, 1 - float(calibration_error))
+    bounded = min(1 - 1e-6, max(1e-6, probability))
+    uncertainty = -(bounded * math.log(bounded) + (1 - bounded) * math.log(1 - bounded)) / math.log(2)
+    edge_component = 0.0 if edge is None else max(0.0, min(1.0, float(edge)))
+    score = (
+        0.30 * reliability + 0.30 * edge_component + 0.15 * (1 - uncertainty)
+        + 0.15 * (completeness or 0) + 0.10 * (1.0 if fresh else 0.0)
+    )
+    return score, uncertainty
+
+
+def run_analysis(connection, actor, audit, deadline=None):
     now = datetime.now(timezone.utc)
     fixtures = [dict(row) for row in connection.execute(
         """SELECT * FROM sports_ai_fixtures WHERE starts_at>? AND status='scheduled'
@@ -569,8 +1197,10 @@ def run_analysis(connection, actor, audit):
             'minimum_edge': min_edge, 'odds_max_age_minutes': odds_age_limit,
         })),
     )
-    stats = {'predictions': 0, 'opportunities': 0, 'qualified': 0, 'skipped': {}}
+    stats = {'predictions': 0, 'opportunities': 0, 'qualified': 0, 'skipped': {}, 'snapshots_reused': 0}
     for fixture in fixtures:
+        if deadline and datetime.now(timezone.utc) > deadline:
+            raise TimeoutError('Prediction job exceeded its timeout')
         model = models.get(fixture['sport'])
         if not model:
             continue
@@ -579,47 +1209,80 @@ def run_analysis(connection, actor, audit):
             if not built:
                 stats['skipped']['insufficient_history'] = stats['skipped'].get('insufficient_history', 0) + 1
                 continue
-            feature_id = str(uuid.uuid4())
-            connection.execute(
-                """INSERT INTO sports_ai_feature_snapshots
-                   (id,fixture_id,sport,cutoff_at,features_json,source_refs_json,generated_at)
-                   VALUES(?,?,?,?,?,?,?) ON CONFLICT(fixture_id,cutoff_at) DO UPDATE SET
-                   features_json=excluded.features_json,source_refs_json=excluded.source_refs_json""",
-                (feature_id,fixture['id'],fixture['sport'],built['cutoff_at'],
-                 json.dumps(built['features'],allow_nan=False),json.dumps({
-                     'sources':built['source_refs'],'fixture_ids':built['fixture_ids'],
-                 }),now.isoformat()),
-            )
-            feature_id = connection.execute(
-                'SELECT id FROM sports_ai_feature_snapshots WHERE fixture_id=? AND cutoff_at=?',
-                (fixture['id'],built['cutoff_at']),
-            ).fetchone()['id']
+            existing_snapshot = connection.execute(
+                """SELECT id,input_fingerprint FROM sports_ai_feature_snapshots
+                   WHERE fixture_id=? AND cutoff_at=?""",
+                (fixture['id'], built['cutoff_at']),
+            ).fetchone()
+            if existing_snapshot and existing_snapshot['input_fingerprint'] == built['fingerprint']:
+                feature_id = existing_snapshot['id']
+                stats['snapshots_reused'] += 1
+            else:
+                feature_id = existing_snapshot['id'] if existing_snapshot else str(uuid.uuid4())
+                connection.execute(
+                    """INSERT INTO sports_ai_feature_snapshots
+                       (id,fixture_id,sport,cutoff_at,features_json,source_refs_json,generated_at,
+                        completeness,input_fingerprint)
+                       VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(fixture_id,cutoff_at) DO UPDATE SET
+                       features_json=excluded.features_json,source_refs_json=excluded.source_refs_json,
+                       generated_at=excluded.generated_at,completeness=excluded.completeness,
+                       input_fingerprint=excluded.input_fingerprint""",
+                    (feature_id, fixture['id'], fixture['sport'], built['cutoff_at'],
+                     json.dumps(built['features'], allow_nan=False), json.dumps({
+                         'sources': built['source_refs'], 'fixture_ids': built['fixture_ids'],
+                         'missing': built['missing'],
+                     }), now.isoformat(), built['completeness'], built['fingerprint']),
+                )
+                feature_id = connection.execute(
+                    'SELECT id FROM sports_ai_feature_snapshots WHERE fixture_id=? AND cutoff_at=?',
+                    (fixture['id'], built['cutoff_at']),
+                ).fetchone()['id']
             quotes = [dict(row) for row in connection.execute(
                 """SELECT o.* FROM sports_ai_odds_snapshots o
                    JOIN sports_ai_provider_registry p ON p.id=o.provider_id
                    WHERE o.fixture_id=? AND p.enabled=1 AND p.terms_reviewed=1 AND p.status='operational'""",
                 (fixture['id'],),
             )]
-            mapped = [(quote,normalize_quote_market(fixture['sport'],fixture,quote)) for quote in quotes]
-            markets = set(_outcomes(fixture['sport']))
-            markets.update(market for _, market in mapped if market)
+            selected_quotes, conflicts = _select_quotes(quotes)
+            mapped = []
+            for quote in selected_quotes:
+                canonical = normalize_quote_market(fixture['sport'], fixture, quote)
+                if canonical:
+                    connection.execute(
+                        """INSERT OR IGNORE INTO sports_ai_market_mappings
+                           (id,sport,provider_market,provider_outcome,line,canonical_market)
+                           VALUES(?,?,?,?,?,?)""",
+                        (str(uuid.uuid4()), fixture['sport'], quote['market'], quote['outcome'],
+                         quote.get('line'), canonical),
+                    )
+                mapped.append((quote, canonical))
+            conflicted = set()
+            for conflict in conflicts:
+                canonical = normalize_quote_market(fixture['sport'], fixture, {
+                    'market': conflict['market'], 'outcome': conflict['outcome'], 'line': conflict['line'],
+                })
+                if canonical:
+                    conflicted.add(canonical)
             features = built['features']
             parameters = json.loads(model['parameters_json'])
-            rho = float(parameters.get('dixon_coles_rho', 0.0))
             temperature = float(parameters.get('temperature', 1.0))
+            markets = set(_outcomes(fixture['sport'], features))
+            markets.update(market for _, market in mapped if market)
+            markets.update(conflicted)
             for market in sorted(markets):
-                settlement = market_probability(fixture['sport'],market,features,rho)
+                adjusted, settlement = settle_market(fixture['sport'], market, features, parameters)
                 if not settlement:
                     continue
+                rho = float(parameters.get('dixon_coles_rho') or 0.0)
                 if model['active'] and fixture['sport']=='football' and market in ('HOME','DRAW','AWAY'):
-                    base=[market_probability('football',name,features,rho)['p_win']
+                    base=[market_probability('football',name,adjusted,rho)['p_win']
                           for name in ('HOME','DRAW','AWAY')]
                     calibrated=_temperature(base,temperature)
                     probability=calibrated[('HOME','DRAW','AWAY').index(market)]
                     settlement={'p_win':probability,'p_half_win':0.0,'p_push':0.0,
                                 'p_half_loss':0.0,'p_loss':1-probability}
                 elif model['active'] and fixture['sport']=='basketball' and market in ('MONEYLINE_HOME','MONEYLINE_AWAY'):
-                    raw=market_probability('basketball','MONEYLINE_HOME',features)['p_win']
+                    raw=market_probability('basketball','MONEYLINE_HOME',adjusted)['p_win']
                     calibrated=_temperature([raw,1-raw],temperature)
                     probability=calibrated[0 if market=='MONEYLINE_HOME' else 1]
                     settlement={'p_win':probability,'p_half_win':0.0,'p_push':0.0,
@@ -630,14 +1293,28 @@ def run_analysis(connection, actor, audit):
                      or (fixture['sport']=='basketball' and market in ('MONEYLINE_HOME','MONEYLINE_AWAY')))
                 )
                 prediction_id = str(uuid.uuid4())
+                summary, factors, missing = _explain(
+                    fixture['sport'], market, adjusted, settlement, built['missing'],
+                )
+                reliability = json.loads(model['metrics_json'])
                 evidence = {
-                    'features': features, 'source_refs': built['source_refs'],
+                    'summary': summary,
+                    'factors': factors,
+                    'features': adjusted,
+                    'raw_features': features,
+                    'missing': missing,
+                    'source_refs': built['source_refs'],
                     'historical_games': features['historical_games'],
+                    'predicted_probability': settlement['p_win'],
                     'probability': settlement['p_win'],
-                    'data_completeness': 1.0,
-                    'model_reliability': json.loads(model['metrics_json']),
+                    'data_completeness': built['completeness'],
+                    'model_reliability': reliability,
                     'calibration_status': 'validated' if market_calibrated else 'awaiting_market_calibration',
-                    'model_name': model['model_name'], 'model_version': model['version'],
+                    'model_name': model['model_name'],
+                    'model_version': model['version'],
+                    'model_family': parameters.get('selected_family', 'baseline'),
+                    'scorelines': _scorelines(fixture['sport'], adjusted, rho),
+                    'market_implied_probability': None,
                 }
                 connection.execute(
                     """INSERT INTO sports_ai_engine_predictions
@@ -647,15 +1324,34 @@ def run_analysis(connection, actor, audit):
                     (prediction_id,run_id,fixture['id'],model['id'],feature_id,market,market,
                      settlement['p_win'],json.dumps(settlement),json.dumps(evidence),now.isoformat()),
                 )
+                connection.execute(
+                    """INSERT INTO sports_ai_prediction_explanations
+                       (id,prediction_id,summary,factors_json,missing_json)
+                       VALUES(?,?,?,?,?)""",
+                    (str(uuid.uuid4()), prediction_id, summary, json.dumps(factors), json.dumps(missing)),
+                )
                 stats['predictions'] += 1
                 available = [(quote, canonical) for quote, canonical in mapped if canonical == market]
+                if market in conflicted and not available:
+                    connection.execute(
+                        """INSERT INTO sports_ai_value_opportunities
+                           (id,prediction_id,status,reason,evaluated_at,rank_score,uncertainty,data_completeness)
+                           VALUES(?,?,?,?,?,?,?,?)""",
+                        (str(uuid.uuid4()), prediction_id, 'rejected',
+                         'Duplicate quotes at the same timestamp disagree, so no price was selected.',
+                         now.isoformat(), None, None, built['completeness']),
+                    )
+                    stats['opportunities'] += 1
+                    continue
                 if not available:
                     status = 'awaiting_calibration' if not model['active'] else 'awaiting_odds'
                     reason = 'Model is not explicitly activated after validation.' if not model['active'] else 'No permitted bookmaker quote is available.'
+                    rank, uncertainty = _rank_score(None, reliability.get('calibration_error'), settlement['p_win'], built['completeness'], False)
                     connection.execute(
                         """INSERT INTO sports_ai_value_opportunities
-                           (id,prediction_id,status,reason,evaluated_at) VALUES(?,?,?,?,?)""",
-                        (str(uuid.uuid4()),prediction_id,status,reason,now.isoformat()),
+                           (id,prediction_id,status,reason,evaluated_at,rank_score,uncertainty,data_completeness)
+                           VALUES(?,?,?,?,?,?,?,?)""",
+                        (str(uuid.uuid4()),prediction_id,status,reason,now.isoformat(),rank,uncertainty,built['completeness']),
                     )
                     stats['opportunities'] += 1
                     continue
@@ -668,6 +1364,7 @@ def run_analysis(connection, actor, audit):
                            AND severity IN ('high','critical') LIMIT 1""",
                         (fixture['id'],),
                     ).fetchone()
+                    fresh = 0 <= age <= odds_age_limit
                     if age < -5:
                         status, reason = 'rejected', 'Odds timestamp is in the future.'
                     elif age > odds_age_limit:
@@ -676,20 +1373,36 @@ def run_analysis(connection, actor, audit):
                         status, reason = 'suspended', 'Unresolved fixture data-quality issue.'
                     elif not market_calibrated:
                         status, reason = 'awaiting_calibration', 'This market has no validated calibration evidence.'
+                    elif built['completeness'] < 0.5:
+                        status, reason = 'rejected', 'Underlying match data is too incomplete for qualification.'
+                    elif parse_time(fixture['starts_at']) <= now:
+                        status, reason = 'expired', 'The fixture has already started.'
                     else:
                         edge = expected_value(settlement,float(quote['decimal_odds']))
                         if edge is None or edge < min_edge:
-                            status, reason = 'rejected', 'Expected value is below the configured edge.'
+                            status, reason = 'rejected', 'Expected value is below the configured edge. This is not a guaranteed or risk-free selection.'
                         else:
-                            status, reason = 'qualified', 'Fresh permitted quote and validated active model meet all qualification checks.'
+                            status, reason = 'qualified', 'Fresh permitted quote and validated active model meet the qualification checks. Expected value is an estimate, not a guarantee.'
                             stats['qualified'] += 1
                     edge = expected_value(settlement,float(quote['decimal_odds']))
+                    rank, uncertainty = _rank_score(
+                        edge, reliability.get('calibration_error'), settlement['p_win'], built['completeness'], fresh,
+                    )
+                    evidence['market_implied_probability'] = 1 / float(quote['decimal_odds'])
+                    evidence['opening_decimal_odds'] = quote.get('opening_decimal_odds')
+                    evidence['current_decimal_odds'] = float(quote['decimal_odds'])
+                    connection.execute(
+                        'UPDATE sports_ai_engine_predictions SET explanation_json=? WHERE id=?',
+                        (json.dumps(evidence), prediction_id),
+                    )
                     connection.execute(
                         """INSERT INTO sports_ai_value_opportunities
-                           (id,prediction_id,odds_id,implied_probability,expected_edge,status,reason,evaluated_at)
-                           VALUES(?,?,?,?,?,?,?,?)""",
+                           (id,prediction_id,odds_id,implied_probability,expected_edge,status,reason,evaluated_at,
+                            rank_score,uncertainty,data_completeness)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                         (str(uuid.uuid4()),prediction_id,quote['id'],
-                         1 / float(quote['decimal_odds']),edge,status,reason,now.isoformat()),
+                         1 / float(quote['decimal_odds']),edge,status,reason,now.isoformat(),
+                         rank,uncertainty,built['completeness']),
                     )
                     stats['opportunities'] += 1
         except (ValueError,TypeError,KeyError,OverflowError) as error:
@@ -704,3 +1417,143 @@ def run_analysis(connection, actor, audit):
     audit(connection,actor,'prediction_engine.run',{'run_id':run_id,**stats})
     return {'run_id':run_id,'fixtures':len(fixtures),**stats,
             'model_activation_required':not any(item['active'] for item in models.values())}
+
+
+def recover_timed_out_jobs(connection, now=None):
+    now = now or datetime.now(timezone.utc)
+    recovered = 0
+    rows = connection.execute(
+        "SELECT id,started_at,timeout_seconds FROM sports_ai_prediction_jobs WHERE status='running'",
+    ).fetchall()
+    for row in rows:
+        try:
+            started = parse_time(row['started_at'])
+        except (TypeError, ValueError):
+            started = now - timedelta(days=1)
+        if (now - started).total_seconds() > int(row['timeout_seconds']):
+            connection.execute(
+                """UPDATE sports_ai_prediction_jobs
+                   SET status='timed_out',finished_at=?,error='Processing timeout' WHERE id=?""",
+                (now.isoformat(), row['id']),
+            )
+            recovered += 1
+    return recovered
+
+
+def enqueue_prediction_job(connection, trigger):
+    key = f"{trigger}:{datetime.now(timezone.utc).strftime('%Y%m%d%H')}"
+    connection.execute(
+        """INSERT OR IGNORE INTO sports_ai_prediction_jobs
+           (id,idempotency_key,trigger,status,timeout_seconds,details_json)
+           VALUES(?,?,?,'queued',600,'{}')""",
+        (str(uuid.uuid4()), key, trigger),
+    )
+    return key
+
+
+def execute_prediction_job(connection, actor, audit, idempotency_key, trigger='manual', timeout_seconds=600):
+    now = datetime.now(timezone.utc)
+    recover_timed_out_jobs(connection, now)
+    existing = connection.execute(
+        'SELECT * FROM sports_ai_prediction_jobs WHERE idempotency_key=?',
+        (idempotency_key,),
+    ).fetchone()
+    if existing and existing['status'] == 'complete':
+        return {
+            'job_id': existing['id'], 'status': 'skipped', 'reason': 'idempotent_replay',
+            'result': json.loads(existing['details_json'] or '{}'),
+        }
+    running = connection.execute(
+        "SELECT COUNT(*) FROM sports_ai_prediction_jobs WHERE status='running'",
+    ).fetchone()[0]
+    if running >= MAX_CONCURRENT_JOBS:
+        return {
+            'job_id': existing['id'] if existing else None,
+            'status': 'skipped', 'reason': 'concurrency_limit',
+        }
+    if existing and existing['status'] in ('failed', 'timed_out') and int(existing['attempt']) >= 3:
+        return {'job_id': existing['id'], 'status': 'skipped', 'reason': 'retry_limit'}
+    attempt = int(existing['attempt']) + 1 if existing and existing['status'] in ('failed', 'timed_out') else (
+        int(existing['attempt']) if existing else 1
+    )
+    job_id = existing['id'] if existing else str(uuid.uuid4())
+    if existing:
+        connection.execute(
+            """UPDATE sports_ai_prediction_jobs
+               SET status='running',attempt=?,started_at=?,finished_at=NULL,error=NULL,trigger=?
+               WHERE id=?""",
+            (attempt, now.isoformat(), trigger, job_id),
+        )
+    else:
+        connection.execute(
+            """INSERT INTO sports_ai_prediction_jobs
+               (id,idempotency_key,trigger,status,attempt,started_at,timeout_seconds,details_json)
+               VALUES(?,?,?,'running',?,?,?,'{}')""",
+            (job_id, idempotency_key, trigger, attempt, now.isoformat(), timeout_seconds),
+        )
+    try:
+        result = run_analysis(
+            connection, actor, audit, deadline=now + timedelta(seconds=timeout_seconds),
+        )
+    except TimeoutError as error:
+        connection.execute(
+            """UPDATE sports_ai_prediction_jobs
+               SET status='timed_out',finished_at=?,error=? WHERE id=?""",
+            (datetime.now(timezone.utc).isoformat(), str(error), job_id),
+        )
+        return {'job_id': job_id, 'status': 'timed_out', 'error': str(error)}
+    except Exception as error:
+        connection.execute(
+            """UPDATE sports_ai_prediction_jobs
+               SET status='failed',finished_at=?,error=? WHERE id=?""",
+            (datetime.now(timezone.utc).isoformat(), str(error)[:500], job_id),
+        )
+        raise
+    connection.execute(
+        """UPDATE sports_ai_prediction_jobs
+           SET status='complete',finished_at=?,details_json=? WHERE id=?""",
+        (datetime.now(timezone.utc).isoformat(), json.dumps(result), job_id),
+    )
+    return {'job_id': job_id, 'status': 'complete', **result}
+
+
+def rollback_model(connection, model_id):
+    model = connection.execute(
+        'SELECT * FROM sports_ai_model_registry WHERE id=?', (model_id,),
+    ).fetchone()
+    if not model:
+        return None
+    if not model['active']:
+        return {'rolled_back': False, 'reason': 'Model is not the active version.'}
+    previous = connection.execute(
+        """SELECT * FROM sports_ai_model_registry
+           WHERE sport=? AND id<>? AND activated_at IS NOT NULL
+           ORDER BY activated_at DESC LIMIT 1""",
+        (model['sport'], model_id),
+    ).fetchone()
+    restored = None
+    if previous:
+        metrics = json.loads(previous['metrics_json'])
+        eligible = (
+            previous['calibration_status'] == 'validated'
+            or (
+                metrics.get('calibration_error') is not None
+                and metrics['calibration_error'] <= .20
+                and int(metrics.get('holdout_fixtures') or 0) >= 10
+                and int(metrics.get('fixtures_scored') or 0) >= MIN_VALIDATION_FIXTURES
+            )
+        )
+        if eligible:
+            restored = previous['id']
+    connection.execute(
+        """UPDATE sports_ai_model_registry
+           SET active=0,status='inactive',replaced_by=? WHERE id=?""",
+        (restored, model_id),
+    )
+    if restored:
+        connection.execute(
+            """UPDATE sports_ai_model_registry
+               SET active=1,status='active',activated_at=? WHERE id=?""",
+            (datetime.now(timezone.utc).isoformat(), restored),
+        )
+    return {'rolled_back': True, 'restored_model_id': restored}
