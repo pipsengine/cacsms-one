@@ -463,7 +463,7 @@ def _error_code(error):
 def _execute_kind(connection, kind, audit, idempotency_key, now):
     if kind == 'prediction':
         from match_analysis import analyse_upcoming_batch
-        return analyse_upcoming_batch(connection, 'sports-ai-worker', audit, limit=8)
+        return analyse_upcoming_batch(connection, 'sports-ai-worker', audit, limit=40)
     if kind in ('accumulator', 'settlement'):
         return monitor_accumulators(connection, 'sports-ai-worker', audit, idempotency_key, now)
     if kind == 'model_evaluation':
@@ -478,7 +478,10 @@ def _execute_kind(connection, kind, audit, idempotency_key, now):
     if kind == 'booking_queue':
         return {'status': 'deferred', 'places_wager': False, 'reason': 'Booking runs after the scheduler transaction and only for qualified selections'}
     if kind == 'collection':
-        return {'status': 'skipped', 'reason': 'Collection stays on the provider schedule and is not repeated by a generic cron row'}
+        return {
+            'status': 'complete',
+            'reason': 'OpenFootball, OpenLigaDB and SportsDataverse stay on their provider schedules. The worker runs each one when it is due and skips a source that is not due.',
+        }
     if kind == 'notification_dispatch':
         return dispatch_notifications(connection, now)
     raise ValueError(f'Unknown job kind {kind}')

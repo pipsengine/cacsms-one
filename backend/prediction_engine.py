@@ -20,6 +20,218 @@ from prediction_math import (
     simulate_scores,
 )
 
+def date_only_sql(alias='f'):
+    """A midnight timestamp is a match day, not a 01:00 Nigeria kickoff."""
+    precision = f"""IFNULL((
+        SELECT m.time_precision FROM sports_ai_fixture_source_map m
+        WHERE m.fixture_id={alias}.id ORDER BY m.observed_at DESC LIMIT 1
+    ), 'instant')"""
+    return f"(({precision})='date' OR {alias}.starts_at LIKE '%T00:00:00%')"
+
+
+def upcoming_fixture_sql(alias='f'):
+    """Scheduled fixtures still ahead. A date-only row stays eligible until the end of that day in Lagos."""
+    dated = date_only_sql(alias)
+    today = "date(datetime('now','+1 hour'))"
+    return (
+        f"{alias}.status='scheduled' AND ("
+        f"({dated} AND date({alias}.starts_at)>={today})"
+        f" OR (NOT ({dated}) AND {alias}.starts_at>datetime('now'))"
+        f")"
+    )
+
+
+def upcoming_order_sql(alias='f'):
+    today = "date(datetime('now','+1 hour'))"
+    return (
+        f"CASE WHEN date({alias}.starts_at)={today} THEN 0 ELSE 1 END, "
+        f"CASE WHEN {date_only_sql(alias)} THEN 1 ELSE 0 END, "
+        f"{alias}.starts_at"
+    )
+
+
+_SEASON_TEXT = re.compile(r'\b20\d{2}(?:\s*/\s*\d{2,4})?\b')
+_LEAGUE_RULES = (
+    (('2 fussball bundesliga', '2 bundesliga', 'bundesliga 2'), 'bundesliga-2'),
+    (('1 fussball bundesliga', '1 bundesliga', 'deutsche bundesliga', 'germany bundesliga', 'bundesliga'), 'bundesliga-1'),
+    (('efl cup', 'league cup', 'carabao'), 'efl-cup'),
+    (('fa cup',), 'fa-cup'),
+    (('championship',), 'championship'),
+    (('premier league',), 'premier-league'),
+    (('serie a',), 'serie-a'),
+    (('primera', 'la liga', 'laliga'), 'la-liga'),
+    (('ligue 1',), 'ligue-1'),
+    (('primeira', 'liga portugal'), 'primeira'),
+    (('eredivisie',), 'eredivisie'),
+    (('copa del rey',), 'copa-del-rey'),
+    (('champions league',), 'ucl'),
+    (('europa league',), 'uel'),
+    (('conference league',), 'uecl'),
+    (('dfb pokal',), 'dfb-pokal'),
+    (('nations league',), 'nations'),
+    (('eliteserien',), 'eliteserien'),
+    (('nba',), 'nba'),
+)
+
+
+def league_key(competition):
+    """Identity of a league across season labels. Cups stay separate from league seasons."""
+    text = str(competition or '').casefold().replace('ß', 'ss').replace('ü', 'u')
+    text = _SEASON_TEXT.sub(' ', text)
+    text = re.sub(r'[^a-z0-9]+', ' ', text).strip()
+    for needles, key in _LEAGUE_RULES:
+        if any(needle in text for needle in needles):
+            return key
+    return text
+
+
+_CLUB_PREFIXES = {
+    'fc', 'sc', 'sv', 'ac', 'cf', 'afc', 'cfc', 'vfb', 'vfl', 'tsg', 'bsc', 'fk', 'sk',
+    'fsv', 'osc', 'rc', 'as', 'bc', 'ssc', 'ud', 'cd', 'ca', 'rb', 'tsv', 'rcd',
+}
+_TOKEN_FOLDS = {
+    'munchen': 'munich', 'monchengladbach': 'gladbach', 'mgladbach': 'gladbach',
+    'utd': 'united', 'nurnberg': 'nuremberg',
+}
+
+
+_CHAR_FOLDS = (
+    ('ß', 'ss'), ('ü', 'u'), ('ö', 'o'), ('ä', 'a'), ('ø', 'o'), ('å', 'a'),
+    ('æ', 'ae'), ('œ', 'oe'), ('ç', 'c'), ('ş', 's'), ('ğ', 'g'), ('ı', 'i'),
+    ('ł', 'l'), ('đ', 'd'), ('š', 's'), ('ś', 's'), ('ž', 'z'), ('ź', 'z'),
+    ('ż', 'z'), ('č', 'c'), ('ć', 'c'), ('ř', 'r'), ('ń', 'n'), ('ň', 'n'),
+    ('ě', 'e'), ('ý', 'y'), ('é', 'e'), ('á', 'a'), ('í', 'i'), ('ó', 'o'),
+    ('ú', 'u'), ('ñ', 'n'), ('ő', 'o'), ('ű', 'u'),
+)
+
+
+def _team_tokens(name):
+    text = str(name or '').casefold()
+    for source, target in _CHAR_FOLDS:
+        text = text.replace(source, target)
+    text = text.replace('´', ' ').replace("'", ' ')
+    text = re.sub(r'[^a-z0-9]+', ' ', text)
+    tokens = []
+    for token in text.split():
+        token = _TOKEN_FOLDS.get(token, token).replace('oe', 'o')
+        if token in _CLUB_PREFIXES or token.isdigit() or len(token) < 3:
+            continue
+        tokens.append('turkey' if token == 'turkiye' else token)
+    if tokens == ['psg']:
+        return ['paris', 'saint', 'germain']
+    if tokens == ['czechia']:
+        return ['czech', 'republic']
+    return tokens
+
+
+def _token_fits(left, right):
+    return left == right or right.startswith(left) or left.startswith(right)
+
+
+def _teams_align(left, right):
+    first, second = _team_tokens(left), _team_tokens(right)
+    if not first or not second:
+        return False
+    if first == second:
+        return True
+    short, long = (first, second) if len(first) <= len(second) else (second, first)
+    return all(any(_token_fits(token, other) for other in long) for token in short)
+
+
+def _aligned_team(team, history):
+    """Use the one historical club spelling when the short name is unambiguous."""
+    if sum(1 for row in history if row['home'] == team or row['away'] == team) >= MIN_TEAM_GAMES:
+        return team
+    candidates = sorted({row['home'] for row in history} | {row['away'] for row in history})
+    matches = [name for name in candidates if name != team and _teams_align(team, name)]
+    if len(matches) == 1:
+        return matches[0]
+    return team
+
+
+def competitions_for_league(connection, sport, competition):
+    key = league_key(competition)
+    names = [
+        row['competition'] for row in connection.execute(
+            'SELECT DISTINCT competition FROM sports_ai_fixtures WHERE sport=?', (sport,),
+        ) if league_key(row['competition']) == key
+    ]
+    return names or [competition]
+
+
+DOMESTIC_KEYS = frozenset({
+    'bundesliga-1', 'bundesliga-2', 'championship', 'premier-league', 'serie-a',
+    'la-liga', 'ligue-1', 'primeira', 'eredivisie', 'eliteserien',
+})
+
+
+def _final_rows(connection, sport, cutoff, keys):
+    """Completed matches before cutoff whose competition maps to one of keys."""
+    kept = []
+    for raw in connection.execute(
+        """SELECT f.id,f.competition,f.home,f.away,f.starts_at,f.statistics_json,f.observed_at,f.source,
+                  r.home_score,r.away_score,r.settled_at,r.source AS result_source
+           FROM sports_ai_fixtures f
+           JOIN sports_ai_results r ON r.fixture_id=f.id
+           WHERE f.sport=? AND r.status='final'""",
+        (sport,),
+    ):
+        row = dict(raw)
+        if league_key(row['competition']) not in keys:
+            continue
+        try:
+            row['_kickoff'] = parse_time(row['starts_at'])
+            settled = parse_time(row['settled_at'])
+        except (TypeError, ValueError):
+            continue
+        if row['_kickoff'] < cutoff and settled < cutoff:
+            row['_statistics'] = {}
+            row['_metrics'] = {}
+            kept.append(row)
+    return kept
+
+
+def _club_split(team, rows):
+    """Games for the one historical club that matches team, in that club's main league."""
+    aligned = _aligned_team(team, rows)
+    games = []
+    for row in rows:
+        if row['home'] == aligned:
+            games.append({
+                **row, 'venue': 'home', 'for': float(row['home_score']), 'against': float(row['away_score']),
+            })
+        elif row['away'] == aligned:
+            games.append({
+                **row, 'venue': 'away', 'for': float(row['away_score']), 'against': float(row['home_score']),
+            })
+    if not games:
+        return aligned, [], []
+    counts = {}
+    for game in games:
+        key = league_key(game['competition'])
+        counts[key] = counts.get(key, 0) + 1
+    main_key = max(counts, key=counts.get)
+    chosen = [game for game in games if league_key(game['competition']) == main_key]
+    baseline = [row for row in rows if league_key(row['competition']) == main_key]
+    return aligned, chosen, baseline
+
+
+def domestic_team_rows(connection, sport, team, cutoff):
+    """Stored league matches for a club when its current competition sample is short."""
+    rows = _final_rows(connection, sport, cutoff, DOMESTIC_KEYS)
+    aligned, games, _baseline = _club_split(team, rows)
+    copied = []
+    for game in games:
+        item = dict(game)
+        if aligned != team:
+            if item['home'] == aligned:
+                item['home'] = team
+            elif item['away'] == aligned:
+                item['away'] = team
+        copied.append(item)
+    return copied
+
+
 MODEL_NAMES = {'football': 'sports-ai-football-ensemble', 'basketball': 'sports-ai-basketball-ensemble'}
 VERSION = '2'
 MIN_TEAM_GAMES = 3
@@ -153,14 +365,16 @@ def build_features(connection, fixture):
     """Historical rows with kickoff and settlement strictly before the fixture cutoff."""
     cutoff = parse_time(fixture['starts_at'])
     half_life = _half_life_days(connection)
+    league_names = competitions_for_league(connection, fixture['sport'], fixture['competition'])
+    league_marks = ','.join('?' * len(league_names))
     rows = connection.execute(
-        """SELECT f.id,f.competition,f.home,f.away,f.starts_at,f.statistics_json,f.observed_at,
+        f"""SELECT f.id,f.competition,f.home,f.away,f.starts_at,f.statistics_json,f.observed_at,
                   r.home_score,r.away_score,r.source,r.settled_at
            FROM sports_ai_fixtures f
            JOIN sports_ai_results r ON r.fixture_id=f.id
-           WHERE f.sport=? AND f.competition=? AND r.status='final'
+           WHERE f.sport=? AND f.competition IN ({league_marks}) AND r.status='final'
            ORDER BY f.starts_at""",
-        (fixture['sport'], fixture['competition']),
+        (fixture['sport'], *league_names),
     ).fetchall()
     history = []
     for raw in rows:
@@ -196,32 +410,69 @@ def build_features(connection, fixture):
                 })
         return games
 
-    home_all, away_all = team_games(fixture['home']), team_games(fixture['away'])
+    home_name = _aligned_team(fixture['home'], history)
+    away_name = _aligned_team(fixture['away'], history)
+    home_all, away_all = team_games(home_name), team_games(away_name)
     home_games = [row for row in home_all if row['venue'] == 'home']
     away_games = [row for row in away_all if row['venue'] == 'away']
     if fixture['sport'] == 'football':
-        if len(home_games) < MIN_TEAM_GAMES or len(away_games) < MIN_TEAM_GAMES:
+        notes = []
+        domestic = None
+
+        def side_rates(team, games, all_games, venue):
+            if len(games) >= MIN_TEAM_GAMES:
+                return all_games, games, history
+            nonlocal domestic
+            if domestic is None:
+                domestic = _final_rows(connection, fixture['sport'], cutoff, DOMESTIC_KEYS)
+            _aligned, club_games, baseline = _club_split(team, domestic)
+            venue_games = [row for row in club_games if row['venue'] == venue]
+            if len(venue_games) < MIN_TEAM_GAMES:
+                return None, None, None
+            notes.append(
+                f"{team} uses {len(venue_games)} stored league {venue} matches because this competition has {len(games)}"
+            )
+            return club_games, venue_games, baseline
+
+        home_all, home_games, home_baseline = side_rates(fixture['home'], home_games, home_all, 'home')
+        away_all, away_games, away_baseline = side_rates(fixture['away'], away_games, away_all, 'away')
+        if home_games is None or away_games is None:
             return None
-        league_home = _weighted_average(
-            [{'home_score': row['home_score'], '_kickoff': row['_kickoff']} for row in history],
-            'home_score', cutoff, half_life,
-        )
-        league_away = _weighted_average(
-            [{'away_score': row['away_score'], '_kickoff': row['_kickoff']} for row in history],
-            'away_score', cutoff, half_life,
-        )
-        if not league_home or not league_away:
+
+        def averages(rows):
+            return (
+                _weighted_average(
+                    [{'home_score': row['home_score'], '_kickoff': row['_kickoff']} for row in rows],
+                    'home_score', cutoff, half_life,
+                ),
+                _weighted_average(
+                    [{'away_score': row['away_score'], '_kickoff': row['_kickoff']} for row in rows],
+                    'away_score', cutoff, half_life,
+                ),
+            )
+
+        home_league_home, home_league_away = averages(home_baseline)
+        away_league_home, away_league_away = averages(away_baseline)
+        rates = (home_league_home, home_league_away, away_league_home, away_league_away)
+        if any(value is None or value <= 0 for value in rates):
             return None
-        home_attack = _weighted_average(home_games, 'for', cutoff, half_life) / league_home
-        home_defence = _weighted_average(home_games, 'against', cutoff, half_life) / league_away
-        away_attack = _weighted_average(away_games, 'for', cutoff, half_life) / league_away
-        away_defence = _weighted_average(away_games, 'against', cutoff, half_life) / league_home
+        competition_home, competition_away = averages(history) if len(history) >= 30 else (None, None)
+        league_home = competition_home or home_league_home
+        league_away = competition_away or away_league_away
+        home_attack = _weighted_average(home_games, 'for', cutoff, half_life) / home_league_home
+        home_defence = _weighted_average(home_games, 'against', cutoff, half_life) / home_league_away
+        away_attack = _weighted_average(away_games, 'for', cutoff, half_life) / away_league_away
+        away_defence = _weighted_average(away_games, 'against', cutoff, half_life) / away_league_home
         features = {
             'home_attack': home_attack, 'home_defence': home_defence,
             'away_attack': away_attack, 'away_defence': away_defence,
             'league_home_goals': league_home, 'league_away_goals': league_away,
             'expected_home_goals': league_home * home_attack * away_defence,
             'expected_away_goals': league_away * away_attack * home_defence,
+            'history_basis': (
+                'Rates use completed matches in this competition.'
+                if not notes else 'Rates use stored league matches where this competition is short. ' + '; '.join(notes) + '.'
+            ),
         }
     elif fixture['sport'] == 'basketball':
         if len(home_all) < MIN_TEAM_GAMES or len(away_all) < MIN_TEAM_GAMES:
@@ -1125,9 +1376,10 @@ def _explain(sport, market, features, settlement, missing):
         else:
             summary += 'No head-to-head match is stored before the cutoff. '
         if features.get('home_xg_for') is None and features.get('away_xg_for') is None:
-            summary += 'No source expected-goals values are available, so rates use goals scored and conceded.'
+            summary += 'No source expected-goals values are available, so rates use goals scored and conceded. '
         else:
-            summary += 'Source expected goals were included where at least three historical values existed.'
+            summary += 'Source expected goals were included where at least three historical values existed. '
+        summary += features.get('history_basis') or 'Rates use completed matches in this competition.'
         factors = [{
             'name': 'opponent_adjusted_expected_goals',
             'home': features['expected_home_goals'], 'away': features['expected_away_goals'],
@@ -1181,8 +1433,16 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None):
         fixtures = [dict(selected)] if selected else []
     else:
         fixtures = [dict(row) for row in connection.execute(
-            """SELECT * FROM sports_ai_fixtures WHERE starts_at>? AND status='scheduled'
-               ORDER BY starts_at""", (now.isoformat(),),
+            f"""SELECT * FROM sports_ai_fixtures f
+                WHERE {upcoming_fixture_sql('f')}
+                  AND NOT EXISTS (SELECT 1 FROM sports_ai_engine_predictions p WHERE p.fixture_id=f.id)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM sports_ai_prediction_jobs j
+                    WHERE j.idempotency_key='insufficient:' || f.id
+                      AND j.finished_at > datetime('now','-12 hours')
+                  )
+                ORDER BY {upcoming_order_sql('f')}
+                LIMIT 40"""
         )]
     models = {}
     for sport in ('football', 'basketball'):
@@ -1227,6 +1487,16 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None):
             built = build_features(connection, fixture)
             if not built:
                 stats['skipped']['insufficient_history'] = stats['skipped'].get('insufficient_history', 0) + 1
+                moment = datetime.now(timezone.utc).isoformat()
+                connection.execute(
+                    """INSERT INTO sports_ai_prediction_jobs
+                       (id,idempotency_key,trigger,status,attempt,started_at,finished_at,details_json)
+                       VALUES(?,?, 'analysis','skipped',1,?,?,?)
+                       ON CONFLICT(idempotency_key) DO UPDATE SET
+                         status='skipped', finished_at=excluded.finished_at, details_json=excluded.details_json""",
+                    (str(uuid.uuid4()), f"insufficient:{fixture['id']}", moment, moment,
+                     json.dumps({'fixture_id': fixture['id'], 'reason': 'insufficient_history'})),
+                )
                 continue
             existing_snapshot = connection.execute(
                 """SELECT id,input_fingerprint FROM sports_ai_feature_snapshots
@@ -1582,3 +1852,275 @@ def rollback_model(connection, model_id):
             (datetime.now(timezone.utc).isoformat(), restored),
         )
     return {'rolled_back': True, 'restored_model_id': restored}
+
+
+PRODUCTION_TARGETS = (('football', '2'), ('basketball', '1'))
+MAX_CALIBRATION_ERROR = 0.20
+DEGRADED_CALIBRATION_ERROR = 0.25
+
+
+def _save_setting(connection, key, payload, now):
+    connection.execute(
+        """INSERT INTO sports_ai_settings(key,value_json,updated_at) VALUES(?,?,?)
+           ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at""",
+        (key, json.dumps(payload), now.isoformat()),
+    )
+
+
+def _governance_state(connection):
+    row = connection.execute("SELECT value_json FROM sports_ai_settings WHERE key='model_governance'").fetchone()
+    if not row:
+        return {'decisions': [], 'blocked_ids': []}
+    try:
+        state = json.loads(row['value_json'])
+    except (TypeError, json.JSONDecodeError):
+        state = {}
+    state.setdefault('decisions', [])
+    state.setdefault('blocked_ids', [])
+    return state
+
+
+def _decision_reasons(model):
+    reasons = []
+    metrics = json.loads(model['metrics_json'] or '{}')
+    families = metrics.get('family_log_loss') or {}
+    selected = metrics.get('selected_family')
+    selected_loss = families.get(selected)
+    baseline = families.get('baseline')
+    if model['status'] not in ('validated', 'active') or model['training_status'] != 'validated':
+        reasons.append('The training run is not validated.')
+    if int(model['calibration_sample_size'] or 0) < 10 or int(metrics.get('holdout_fixtures') or 0) < 10:
+        reasons.append('The chronological holdout has fewer than 10 fixtures.')
+    if int(metrics.get('fixtures_scored') or 0) < MIN_VALIDATION_FIXTURES:
+        reasons.append(f'The scored sample is below {MIN_VALIDATION_FIXTURES} fixtures.')
+    error = metrics.get('calibration_error')
+    if error is None or error > MAX_CALIBRATION_ERROR:
+        reasons.append(f'Holdout calibration error is above {MAX_CALIBRATION_ERROR:.2f}.')
+    if baseline is None or selected_loss is None:
+        reasons.append('The holdout does not contain both a baseline and a selected-family log loss.')
+    elif selected_loss >= baseline:
+        reasons.append(
+            f'{selected} holdout log loss {selected_loss:.4f} does not beat the baseline {baseline:.4f}.'
+        )
+    return reasons, metrics
+
+
+def govern_models(connection, actor, audit, now=None):
+    """Activate Football v2 and Basketball v1 only from their stored chronological holdout."""
+    current = now or datetime.now(timezone.utc)
+    state = _governance_state(connection)
+    blocked = set(state.get('blocked_ids') or [])
+    decisions = []
+    for sport, version in PRODUCTION_TARGETS:
+        model = connection.execute(
+            """SELECT m.*, t.status AS training_status, c.sample_size AS calibration_sample_size
+               FROM sports_ai_model_registry m
+               JOIN sports_ai_training_runs t ON t.id=m.training_run_id
+               LEFT JOIN sports_ai_calibration_results c ON c.model_id=m.id
+               WHERE m.sport=? AND m.version=? AND m.model_name=?
+               ORDER BY m.created_at DESC LIMIT 1""",
+            (sport, version, MODEL_NAMES[sport]),
+        ).fetchone()
+        if not model:
+            decisions.append({'sport': sport, 'version': version, 'action': 'missing', 'reasons': ['No stored model version was found.']})
+            continue
+        if model['id'] in blocked:
+            decisions.append({
+                'sport': sport, 'version': version, 'model_id': model['id'], 'action': 'blocked',
+                'reasons': ['This version was rolled back after live degradation and stays inactive until a new training run.'],
+            })
+            continue
+        reasons, metrics = _decision_reasons(model)
+        if model['active']:
+            decisions.append({
+                'sport': sport, 'version': version, 'model_id': model['id'], 'action': 'already_active',
+                'reasons': [], 'calibration_error': metrics.get('calibration_error'),
+                'holdout_fixtures': metrics.get('holdout_fixtures'),
+            })
+            continue
+        if reasons:
+            decisions.append({
+                'sport': sport, 'version': version, 'model_id': model['id'], 'action': 'inactive',
+                'reasons': reasons, 'calibration_error': metrics.get('calibration_error'),
+                'holdout_fixtures': metrics.get('holdout_fixtures'),
+            })
+            continue
+        connection.execute(
+            "UPDATE sports_ai_model_registry SET active=0,status='inactive' WHERE sport=? AND active=1 AND id<>?",
+            (sport, model['id']),
+        )
+        connection.execute(
+            """UPDATE sports_ai_model_registry SET active=1,status='active',activated_at=? WHERE id=?""",
+            (current.isoformat(), model['id']),
+        )
+        decisions.append({
+            'sport': sport, 'version': version, 'model_id': model['id'], 'action': 'activated',
+            'reasons': [], 'calibration_error': metrics.get('calibration_error'),
+            'holdout_fixtures': metrics.get('holdout_fixtures'),
+            'selected_family': metrics.get('selected_family'),
+            'family_log_loss': metrics.get('family_log_loss'),
+        })
+        if audit:
+            audit(connection, actor, 'models.activate', {'model_id': model['id'], 'sport': sport, 'version': version, 'source': 'holdout_governance'})
+    state['decisions'] = decisions
+    state['evaluated_at'] = current.isoformat()
+    _save_setting(connection, 'model_governance', state, current)
+    return {'decisions': decisions, 'activated': [item['model_id'] for item in decisions if item['action'] == 'activated']}
+
+
+def review_degradation(connection, actor, audit, now=None):
+    """Roll an active model back when settled pre-match picks show calibration error above the production ceiling."""
+    current = now or datetime.now(timezone.utc)
+    state = _governance_state(connection)
+    rolled = []
+    models = connection.execute(
+        """SELECT id,sport,version FROM sports_ai_model_registry WHERE active=1 AND status='active'""",
+    ).fetchall()
+    for model in models:
+        rows = connection.execute(
+            """SELECT calibration_error, sample_size FROM sports_ai_model_evaluations
+               WHERE model_id=? AND market IN ('HOME','DRAW','AWAY','MONEYLINE_HOME','MONEYLINE_AWAY')
+                 AND sample_size>=20 AND created_at>=COALESCE((SELECT activated_at FROM sports_ai_model_registry WHERE id=?),'')
+               ORDER BY created_at DESC LIMIT 6""",
+            (model['id'], model['id']),
+        ).fetchall()
+        if not rows:
+            continue
+        worst = max(row['calibration_error'] or 0 for row in rows)
+        if worst <= DEGRADED_CALIBRATION_ERROR:
+            continue
+        result = rollback_model(connection, model['id'])
+        blocked = set(state.get('blocked_ids') or [])
+        blocked.add(model['id'])
+        state['blocked_ids'] = sorted(blocked)
+        rolled.append({'model_id': model['id'], 'sport': model['sport'], 'calibration_error': worst, 'rollback': result})
+        if audit:
+            audit(connection, actor, 'models.rollback', {'model_id': model['id'], 'reason': 'live_calibration_error', 'calibration_error': worst})
+    if rolled:
+        _save_setting(connection, 'model_governance', state, current)
+    return {'rolled_back': rolled}
+
+
+def reprice_active_batch(connection, actor, audit, limit=20, now=None):
+    """Re-infer headline markets with the active model and qualify only a fresh displayed SportyBet price."""
+    current = now or datetime.now(timezone.utc)
+    settings_row = connection.execute("SELECT value_json FROM sports_ai_settings WHERE key='engine'").fetchone()
+    settings = json.loads(settings_row['value_json']) if settings_row else {}
+    min_edge = float(settings.get('min_edge', 0.05))
+    odds_age = int(settings.get('odds_max_age_minutes', 15))
+    fresh_after = current - timedelta(minutes=odds_age)
+    latest = connection.execute(
+        "SELECT MAX(observed_at) FROM sports_ai_odds_snapshots WHERE bookmaker='SportyBet'",
+    ).fetchone()[0]
+    summary = {
+        'checked': 0, 'repriced': 0, 'qualified': 0, 'rejected': 0, 'stale': 0,
+        'min_edge': min_edge, 'odds_max_age_minutes': odds_age, 'latest_sportybet_quote': latest,
+    }
+    run_id = str(uuid.uuid4())
+    fixtures = connection.execute(
+        f"""SELECT f.*, m.id AS model_id, m.parameters_json, m.metrics_json, m.activated_at, m.active
+           FROM sports_ai_fixtures f
+           JOIN sports_ai_model_registry m ON m.sport=f.sport AND m.active=1 AND m.status='active'
+           WHERE {upcoming_fixture_sql('f')}
+             AND EXISTS (
+               SELECT 1 FROM sports_ai_odds_snapshots q
+               WHERE q.fixture_id=f.id AND q.bookmaker='SportyBet' AND q.observed_at>=?
+             )
+             AND EXISTS (SELECT 1 FROM sports_ai_feature_snapshots s WHERE s.fixture_id=f.id)
+           ORDER BY {upcoming_order_sql('f')} LIMIT ?""",
+        (fresh_after.isoformat(), max(1, min(int(limit), 40))),
+    ).fetchall()
+    if fixtures:
+        connection.execute(
+            """INSERT INTO sports_ai_analysis_runs
+               (id,fixture_count,selection_count,ticket_count,status,details_json)
+               VALUES(?,?,?,?,?,?)""",
+            (run_id, len(fixtures), 0, 0, 'running', json.dumps({'pipeline': 'active_reprice'})),
+        )
+    if not fixtures and latest:
+        summary['reason'] = f'No upcoming fixture has a SportyBet quote inside the {odds_age} minute freshness window.'
+    for fixture in fixtures:
+        summary['checked'] += 1
+        snapshot = connection.execute(
+            """SELECT id, features_json, completeness FROM sports_ai_feature_snapshots
+               WHERE fixture_id=? ORDER BY generated_at DESC LIMIT 1""",
+            (fixture['id'],),
+        ).fetchone()
+        if not snapshot or snapshot['completeness'] is None or snapshot['completeness'] < 0.5:
+            summary['rejected'] += 1
+            continue
+        features = json.loads(snapshot['features_json'])
+        parameters = json.loads(fixture['parameters_json'] or '{}')
+        markets = ('HOME', 'DRAW', 'AWAY') if fixture['sport'] == 'football' else ('MONEYLINE_HOME', 'MONEYLINE_AWAY')
+        quotes = [dict(row) for row in connection.execute(
+            """SELECT * FROM sports_ai_odds_snapshots
+               WHERE fixture_id=? AND bookmaker='SportyBet' AND source_url<>'' AND observed_at>=?
+               ORDER BY observed_at DESC""",
+            (fixture['id'], fresh_after.isoformat()),
+        )]
+        by_market = {}
+        for quote in quotes:
+            canonical = normalize_quote_market(fixture['sport'], fixture, quote)
+            if canonical in markets and canonical not in by_market:
+                by_market[canonical] = quote
+        if not by_market:
+            summary['stale'] += 1
+            continue
+        temperature = float(parameters.get('temperature', 1.0))
+        rho = float(parameters.get('dixon_coles_rho') or 0.0)
+        for market, quote in by_market.items():
+            existing = connection.execute(
+                """SELECT 1 FROM sports_ai_engine_predictions
+                   WHERE fixture_id=? AND market=? AND created_at>=? LIMIT 1""",
+                (fixture['id'], market, fixture['activated_at'] or current.isoformat()),
+            ).fetchone()
+            if existing:
+                continue
+            adjusted, settlement = settle_market(fixture['sport'], market, features, parameters)
+            if not settlement:
+                continue
+            if fixture['sport'] == 'football':
+                base = [market_probability('football', name, adjusted, rho)['p_win'] for name in markets]
+                calibrated = _temperature(base, temperature)
+                probability = min(1 - 1e-6, max(1e-6, calibrated[markets.index(market)]))
+                settlement = {'p_win': probability, 'p_half_win': 0.0, 'p_push': 0.0, 'p_half_loss': 0.0, 'p_loss': 1 - probability}
+            elif market in ('MONEYLINE_HOME', 'MONEYLINE_AWAY'):
+                raw = market_probability('basketball', 'MONEYLINE_HOME', adjusted)['p_win']
+                calibrated = _temperature([raw, 1 - raw], temperature)
+                probability = calibrated[0 if market == 'MONEYLINE_HOME' else 1]
+                settlement = {'p_win': probability, 'p_half_win': 0.0, 'p_push': 0.0, 'p_half_loss': 0.0, 'p_loss': 1 - probability}
+            prediction_id = str(uuid.uuid4())
+            connection.execute(
+                """INSERT INTO sports_ai_engine_predictions
+                   (id,run_id,fixture_id,model_id,feature_id,market,outcome,probability,settlement_json,explanation_json,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (prediction_id, run_id, fixture['id'], fixture['model_id'], snapshot['id'], market, market,
+                 settlement['p_win'], json.dumps(settlement), json.dumps({'source': 'active_model_reprice'}), current.isoformat()),
+            )
+            summary['repriced'] += 1
+            edge = expected_value(settlement, float(quote['decimal_odds']))
+            if edge is None or edge < min_edge:
+                status, reason = 'rejected', 'Expected value is below the configured edge. This is not a guaranteed selection.'
+                summary['rejected'] += 1
+            else:
+                status, reason = 'qualified', 'A fresh SportyBet displayed price and the active calibrated model clear the configured edge. Expected value is an estimate, not a guarantee.'
+                summary['qualified'] += 1
+            connection.execute(
+                """INSERT INTO sports_ai_value_opportunities
+                   (id,prediction_id,odds_id,implied_probability,expected_edge,status,reason,evaluated_at,data_completeness)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (str(uuid.uuid4()), prediction_id, quote['id'], 1 / float(quote['decimal_odds']), edge, status, reason,
+                 current.isoformat(), snapshot['completeness']),
+            )
+    if summary['checked'] and not summary['qualified'] and 'reason' not in summary:
+        summary['reason'] = 'Fresh displayed prices were checked and none cleared the configured edge.'
+    if fixtures:
+        connection.execute(
+            """UPDATE sports_ai_analysis_runs
+               SET selection_count=?, ticket_count=0, status='complete', details_json=? WHERE id=?""",
+            (summary['qualified'], json.dumps(summary), run_id),
+        )
+    _save_setting(connection, 'value_cycle', summary, current)
+    if audit:
+        audit(connection, actor, 'value.reprice', summary)
+    return summary

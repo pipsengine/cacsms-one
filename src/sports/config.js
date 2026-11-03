@@ -1,6 +1,6 @@
-import{LayoutDashboard,Activity,CalendarDays,ChartNoAxesCombined,BrainCircuit,Goal,Dribbble,BarChart3,TrendingUp,ScanSearch,Ticket,Layers3,SlidersHorizontal,Hash,Bell,Mail,Clock3,History,ShieldCheck,Database,Settings2,Workflow,Target,BookOpen,ClipboardList,ChartColumnIncreasing,Users,FileClock,MonitorCheck,Code2,Search,Globe}from'lucide-react';
+import{LayoutDashboard,Activity,CalendarDays,ChartNoAxesCombined,BrainCircuit,Goal,Dribbble,BarChart3,TrendingUp,ScanSearch,Ticket,Layers3,SlidersHorizontal,Hash,Bell,Mail,Clock3,History,ShieldCheck,Database,Settings2,Workflow,Target,BookOpen,ClipboardList,ChartColumnIncreasing,Users,FileClock,MonitorCheck,Code2,Search,Globe,Bot}from'lucide-react';
 export const groups=[
-{label:'COMMAND CENTRE',items:[['dashboard','Overview',LayoutDashboard],['activity','Activity & Audit',Activity],['monitor','System Monitoring',MonitorCheck]]},
+{label:'COMMAND CENTRE',items:[['dashboard','Overview',LayoutDashboard],['activity','Activity & Audit',Activity],['monitor','System Monitoring',MonitorCheck],['autonomous','Autonomous Engine',Bot]]},
 {label:'FOOTBALL INTELLIGENCE',items:[['football-fixtures','Fixtures & Statistics',CalendarDays],['football-analysis','Match Analysis',BrainCircuit],['football-predictions','Predictions',Goal]]},
 {label:'BASKETBALL INTELLIGENCE',items:[['basketball-fixtures','Fixtures & Statistics',Dribbble],['basketball-analysis','Match Analysis',BrainCircuit],['basketball-predictions','Predictions',Target]]},
 {label:'VALUE INTELLIGENCE',items:[['market-scanner','Market Scanner',ScanSearch],['odds','Odds Intelligence',TrendingUp],['value','Value Opportunities',ChartNoAxesCombined],['sportybet-browser','SportyBet Browser Operator',Globe]]},
@@ -13,8 +13,8 @@ export const groups=[
 export const sections={
 'football-fixtures':['Upcoming Fixtures','Historical Results','Team Statistics','Import Data'],
 'basketball-fixtures':['Upcoming Fixtures','Historical Results','Team Statistics','Import Data'],
-'football-analysis':['Pre-Match Intelligence','Goals & Poisson','Market Probabilities','Model Evidence'],
-'basketball-analysis':['Pre-Match Intelligence','Points & Pace','Spread & Totals','Model Evidence'],
+'football-analysis':['Pre-Match Intelligence','Goals & Poisson','Market Probabilities','Model Evidence','Value & Verdict'],
+'basketball-analysis':['Pre-Match Intelligence','Points & Pace','Market Probabilities','Model Evidence','Value & Verdict'],
 'football-predictions':['All Predictions','1X2 & Double Chance','Goals & BTTS','Handicaps'],
 'basketball-predictions':['All Predictions','Moneyline','Totals','Spreads'],
 'diagnostics':['Providers','Browser & SportyBet','Collection Log'],

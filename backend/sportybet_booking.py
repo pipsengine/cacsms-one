@@ -17,43 +17,68 @@ EVIDENCE = Path(__file__).resolve().parent / 'booking_evidence'
 
 FIND_ODDS = '''(args) => {
   const fold = value => (value || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ');
-  const wanted = fold(args.home).split(' ').filter(Boolean);
-  const other = fold(args.away).split(' ').filter(Boolean);
+  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk']);
+  const tokens = value => {
+    const all = fold(value).split(' ').map(token => token.replace(/\\./g, '')).filter(Boolean);
+    const kept = all.filter(token => !skip.has(token) && !/^\\d+$/.test(token));
+    return kept.length ? kept : all;
+  };
+  const wanted = tokens(args.home);
+  const other = tokens(args.away);
   const price = Number(args.odds).toFixed(2);
   const exact = [];
   const nearby = [];
-  for (const node of document.querySelectorAll('button, a, [role="button"]')) {
-    const text = (node.innerText || '').trim();
-    if (!/^\\d+(?:\\.\\d+)?$/.test(text)) continue;
-    let parent = node;
-    for (let depth = 0; depth < 8 && parent; depth += 1, parent = parent.parentElement) {
-      const blob = fold(parent.innerText || '');
-      const teams = wanted.every(token => blob.includes(token)) && other.every(token => blob.includes(token));
-      if (!teams) continue;
-      const box = node.getBoundingClientRect();
-      if (box.width < 8 || box.height < 8) break;
-      const hit = {x: box.x + box.width / 2, y: box.y + box.height / 2, text};
+  document.querySelectorAll('[data-sports-ai-pick]').forEach(node => node.removeAttribute('data-sports-ai-pick'));
+  for (const row of document.querySelectorAll('.match-row, article')) {
+    const blob = fold(row.innerText || '');
+    if (!wanted.every(token => blob.includes(token)) || !other.every(token => blob.includes(token))) continue;
+    for (const node of row.querySelectorAll('.m-outcome, button, a, [role="button"]')) {
+      if (node.classList.contains('m-outcome--disabled') || node.classList.contains('m-outcome-odds')) continue;
+      const text = (node.innerText || '').trim();
+      if (!/^\\d+(?:\\.\\d+)?$/.test(text)) continue;
+      const shown = Number(text).toFixed(2);
+      const hit = {text: shown};
       nearby.push(hit);
-      if (text === price || text === String(Number(price))) exact.push(hit);
-      break;
+      if (shown === price) exact.push(node);
     }
   }
-  return {exact: exact.slice(0, 5), nearby: nearby.slice(0, 8)};
+  if (exact.length === 1) exact[0].setAttribute('data-sports-ai-pick', args.marker);
+  return {exact: exact.length, nearby: nearby.slice(0, 8)};
 }'''
 
 FIND_BOOK = '''() => {
   const deny = /place\\s*bet|bet\\s*now|\\bpay\\b|deposit|login|stake|confirm\\s*bet/i;
   const allow = /^(book(\\s*bet)?|booking\\s*code|share\\s*code)$/i;
-  return [...document.querySelectorAll('button, a, [role="button"]')].map(node => {
+  document.querySelectorAll('[data-sports-ai-book]').forEach(node => node.removeAttribute('data-sports-ai-book'));
+  const hits = [...document.querySelectorAll('button, a, [role="button"], span')].filter(node => {
     const text = (node.innerText || '').trim();
-    const box = node.getBoundingClientRect();
-    return {text, x: box.x + box.width / 2, y: box.y + box.height / 2, denied: deny.test(text), allowed: allow.test(text)};
-  }).filter(item => item.allowed && !item.denied);
+    return allow.test(text) && !deny.test(text);
+  });
+  if (hits.length === 1) hits[0].setAttribute('data-sports-ai-book', '1');
+  return hits.length;
 }'''
 
 READ_CODES = '''() => {
   const pattern = /^[A-Z0-9]{5,16}$/;
-  return [...document.querySelectorAll('[data-booking-code], .booking-code, input')].map(node => (node.value || node.innerText || '').trim()).filter(text => pattern.test(text));
+  const root = document.querySelector('.booking-code-share, [data-booking-code], .booking-code');
+  if (!root) return [];
+  const nodes = root.matches('input') ? [root] : [root, ...root.querySelectorAll('input')];
+  return [...new Set(nodes.map(node => (node.value || node.innerText || '').trim()).filter(text => pattern.test(text)))];
+}'''
+
+SLIP_CONTAINS = '''(args) => {
+  const fold = value => (value || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ');
+  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk']);
+  const tokens = value => {
+    const all = fold(value).split(' ').map(token => token.replace(/\\./g, '')).filter(Boolean);
+    const kept = all.filter(token => !skip.has(token) && !/^\\d+$/.test(token));
+    return kept.length ? kept : all;
+  };
+  const present = (token, blob) => blob.includes(token) || (token.length >= 6 && blob.includes(token.slice(0, 5)));
+  const parts = [...document.querySelectorAll('.m-pop-main, .share-bet-container')].map(node => node.innerText || '');
+  const blob = fold(parts.join(' '));
+  const text = parts.join(' ').replace(/\\s+/g, ' ').slice(0, 400);
+  return {ok: args.names.every(name => tokens(name).every(token => present(token, blob))), text};
 }'''
 
 
@@ -62,8 +87,10 @@ def _now():
 
 
 def _signature(selections):
+    ticket = str(selections[0].get('ticket_id') or '')
     parts = sorted(f"{item['fixture_id']}|{item['market']}|{item['selection']}" for item in selections)
-    return '|'.join(parts)
+    body = '|'.join(parts)
+    return f'{ticket}|{body}' if ticket else body
 
 
 def qualified_selections(connection, now=None):
@@ -94,8 +121,8 @@ def create_job(connection, selections):
     if not selections or len(selections) > 6:
         raise ValueError('A booking needs 1 to 6 qualified selections')
     sports = {item['sport'] for item in selections}
-    if len(sports) != 1:
-        raise ValueError('One booking uses one sport')
+    if not sports or len(sports) > 2:
+        raise ValueError('A booking uses football, basketball, or both')
     signature = _signature(selections)
     existing = connection.execute(
         """SELECT id,status FROM sports_ai_booking_jobs
@@ -111,7 +138,7 @@ def create_job(connection, selections):
         """INSERT INTO sports_ai_booking_jobs
            (id,created_at,updated_at,status,sport,selections_json,signature,places_wager)
            VALUES(?,?,?,?,?,?,?,0)""",
-        (job_id, moment, moment, 'QUEUED', next(iter(sports)), json.dumps(selections), signature),
+        (job_id, moment, moment, 'QUEUED', next(iter(sports)) if len(sports) == 1 else 'mixed', json.dumps(selections), signature),
     )
     return {'id': job_id, 'status': 'QUEUED', 'duplicate': False, 'places_wager': False}
 
@@ -157,36 +184,126 @@ def _due(connection, now):
     return now - seen >= timedelta(minutes=REFRESH_MINUTES)
 
 
-async def prepare_slip(page, selections):
-    """Click the displayed price, then the booking-code control. Never a place-bet control."""
-    body = await page.locator('body').inner_text(timeout=5000)
+def ticket_selections(connection, ticket_id):
+    rows = connection.execute(
+        """SELECT fixture_id, sport, home, away, market, selection, decimal_odds
+           FROM sports_ai_accumulator_legs
+           WHERE ticket_id=?
+           ORDER BY starts_at""",
+        (ticket_id,),
+    ).fetchall()
+    selections = []
+    for row in rows:
+        item = dict(row)
+        item['ticket_id'] = ticket_id
+        selections.append(item)
+    return selections
+
+
+def next_ticket_id(connection, now):
+    cutoff = (now - timedelta(minutes=REFRESH_MINUTES)).isoformat()
+    row = connection.execute(
+        """SELECT t.id
+           FROM sports_ai_accumulator_tickets t
+           WHERE t.status='qualified'
+             AND NOT EXISTS (
+               SELECT 1 FROM sports_ai_booking_codes b
+               WHERE b.accumulator_ticket_id=t.id
+                 AND b.verification_method='displayed'
+                 AND b.verified_at IS NOT NULL
+                 AND TRIM(COALESCE(b.code,''))<>''
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM sports_ai_booking_jobs j
+               WHERE j.signature LIKE t.id || '|%'
+                 AND (j.status IN ('QUEUED','PREPARING','CODE_GENERATED') OR j.updated_at>?)
+             )
+           ORDER BY t.created_at DESC
+           LIMIT 1""",
+        (cutoff,),
+    ).fetchone()
+    return row['id'] if row else None
+
+
+def _store_displayed_code(connection, ticket_id, code, evidence):
+    moment = _now().isoformat()
+    connection.execute(
+        """INSERT INTO sports_ai_booking_codes
+           (id,accumulator_ticket_id,code,verification_method,evidence,status,bookmaker,verified_at,integration_status,created_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?)""",
+        (str(uuid.uuid4()), ticket_id, code, 'displayed', evidence, 'verified', 'SportyBet', moment, 'displayed', moment),
+    )
+
+
+async def prepare_slip(page, selections, book=True):
+    """Click the displayed price for each selection. Book only when asked. Never place a wager."""
+    await page.wait_for_selector('.match-row, article', timeout=20000)
+    body = await page.locator('body').inner_text(timeout=8000)
     if blocked_page(body):
         raise RuntimeError('Page is blocked. No booking code was requested.')
     seen = []
-    for item in selections:
+    for index, item in enumerate(selections):
+        marker = f'pick-{index}'
         hits = await page.evaluate(FIND_ODDS, {
-            'home': item['home'], 'away': item['away'], 'odds': float(item['decimal_odds']),
+            'home': item['home'], 'away': item['away'], 'odds': float(item['decimal_odds']), 'marker': marker,
         })
-        exact = hits['exact']
-        if len(exact) != 1:
-            if hits['nearby']:
-                seen.append({'fixture_id': item['fixture_id'], 'stored_odds': item['decimal_odds'], 'page_odds': float(hits['nearby'][0]['text'])})
-                return {'status': 'ODDS_CHANGED', 'seen': seen, 'code': None}
-            raise RuntimeError(f"Selection control missing or ambiguous: {item['home']} vs {item['away']}")
-        current = float(exact[0]['text'])
-        seen.append({'fixture_id': item['fixture_id'], 'stored_odds': item['decimal_odds'], 'page_odds': current})
-        if abs(current - float(item['decimal_odds'])) > 0.001:
+        if hits['exact'] == 1:
+            seen.append({'fixture_id': item['fixture_id'], 'stored_odds': item['decimal_odds'], 'page_odds': float(item['decimal_odds'])})
+            await page.locator(f'[data-sports-ai-pick="{marker}"]').evaluate('node => node.click()')
+            await page.wait_for_timeout(400)
+            continue
+        if hits['exact'] == 0 and hits['nearby']:
+            seen.append({'fixture_id': item['fixture_id'], 'stored_odds': item['decimal_odds'], 'page_odds': float(hits['nearby'][0]['text'])})
             return {'status': 'ODDS_CHANGED', 'seen': seen, 'code': None}
-        await page.mouse.click(exact[0]['x'], exact[0]['y'])
+        raise RuntimeError(f"Selection control missing or ambiguous: {item['home']} vs {item['away']}")
+    if not book:
+        return {'status': 'SELECTED', 'seen': seen, 'code': None}
+    return await request_displayed_code(page, selections, seen)
+
+
+async def request_displayed_code(page, selections, seen):
     controls = await page.evaluate(FIND_BOOK)
-    if len(controls) != 1:
+    if controls != 1:
         raise RuntimeError('Booking-code control missing or ambiguous')
-    await page.mouse.click(controls[0]['x'], controls[0]['y'])
-    await page.wait_for_timeout(500)
+    await page.locator('[data-sports-ai-book="1"]').evaluate('node => node.click()')
+    try:
+        await page.wait_for_selector('.booking-code-share, [data-booking-code]', timeout=8000)
+        await page.wait_for_timeout(800)
+    except Exception:
+        pass
+    if await page.locator('.m-pop-main, .booking-code-share').count():
+        names = [item['home'] for item in selections] + [item['away'] for item in selections]
+        check = await page.evaluate(SLIP_CONTAINS, {'names': names})
+        if not check['ok']:
+            raise RuntimeError(f"The booking slip did not include every selected game. Slip: {check['text']}")
     codes = await page.evaluate(READ_CODES)
     if len(codes) != 1 or not CODE.fullmatch(codes[0]):
         raise RuntimeError('The page did not show one booking code')
     return {'status': 'CODE_GENERATED', 'seen': seen, 'code': codes[0]}
+
+
+async def _open_sport(page, sport, page_url=None, reuse=False):
+    labels = {'football': 'Football', 'basketball': 'Basketball'}
+    if reuse:
+        clicked = await page.evaluate(
+            '''(label) => {
+              const link = [...document.querySelectorAll('a')].find(node => (node.innerText || '').trim() === label && node.getBoundingClientRect().width > 0);
+              if (!link) return false;
+              link.click();
+              return true;
+            }''',
+            labels.get(sport, ''),
+        )
+        if clicked:
+            await page.wait_for_timeout(2500)
+            await page.wait_for_selector('.match-row, article', timeout=20000)
+            return
+    url = page_url or dict(SECTIONS).get(sport)
+    if not url:
+        raise RuntimeError('No public page is configured for this sport')
+    response = await page.goto(url, wait_until='domcontentloaded', timeout=45000)
+    if response and response.status >= 400:
+        raise RuntimeError(f'HTTP {response.status}')
 
 
 async def execute_job(job_id, page_url=None):
@@ -198,33 +315,41 @@ async def execute_job(job_id, page_url=None):
         if job['status'] != 'QUEUED':
             return {'id': job_id, 'status': job['status'], 'places_wager': False}
         selections = json.loads(job['selections_json'])
-        sport = job['sport']
         _set_job(connection, job_id, 'PREPARING')
-    url = page_url or dict(SECTIONS).get(sport)
-    if not url:
-        with connect() as connection:
-            _set_job(connection, job_id, 'FAILED', error='No public page is configured for this sport')
-        return {'id': job_id, 'status': 'FAILED', 'places_wager': False}
+    sports = []
+    for item in selections:
+        if item.get('sport') not in sports:
+            sports.append(item.get('sport'))
     try:
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=True)
             try:
                 context = await browser.new_context(viewport={'width': 1440, 'height': 900})
                 page = await context.new_page()
-                response = await page.goto(url, wait_until='domcontentloaded', timeout=30000)
-                if response and response.status >= 400:
-                    raise RuntimeError(f'HTTP {response.status}')
-                await page.wait_for_timeout(300)
-                result = await prepare_slip(page, selections)
+                seen = []
+                result = None
+                for index, sport in enumerate(sports):
+                    await _open_sport(page, sport, page_url if len(sports) == 1 else None, reuse=index > 0)
+                    group = [item for item in selections if item.get('sport') == sport]
+                    part = await prepare_slip(page, group, book=False)
+                    if part['status'] != 'SELECTED':
+                        result = part
+                        break
+                    seen.extend(part['seen'])
+                if result is None:
+                    result = await request_displayed_code(page, selections, seen)
                 EVIDENCE.mkdir(parents=True, exist_ok=True)
                 shot = EVIDENCE / f'{job_id}.png'
-                await page.screenshot(path=str(shot), full_page=True)
+                await page.screenshot(path=str(shot), full_page=False)
                 await context.close()
             finally:
                 await browser.close()
         with connect() as connection:
+            ticket_id = next((item.get('ticket_id') for item in selections if item.get('ticket_id')), None)
             if result['status'] == 'CODE_GENERATED':
                 _set_job(connection, job_id, 'CODE_GENERATED', code=result['code'], screenshot=str(shot), odds_json=json.dumps(result['seen']))
+                if ticket_id:
+                    _store_displayed_code(connection, ticket_id, result['code'], str(shot))
             else:
                 _set_job(connection, job_id, result['status'], odds_json=json.dumps(result['seen']), error='The displayed price no longer matches the qualified quote')
         result.update({'id': job_id, 'places_wager': False})
@@ -236,7 +361,7 @@ async def execute_job(job_id, page_url=None):
 
 
 def process_booking_queue():
-    """Queue at most one booking from qualified selections. Does not open a browser when none qualify."""
+    """Request one prepared ticket's booking code. Does not open a browser when none qualify."""
     now = _now()
     with connect() as connection:
         if not _due(connection, now):
@@ -247,17 +372,43 @@ def process_booking_queue():
         if queued:
             job_id = queued['id']
         else:
-            selections = qualified_selections(connection, now)
-            if not selections:
-                return {'status': 'waiting', 'qualified': 0, 'places_wager': False}
-            sport = selections[0]['sport']
-            group = [item for item in selections if item['sport'] == sport][:6]
-            created = create_job(connection, group)
+            ticket_id = next_ticket_id(connection, now)
+            qualified = qualified_selections(connection, now)
+            if not ticket_id:
+                return {'status': 'waiting', 'qualified': len(qualified), 'places_wager': False}
+            selections = ticket_selections(connection, ticket_id)
+            if not selections or len(selections) > 6:
+                return {'status': 'waiting', 'qualified': len(qualified), 'places_wager': False}
+            created = create_job(connection, selections)
             if created.get('duplicate'):
                 return {'status': created['status'], 'duplicate': True, 'places_wager': False}
             job_id = created['id']
     import asyncio
     return asyncio.run(execute_job(job_id))
+
+
+def book_prepared_tickets(limit=1):
+    """Book the next prepared tickets whose prices are still on the page."""
+    import asyncio
+    results = []
+    for _ in range(max(1, limit)):
+        with connect() as connection:
+            ticket_id = next_ticket_id(connection, _now())
+            if not ticket_id:
+                break
+            selections = ticket_selections(connection, ticket_id)
+            if not selections or len(selections) > 6:
+                break
+            created = create_job(connection, selections)
+            if created.get('duplicate'):
+                results.append(created)
+                continue
+            job_id = created['id']
+        result = asyncio.run(execute_job(job_id))
+        results.append(result)
+        if result.get('status') == 'CODE_GENERATED':
+            break
+    return results
 
 
 def build_booking_router(auth):

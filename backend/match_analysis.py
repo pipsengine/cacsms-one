@@ -10,8 +10,14 @@ from prediction_engine import (
     MIN_TEAM_GAMES,
     _football_score_grid,
     build_features,
+    _aligned_team,
+    competitions_for_league,
+    domestic_team_rows,
+    league_key,
     parse_time,
     run_analysis,
+    upcoming_fixture_sql,
+    upcoming_order_sql,
 )
 
 log = logging.getLogger('sports_ai.match_analysis')
@@ -22,33 +28,26 @@ class AnalysisBusy(Exception):
 
 
 def _league_key(competition):
-    text = str(competition or '').casefold().replace('ß', 'ss')
-    if '2.' in text and 'bundesliga' in text:
-        return 'bundesliga-2'
-    if 'bundesliga' in text:
-        return 'bundesliga-1'
-    if 'premier league' in text:
-        return 'premier-league'
-    if text.startswith('nba'):
-        return 'nba'
-    return text
+    return league_key(competition)
 
 
 def _rows_before(connection, team, competition, cutoff, sport='football'):
     key = _league_key(competition)
-    rows = []
-    query = connection.execute(
-        """SELECT f.id,f.competition,f.home,f.away,f.starts_at,f.source,f.observed_at,
+    names = competitions_for_league(connection, sport, competition)
+    marks = ','.join('?' * len(names))
+    league = [dict(raw) for raw in connection.execute(
+        f"""SELECT f.id,f.competition,f.home,f.away,f.starts_at,f.source,f.observed_at,
                   r.home_score,r.away_score,r.settled_at,r.source AS result_source
            FROM sports_ai_fixtures f
            JOIN sports_ai_results r ON r.fixture_id=f.id
-           WHERE f.sport=? AND r.status='final' AND (f.home=? OR f.away=?)
+           WHERE f.sport=? AND f.competition IN ({marks}) AND r.status='final'
            ORDER BY f.starts_at""",
-        (sport, team, team),
-    )
-    for raw in query:
-        row = dict(raw)
-        if _league_key(row['competition']) != key:
+        (sport, *names),
+    )]
+    team_name = _aligned_team(team, league)
+    rows = []
+    for row in league:
+        if row['home'] != team_name and row['away'] != team_name:
             continue
         try:
             kickoff = parse_time(row['starts_at'])
@@ -57,7 +56,20 @@ def _rows_before(connection, team, competition, cutoff, sport='football'):
             continue
         if kickoff < cutoff and settled < cutoff:
             row['_kickoff'] = kickoff
+            if team_name != team:
+                if row['home'] == team_name:
+                    row['home'] = team
+                elif row['away'] == team_name:
+                    row['away'] = team
             rows.append(row)
+    if len(rows) < MIN_TEAM_GAMES:
+        seen = {row['id'] for row in rows}
+        for item in domestic_team_rows(connection, sport, team, cutoff):
+            if item['id'] in seen:
+                continue
+            rows.append(item)
+            seen.add(item['id'])
+        rows.sort(key=lambda item: item['_kickoff'])
     return rows
 
 
@@ -150,20 +162,30 @@ def _profile(rows, team):
 
 
 def _same_competition_counts(connection, fixture, cutoff):
+    names = competitions_for_league(connection, fixture['sport'], fixture['competition'])
+    marks = ','.join('?' * len(names))
+    clubs = [dict(row) for row in connection.execute(
+        f"""SELECT f.home, f.away FROM sports_ai_fixtures f
+            JOIN sports_ai_results r ON r.fixture_id=f.id
+            WHERE f.sport=? AND f.competition IN ({marks}) AND r.status='final'""",
+        (fixture['sport'], *names),
+    )]
+    home_name = _aligned_team(fixture['home'], clubs)
+    away_name = _aligned_team(fixture['away'], clubs)
     def count(team, venue):
         column = 'f.home' if venue == 'home' else 'f.away'
         return connection.execute(
             f"""SELECT COUNT(*) FROM sports_ai_fixtures f
                 JOIN sports_ai_results r ON r.fixture_id=f.id
-                WHERE f.sport=? AND f.competition=? AND {column}=?
+                WHERE f.sport=? AND f.competition IN ({marks}) AND {column}=?
                   AND r.status='final' AND f.starts_at<? AND r.settled_at<?""",
-            (fixture['sport'], fixture['competition'], team, cutoff.isoformat(), cutoff.isoformat()),
+            (fixture['sport'], *names, team, cutoff.isoformat(), cutoff.isoformat()),
         ).fetchone()[0]
     return {
-        'home_team_matches': count(fixture['home'], 'home') + count(fixture['home'], 'away'),
-        'away_team_matches': count(fixture['away'], 'home') + count(fixture['away'], 'away'),
-        'home_venue_matches': count(fixture['home'], 'home'),
-        'away_venue_matches': count(fixture['away'], 'away'),
+        'home_team_matches': count(home_name, 'home') + count(home_name, 'away'),
+        'away_team_matches': count(away_name, 'home') + count(away_name, 'away'),
+        'home_venue_matches': count(home_name, 'home'),
+        'away_venue_matches': count(away_name, 'away'),
         'minimum_venue_matches': MIN_TEAM_GAMES,
     }
 
@@ -373,14 +395,20 @@ def analyze_fixture(connection, fixture_id, actor, audit):
         }
         missing = []
         if sport == 'football':
-            if counts['home_venue_matches'] < MIN_TEAM_GAMES:
+            home_league = sum(1 for row in home_rows if row['home'] == fixture['home'])
+            away_league = sum(1 for row in away_rows if row['away'] == fixture['away'])
+            if counts['home_venue_matches'] < MIN_TEAM_GAMES and home_league < MIN_TEAM_GAMES:
                 missing.append(
-                    f"{fixture['home']} has {counts['home_venue_matches']} completed home matches in {fixture['competition']} before kickoff; {MIN_TEAM_GAMES} are required for the Poisson rates."
+                    f"{fixture['home']} has {counts['home_venue_matches']} completed home matches in this competition and {home_league} stored league home matches before kickoff; {MIN_TEAM_GAMES} are required for the Poisson rates."
                 )
-            if counts['away_venue_matches'] < MIN_TEAM_GAMES:
+            elif counts['home_venue_matches'] < MIN_TEAM_GAMES:
+                counts['home_sample'] = f'{home_league} stored league home matches'
+            if counts['away_venue_matches'] < MIN_TEAM_GAMES and away_league < MIN_TEAM_GAMES:
                 missing.append(
-                    f"{fixture['away']} has {counts['away_venue_matches']} completed away matches in {fixture['competition']} before kickoff; {MIN_TEAM_GAMES} are required for the Poisson rates."
+                    f"{fixture['away']} has {counts['away_venue_matches']} completed away matches in this competition and {away_league} stored league away matches before kickoff; {MIN_TEAM_GAMES} are required for the Poisson rates."
                 )
+            elif counts['away_venue_matches'] < MIN_TEAM_GAMES:
+                counts['away_sample'] = f'{away_league} stored league away matches'
         elif sport == 'basketball':
             if len(home_rows) < MIN_TEAM_GAMES:
                 missing.append(f"{fixture['home']} has {len(home_rows)} completed matches before kickoff; {MIN_TEAM_GAMES} are required for the scoring model.")
@@ -566,7 +594,7 @@ def analyze_fixture(connection, fixture_id, actor, audit):
                SET status='complete',finished_at=?,details_json=? WHERE id=?""",
             (datetime.now(timezone.utc).isoformat(), json.dumps({'fixture_id': fixture_id, 'status': status}), job_id),
         )
-        return report
+        return attach_live_evidence(connection, report)
     except Exception as error:
         connection.execute(
             """UPDATE sports_ai_prediction_jobs
@@ -598,6 +626,88 @@ def _latest_predictions(connection, fixture_id):
     return rows
 
 
+_QUOTE_KEYS = {
+    'HOME': ('h2h', 'home', None),
+    'DRAW': ('h2h', 'draw', None),
+    'AWAY': ('h2h', 'away', None),
+    'MONEYLINE_HOME': ('h2h', 'home', None),
+    'MONEYLINE_AWAY': ('h2h', 'away', None),
+    'BTTS_YES': ('btts', 'yes', None),
+    'BTTS_NO': ('btts', 'no', None),
+    'OVER_1.5': ('totals', 'over', 1.5),
+    'UNDER_1.5': ('totals', 'under', 1.5),
+    'OVER_2.5': ('totals', 'over', 2.5),
+    'UNDER_2.5': ('totals', 'under', 2.5),
+    'OVER_3.5': ('totals', 'over', 3.5),
+    'UNDER_3.5': ('totals', 'under', 3.5),
+}
+
+
+def attach_live_evidence(connection, report):
+    """Overlay stored quotes and the value engine's latest decision. Never invents a price or an edge."""
+    if not isinstance(report, dict) or not report.get('fixture_id'):
+        return report
+    fixture_id = report['fixture_id']
+    for market in report.get('markets') or []:
+        key = _QUOTE_KEYS.get(market['market'])
+        quote = None
+        if key:
+            book, outcome, line = key
+            quote = connection.execute(
+                """SELECT decimal_odds, bookmaker, observed_at, source_url
+                   FROM sports_ai_odds_snapshots
+                   WHERE fixture_id=? AND market=? AND outcome=? AND IFNULL(line,-999)=IFNULL(?, -999)
+                   ORDER BY observed_at DESC LIMIT 1""",
+                (fixture_id, book, outcome, line),
+            ).fetchone()
+        if quote:
+            market['decimal_odds'] = quote['decimal_odds']
+            market['bookmaker'] = quote['bookmaker']
+            market['odds_observed_at'] = quote['observed_at']
+            market['odds_source_url'] = quote['source_url']
+            market['implied_probability'] = 1 / float(quote['decimal_odds'])
+            market['odds_status'] = quote['bookmaker']
+        opportunity = connection.execute(
+            """SELECT o.expected_edge, o.implied_probability, o.status, o.reason, o.uncertainty, o.data_completeness
+               FROM sports_ai_value_opportunities o
+               JOIN sports_ai_engine_predictions p ON p.id=o.prediction_id
+               WHERE p.fixture_id=? AND p.market=?
+               ORDER BY o.evaluated_at DESC LIMIT 1""",
+            (fixture_id, market['market']),
+        ).fetchone()
+        if opportunity:
+            market['expected_edge'] = opportunity['expected_edge']
+            market['value_status'] = opportunity['status']
+            market['value_reason'] = opportunity['reason']
+            market['uncertainty'] = opportunity['uncertainty']
+            market['data_completeness'] = opportunity['data_completeness']
+            if market.get('implied_probability') is None:
+                market['implied_probability'] = opportunity['implied_probability']
+    registry = connection.execute(
+        """SELECT model_name, version, status, active, metrics_json
+           FROM sports_ai_model_registry
+           WHERE sport=(SELECT sport FROM sports_ai_fixtures WHERE id=?)
+           ORDER BY active DESC, created_at DESC LIMIT 1""",
+        (fixture_id,),
+    ).fetchone()
+    if registry:
+        try:
+            metrics = json.loads(registry['metrics_json'] or '{}')
+        except json.JSONDecodeError:
+            metrics = {}
+        report['registry_model'] = {
+            'name': registry['model_name'],
+            'version': registry['version'],
+            'status': registry['status'],
+            'active': bool(registry['active']),
+            'brier_score': metrics.get('brier_score'),
+            'log_loss': metrics.get('log_loss'),
+            'calibration_error': metrics.get('calibration_error'),
+            'holdout_fixtures': metrics.get('holdout_fixtures'),
+        }
+    return report
+
+
 def latest_report(connection, fixture_id):
     row = connection.execute(
         """SELECT report_json,status,created_at FROM sports_ai_match_analyses
@@ -609,16 +719,15 @@ def latest_report(connection, fixture_id):
     report = json.loads(row['report_json'])
     report['stored_status'] = row['status']
     report['stored_at'] = row['created_at']
-    return report
+    return attach_live_evidence(connection, report)
 
 
 def analyse_upcoming_batch(connection, actor, audit, limit=8):
     """Analyse a bounded set of upcoming fixtures that are stale or unanalysed."""
-    limit = max(1, min(int(limit), 20))
-    moment = datetime.now(timezone.utc).isoformat()
+    limit = max(1, min(int(limit), 40))
     rows = connection.execute(
-        """SELECT f.id, f.home, f.away FROM sports_ai_fixtures f
-           WHERE f.status='scheduled' AND f.starts_at>?
+        f"""SELECT f.id, f.home, f.away FROM sports_ai_fixtures f
+           WHERE {upcoming_fixture_sql('f')}
              AND (
                NOT EXISTS (
                  SELECT 1 FROM sports_ai_match_analyses a WHERE a.fixture_id=f.id
@@ -637,9 +746,9 @@ def analyse_upcoming_batch(connection, actor, audit, limit=8):
              CASE WHEN EXISTS (
                SELECT 1 FROM sports_ai_match_analyses a WHERE a.fixture_id=f.id
              ) THEN 1 ELSE 0 END,
-             f.starts_at
+             {upcoming_order_sql('f')}
            LIMIT ?""",
-        (moment, limit),
+        (limit,),
     ).fetchall()
     results = []
     for row in rows:

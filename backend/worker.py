@@ -77,6 +77,7 @@ def tick():
     )
     print('orchestrator', result.get('status'), result.get('reason', ''))
     _process_browser_queue()
+    _govern_cycle()
 
 
 def _process_browser_queue():
@@ -92,6 +93,35 @@ def _process_browser_queue():
         print('sportybet booking', booked.get('status'), 'qualified', booked.get('qualified', ''), 'places_wager', booked.get('places_wager'))
     except Exception as error:
         print('browser queue failed', str(error))
+
+
+def _govern_cycle():
+    try:
+        from accumulator_engine import generate_accumulators
+        from prediction_engine import govern_models, reprice_active_batch, review_degradation
+        with connect() as connection:
+            connection.execute("UPDATE sports_ai_schedules SET enabled=1 WHERE id='schedule-discovery' AND enabled=0")
+            review = review_degradation(connection, 'sports-ai-worker', _audit)
+            governed = govern_models(connection, 'sports-ai-worker', _audit)
+            priced = reprice_active_batch(connection, 'sports-ai-worker', _audit, limit=20)
+            tickets = []
+            if priced.get('qualified'):
+                hour = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H')
+                for mode in ('football', 'basketball', 'mixed'):
+                    tickets.append(generate_accumulators(
+                        connection, 'sports-ai-worker', _audit, mode, None, f'auto-ticket:{mode}:{hour}', trigger='scheduler',
+                    ))
+        print(
+            'governance',
+            'activated', len(governed.get('activated') or []),
+            'rolled_back', len(review.get('rolled_back') or []),
+            'repriced', priced.get('repriced'),
+            'qualified', priced.get('qualified'),
+            'tickets', len(tickets),
+            priced.get('reason', ''),
+        )
+    except Exception as error:
+        print('governance failed', str(error))
 
 
 def _monitor_accumulators():

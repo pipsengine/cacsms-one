@@ -1,6 +1,6 @@
 import React from 'react';
 import {useNavigate} from 'react-router-dom';
-import {AlertCircle,ArrowLeft,BarChart3,BrainCircuit,CalendarDays,Clock3,Database,Flame,Layers3,Link2,Play,RefreshCw,Target,Ticket} from 'lucide-react';
+import {AlertCircle,ArrowLeft,BarChart3,BrainCircuit,CalendarDays,ChevronDown,Clock3,Copy,Database,Dribbble,Flame,Goal,Hash,Layers3,Link2,Play,RefreshCw,Target,Ticket} from 'lucide-react';
 import {get} from './api';
 import './command.css';
 
@@ -49,8 +49,150 @@ function Badge({children, tone}) {
   return <span className={`sp-status ${tone || 'neutral'}`}>{children}</span>;
 }
 
+function integrationRows(data) {
+  const providers = Object.fromEntries((data?.providers || []).map(item => [item.provider_key, item]));
+  const providerLine = key => {
+    const item = providers[key];
+    if (!item || !item.enabled) return ['off', 'Not configured'];
+    if (item.status === 'operational') return ['ok', 'Online'];
+    return ['wait', item.status];
+  };
+  return [
+    ['Sports AI API', data ? 'ok' : 'bad', data ? 'Connected' : 'Unavailable'],
+    ['SQLite database', 'ok', 'Connected'],
+    ['football-data.org', ...providerLine('football-data')],
+    ['OpenLigaDB', ...providerLine('openligadb')],
+    ['OpenFootball dataset', ...providerLine('openfootball')],
+    ['Basketball dataset', ...providerLine('sportsdataverse')],
+    ['SportyBet integration', data?.browser?.sportybet_unattended?.operational ? 'ok' : 'wait', data?.browser?.sportybet_unattended?.operational ? 'Collecting displayed prices' : data?.browser?.sportybet_unattended?.authorized ? 'Waiting for prices' : 'Not collecting'],
+    ['Authorized browser', data?.browser?.authorized_urls ? 'ok' : 'wait', data?.browser?.authorized_urls ? `${data.browser.inspected || 0} pages read` : 'No authorized sites'],
+    ['Email / Telegram alerts', 'off', 'Not configured'],
+  ];
+}
+
+export function IntegrationStatus({data}) {
+  return <section className="cc-panel">
+    <header><strong><Link2 size={18}/>System Status & Integrations</strong></header>
+    {integrationRows(data).map(([name, tone, label]) => <div className="cc-row" key={name}><i className={`cc-dot ${tone}`}/><span>{name}</span><Badge tone={tone === 'ok' ? 'success' : tone === 'wait' ? 'warning' : 'neutral'}>{label}</Badge></div>)}
+  </section>;
+}
+
+export function AutonomousPipeline({data}) {
+  const fresh = data?.scheduler?.heartbeat_at && Date.now() - new Date(data.scheduler.heartbeat_at).getTime() < 120000;
+  const providers = Object.fromEntries((data?.providers || []).map(item => [item.provider_key, item]));
+  const pipeline = [
+    ['Fixture collection', providers.openligadb?.last_success_at || providers.openfootball?.last_success_at, 'ok'],
+    ['Historical sync', providers.openligadb?.last_success_at, 'ok'],
+    ['Feature engineering', data?.last_analysis || data?.last_run, (data?.last_analysis || data?.last_run) ? 'ok' : 'wait'],
+    ['AI predictions', data?.last_analysis || data?.last_run, data?.predictions ? 'ok' : 'wait'],
+    ['Odds synchronization', null, data?.odds_snapshots ? 'ok' : 'wait'],
+    ['Authorized browser', data?.browser?.last_finished_at, data?.browser?.authorized_urls ? 'ok' : 'wait'],
+    ['Value analysis', null, data?.qualified_opportunities ? 'ok' : 'wait'],
+    ['Accumulator generation', null, data?.accumulator_tickets ? 'ok' : 'wait'],
+    ['Result monitoring', (data?.schedules || []).find(item => item.job_kind === 'settlement')?.last_run_at, 'ok'],
+  ];
+  return <section className="cc-panel">
+    <header><strong><Layers3 size={18}/>Autonomous Pipeline</strong><Badge tone={fresh ? 'success' : 'warning'}>{fresh ? 'Running' : 'Idle'}</Badge></header>
+    {pipeline.map(([name, time, tone]) => {
+      const oddsFresh = name.startsWith('Odds') && data?.fresh_odds_fixtures;
+      const valueReady = name.startsWith('Value') && data?.qualified_opportunities;
+      const ticketsReady = name.startsWith('Accumulator') && data?.accumulator_tickets;
+      const label = oddsFresh ? `${fmt(data.fresh_odds_fixtures)} fresh` : name.startsWith('Odds') ? 'No fresh quote' : name.startsWith('Authorized') && !data?.browser?.authorized_urls ? 'No authorized sites' : name.startsWith('Authorized') && data?.browser?.failed ? `${data.browser.failed} failed` : name.startsWith('Authorized') && data?.browser?.queued ? `${data.browser.queued} queued` : valueReady ? `${fmt(data.qualified_opportunities)} qualified` : name.startsWith('Value') ? 'Blocked' : ticketsReady ? `${fmt(data.accumulator_tickets)} stored` : name.startsWith('Accumulator') ? 'Waiting' : ago(time);
+      const warning = (name.startsWith('Odds') && !oddsFresh) || (name.startsWith('Authorized') && !data?.browser?.authorized_urls) || (name.startsWith('Value') && !valueReady) || (name.startsWith('Accumulator') && !ticketsReady) || tone === 'wait';
+      return <div className="cc-row" key={name}><i className={`cc-dot ${warning ? 'wait' : 'ok'}`}/><span>{name}</span><Badge tone={warning ? 'warning' : 'success'}>{label}</Badge></div>;
+    })}
+    {(data?.model_governance?.decisions || []).map(item => <p className="cc-note" key={item.sport}><b>{item.sport}.</b> {item.action === 'activated' || item.action === 'already_active' ? `Active after holdout validation. Calibration error ${(Number(item.calibration_error) * 100).toFixed(1)}%.` : (item.reasons || []).join(' ')}</p>)}
+    {(data?.pipeline_blockers || []).map(item => <p className="cc-note" key={item.stage}><b>{item.stage}.</b> {item.reason}</p>)}
+  </section>;
+}
+
+function selectionLabel(leg) {
+  const market = String(leg.market || leg.selection || '');
+  if (market === 'HOME' || market === 'MONEYLINE_HOME') return `${leg.home} to win`;
+  if (market === 'AWAY' || market === 'MONEYLINE_AWAY') return `${leg.away} to win`;
+  if (market === 'DRAW') return 'Draw';
+  return market.replaceAll('_', ' ');
+}
+
+function BookingCentre({data, nav}) {
+  const centre = data?.booking_centre;
+  const [open, setOpen] = React.useState(null);
+  const [copied, setCopied] = React.useState('');
+  React.useEffect(() => {
+    if (!copied) return undefined;
+    const timer = setTimeout(() => setCopied(''), 1600);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  async function copy(code) {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(code);
+      return;
+    } catch {
+      const field = document.createElement('textarea');
+      field.value = code;
+      field.setAttribute('readonly', '');
+      field.style.position = 'fixed';
+      field.style.left = '-9999px';
+      document.body.appendChild(field);
+      field.select();
+      const copiedOk = document.execCommand('copy');
+      field.remove();
+      setCopied(copiedOk ? code : '');
+    }
+  }
+  const counts = centre?.counts || {};
+  const tickets = centre?.tickets || [];
+  const tone = {verified: 'success', awaiting_code: 'warning', unverified: 'neutral', expired: 'neutral'};
+  const category = {football: 'Football', basketball: 'Basketball', mixed: 'Mixed'};
+  return <section className="cc-panel booking">
+    <header>
+      <strong><Hash size={18}/><span>SportyBet Booking Codes<small>Ticket Centre</small></span></strong>
+      <button className="cc-link" onClick={() => nav('codes')}>View All Codes</button>
+    </header>
+    {!centre && <p className="cc-note">Loading stored tickets…</p>}
+    {centre && <>
+      <div className="cc-book-stats">
+        <div className="verified"><strong>{fmt(counts.verified_codes)}</strong><span>Verified codes</span></div>
+        <div className="prepared"><strong>{fmt(counts.prepared_tickets)}</strong><span>Prepared tickets</span></div>
+        <div className="awaiting"><strong>{fmt(counts.awaiting_codes)}</strong><span>Awaiting codes</span></div>
+      </div>
+      <p className="cc-note">A booking code is stored when SportyBet displays it after the ticket prices and the Book Bet control are selected. Place bet is never used. This card refreshes every minute.{centre.last_attempt?.error ? ` Latest attempt: ${centre.last_attempt.error}` : ''}</p>
+      <p className="cc-book-caption">Latest {tickets.length} of {fmt(counts.prepared_tickets)} prepared tickets</p>
+      {!tickets.length && <p className="cc-note">No prepared accumulator ticket is stored.</p>}
+      {tickets.map(ticket => <article className={`cc-slip ${ticket.code_status}`} key={ticket.id}>
+        <div className="cc-slip-head">
+          <button type="button" className="cc-slip-toggle" aria-expanded={open === ticket.id} onClick={() => setOpen(open === ticket.id ? null : ticket.id)}>
+            <span className={`cc-chip ${ticket.sport_mode}`}>{category[ticket.sport_mode] || ticket.sport_mode}</span>
+            <span className="cc-slip-meta">{ticket.leg_count} selections · {Number(ticket.combined_odds || 0).toFixed(2)} combined · {ticket.tier}× target · {ticket.code ? 'Generated' : 'Prepared'} {when(ticket.generated_at || ticket.created_at)}</span>
+            <ChevronDown size={14} className={open === ticket.id ? 'open' : ''}/>
+          </button>
+          <div className={`cc-slip-side${ticket.code ? ' has-code' : ''}`}>
+            {ticket.code && <div className="cc-code-row"><code>{ticket.code}</code><button type="button" className="cc-copy" onClick={() => copy(ticket.code)}><Copy size={12}/>{copied === ticket.code ? 'Copied' : 'Copy'}</button></div>}
+            <Badge tone={tone[ticket.code_status] || 'neutral'}>{ticket.code_label || 'Awaiting Code'}</Badge>
+          </div>
+        </div>
+        {open === ticket.id && <div className="cc-legs">
+          {(ticket.legs || []).map(leg => <div className="cc-leg" key={leg.id}>
+            <b>{leg.home} vs {leg.away}</b>
+            <span>{leg.competition}</span>
+            <span>{selectionLabel(leg)} · {leg.market} · {Number(leg.decimal_odds).toFixed(2)} · {leg.probability == null ? 'Probability not stored' : `${(Number(leg.probability) * 100).toFixed(1)}%`}</span>
+          </div>)}
+          {!ticket.legs?.length && <p className="cc-note">No selections are stored on this ticket.</p>}
+        </div>}
+      </article>)}
+    </>}
+  </section>;
+}
+
 export default function CommandCentre({data, nav, run, loading, refresh}) {
   const navigate = useNavigate();
+  const [sport, setSport] = React.useState('all');
+  React.useEffect(() => {
+    if (!refresh) return undefined;
+    const timer = setInterval(() => { refresh(); }, 60000);
+    return () => clearInterval(timer);
+  }, [refresh]);
   function openFixture(row) {
     const sport = row.sport === 'basketball' ? 'basketball' : 'football';
     navigate(`/sports/${sport}-analysis?fixture=${encodeURIComponent(row.fixture_id)}`, {
@@ -67,7 +209,6 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
     });
   }
   const upcoming = (data?.football_fixtures || 0) + (data?.basketball_fixtures || 0);
-  const fresh = data?.scheduler?.heartbeat_at && Date.now() - new Date(data.scheduler.heartbeat_at).getTime() < 120000;
   const activity = data?.activity_today || {};
   const activityRows = [
     ['Fixtures collected', activity.fixtures || 0, '#2563eb'],
@@ -86,25 +227,6 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
   const settledTotal = won + lost + pending;
   const wonPct = settledTotal ? (won / settledTotal) * 100 : 0;
   const lostPct = settledTotal ? (lost / settledTotal) * 100 : 0;
-  const providers = Object.fromEntries((data?.providers || []).map(item => [item.provider_key, item]));
-  const providerLine = key => {
-    const item = providers[key];
-    if (!item || !item.enabled) return ['off', 'Not configured'];
-    if (item.status === 'operational') return ['ok', 'Online'];
-    return ['wait', item.status];
-  };
-  const oddsLine = data?.odds_snapshots ? ['ok', 'Quotes stored'] : ['wait', 'Awaiting Odds'];
-  const pipeline = [
-    ['Fixture collection', providers.openligadb?.last_success_at || providers.openfootball?.last_success_at, 'ok'],
-    ['Historical sync', providers.openligadb?.last_success_at, 'ok'],
-    ['Feature engineering', data?.last_analysis || data?.last_run, (data?.last_analysis || data?.last_run) ? 'ok' : 'wait'],
-    ['AI predictions', data?.last_analysis || data?.last_run, data?.predictions ? 'ok' : 'wait'],
-    ['Odds synchronization', null, data?.odds_snapshots ? 'ok' : 'wait'],
-    ['Authorized browser', data?.browser?.last_finished_at, data?.browser?.authorized_urls ? 'ok' : 'wait'],
-    ['Value analysis', null, data?.qualified_opportunities ? 'ok' : 'wait'],
-    ['Accumulator generation', null, data?.accumulator_tickets ? 'ok' : 'wait'],
-    ['Result monitoring', (data?.schedules || []).find(item => item.job_kind === 'settlement')?.last_run_at, 'ok'],
-  ];
   const tiers = [2, 5, 10, 25, 100, 1000, 5000, 25000];
   const tierCount = Object.fromEntries((data?.tier_counts || []).map(row => [row.tier, row.total]));
   const tierClass = ['', '', 'b', 'b', 'c', 'd', 'd', 'e'];
@@ -130,23 +252,24 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
       <button className="cc-kpi red" onClick={() => nav('scheduler')}><i><AlertCircle size={20}/></i><div><span>Failed Jobs</span><strong>{fmt(data?.failed_jobs)}</strong><small>{data?.failed_jobs ? 'Needs attention' : 'Healthy'}</small></div></button>
     </div>
     <div className="cc-grid three">
-      <section className="cc-panel">
-        <header><strong><Layers3 size={18}/>Autonomous Pipeline</strong><Badge tone={fresh ? 'success' : 'warning'}>{fresh ? 'Running' : 'Idle'}</Badge></header>
-        {pipeline.map(([name, time, tone]) => <div className="cc-row" key={name}><i className={`cc-dot ${name === 'Odds synchronization' && !data?.odds_snapshots ? 'wait' : tone === 'wait' ? 'wait' : 'ok'}`}/><span>{name}</span><Badge tone={name.startsWith('Odds') && !data?.odds_snapshots ? 'warning' : name.startsWith('Authorized') && !data?.browser?.authorized_urls ? 'warning' : tone === 'wait' ? 'warning' : 'success'}>{name.startsWith('Odds') && !data?.odds_snapshots ? 'Awaiting Odds' : name.startsWith('Authorized') && !data?.browser?.authorized_urls ? 'No authorized sites' : name.startsWith('Authorized') && data?.browser?.failed ? `${data.browser.failed} failed` : name.startsWith('Authorized') && data?.browser?.queued ? `${data.browser.queued} queued` : name.startsWith('Value') && !data?.qualified_opportunities ? 'Awaiting calibration' : name.startsWith('Accumulator') && !data?.accumulator_tickets ? 'Waiting' : ago(time)}</Badge></div>)}
-      </section>
-      <section className="cc-panel">
-        <header><strong><Link2 size={18}/>System Status & Integrations</strong></header>
-        {[
-          ['Sports AI API', data ? 'ok' : 'bad', data ? 'Connected' : 'Unavailable'],
-          ['SQLite database', 'ok', 'Connected'],
-          ['football-data.org', ...providerLine('football-data')],
-          ['OpenLigaDB', ...providerLine('openligadb')],
-          ['OpenFootball dataset', ...providerLine('openfootball')],
-          ['Basketball dataset', ...providerLine('sportsdataverse')],
-          ['SportyBet integration', data?.browser?.sportybet_unattended?.operational ? 'ok' : 'wait', data?.browser?.sportybet_unattended?.operational ? 'Collecting displayed prices' : data?.browser?.sportybet_unattended?.authorized ? 'Waiting for prices' : 'Not collecting'],
-          ['Authorized browser', data?.browser?.authorized_urls ? 'ok' : 'wait', data?.browser?.authorized_urls ? `${data.browser.inspected || 0} pages read` : 'No authorized sites'],
-          ['Email / Telegram alerts', 'off', 'Not configured'],
-        ].map(([name, tone, label]) => <div className="cc-row" key={name}><i className={`cc-dot ${tone}`}/><span>{name}</span><Badge tone={tone === 'ok' ? 'success' : tone === 'wait' ? 'warning' : 'neutral'}>{label}</Badge></div>)}
+      <BookingCentre data={data} nav={nav} />
+      <section className="cc-panel opportunities">
+        <header><strong><Target size={18}/>Top Games with Opportunities</strong><button className="cc-link" onClick={() => nav('value')}>View All</button></header>
+        <div className="cc-filters" role="tablist">
+          {[['all', 'All Sports'], ['football', 'Football'], ['basketball', 'Basketball']].map(([key, label]) => <button key={key} className={sport === key ? `on ${key}` : ''} aria-pressed={sport === key} onClick={() => setSport(key)}>{label}</button>)}
+        </div>
+        {(data?.top_opportunities || []).filter(row => sport === 'all' || row.sport === sport).slice(0, 5).map(row => {
+          const pick = pickTeam(row);
+          const Icon = row.sport === 'basketball' ? Dribbble : Goal;
+          return <button className={`cc-opp ${row.sport}`} key={row.fixture_id} onClick={() => openFixture(row)}>
+            <Icon className={`cc-sport ${row.sport}`} size={15}/>
+            <b>{row.home} vs {row.away}<small>{when(row.starts_at)} · {pick ? pick.label : row.market}</small></b>
+            <span className="cc-prob">{(Number(row.probability) * 100).toFixed(1)}%</span>
+            <span>{Number(row.decimal_odds).toFixed(2)} {row.bookmaker}</span>
+            <span className="cc-edge">+{(Number(row.edge) * 100).toFixed(1)}%<small>Qualified</small></span>
+          </button>;
+        })}
+        {!(data?.top_opportunities || []).filter(row => sport === 'all' || row.sport === sport).length && <p className="cc-note">No qualified opportunity is waiting. A game appears here only after an active validated model and a current verified price produce a positive edge.</p>}
       </section>
       <section className="cc-panel">
         <header><strong><BarChart3 size={18}/>Today's Activity</strong><button className="cc-link" onClick={() => nav('activity')}>View Details</button></header>
@@ -162,7 +285,7 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
             <p><i className="cc-swatch" style={{background: '#20b66c'}}/>Won<b>{fmt(won)}</b></p>
             <p><i className="cc-swatch" style={{background: '#ef4444'}}/>Lost<b>{fmt(lost)}</b></p>
             <p><i className="cc-swatch" style={{background: '#94a3b8'}}/>Upcoming<b>{fmt(pending)}</b></p>
-            <p className="cc-note">Settled counts use only predictions stored before kickoff. ROI is not shown because no bookmaker quote is stored.</p>
+            <p className="cc-note">Settled counts use only predictions stored before kickoff. ROI stays blank until a qualified selection has a final result.</p>
           </div>
         </div>
       </section>
@@ -186,6 +309,7 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
       <section className="cc-panel">
         <header><strong><Layers3 size={18}/>Accumulator Targets & Availability</strong></header>
         <div className="cc-tiers">{tiers.map((tier, index) => <button key={tier} className={`cc-tier ${tierClass[index]}`} onClick={() => nav('tiers')}><strong>{fmt(tier)}×</strong><small>{fmt(tierCount[tier] || 0)} tickets</small></button>)}</div>
+        {(data?.tier_gaps || []).map(item => <p className="cc-note" key={item.tier}><b>{fmt(item.tier)}×.</b> {item.reason}</p>)}
       </section>
       <section className="cc-panel">
         <header><strong><Clock3 size={18}/>Next Scheduled Operations</strong><button className="cc-link" onClick={() => nav('scheduler')}>View Scheduler</button></header>
@@ -197,21 +321,34 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
   </div>;
 }
 
-export function PredictionBoard({sport}) {
+const PREDICTION_GROUPS = {
+  football: ['', 'result', 'goals', 'handicap'],
+  basketball: ['', 'moneyline', 'totals', 'spreads'],
+};
+
+export function PredictionBoard({sport, tab = 0}) {
+  const marketGroup = (PREDICTION_GROUPS[sport] || [])[tab] || '';
   const [payload, setPayload] = React.useState({items: [], total: 0, page: 1, page_size: 25});
   const [page, setPage] = React.useState(1);
   const [pageSize, setPageSize] = React.useState(25);
   const [selected, setSelected] = React.useState(null);
   const [markets, setMarkets] = React.useState([]);
   const [error, setError] = React.useState('');
-  React.useEffect(() => { setPage(1); }, [sport, pageSize]);
+  React.useEffect(() => { setPage(1); }, [sport, marketGroup, pageSize]);
   React.useEffect(() => {
     let cancel = false;
+    setPayload({items: [], total: 0, page, page_size: pageSize});
     const params = new URLSearchParams({group: 'fixture', page: String(page), page_size: String(pageSize)});
     if (sport) params.set('sport', sport);
-    get('/predictions?' + params.toString()).then(value => { if (!cancel) setPayload(value); }).catch(reason => { if (!cancel) setError(reason.message); });
+    if (marketGroup) params.set('market_group', marketGroup);
+    get('/predictions?' + params.toString()).then(value => {
+      if (cancel) return;
+      const rows = value.items || [];
+      if (sport && rows.some(row => row.sport && row.sport !== sport)) return;
+      setPayload(value);
+    }).catch(reason => { if (!cancel) setError(reason.message); });
     return () => { cancel = true; };
-  }, [sport, page, pageSize]);
+  }, [sport, marketGroup, page, pageSize]);
   async function open(row) {
     setSelected(row);
     setMarkets([]);

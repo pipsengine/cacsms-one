@@ -13,6 +13,7 @@ from prediction_engine import (
     build_features,
     execute_prediction_job,
     expected_value,
+    league_key,
     market_probability,
     recover_timed_out_jobs,
     run_analysis,
@@ -60,7 +61,7 @@ class PredictionEngineTests(unittest.TestCase):
         with db.connect() as connection:
             self._history(connection)
 
-    def _insert_match(self,connection,external_id,home,away,when,home_score,away_score):
+    def _insert_match(self,connection,external_id,home,away,when,home_score,away_score,competition='Test League'):
         fixture_id=str(uuid.uuid4())
         kickoff=when.isoformat()
         connection.execute(
@@ -68,7 +69,7 @@ class PredictionEngineTests(unittest.TestCase):
                (id,external_id,source,sport,competition,home,away,starts_at,status,
                 statistics_json,odds_json,observed_at)
                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (fixture_id,external_id,'history-source','football','Test League',
+            (fixture_id,external_id,'history-source','football',competition,
              home,away,kickoff,'finished','{}','{}',self.now.isoformat()),
         )
         connection.execute(
@@ -117,6 +118,51 @@ class PredictionEngineTests(unittest.TestCase):
         self.assertEqual(built['features']['away_games'],3)
         self.assertNotIn(self.future_id,built['fixture_ids'])
         self.assertEqual(built['source_refs'],['verified-results'])
+
+    def test_earlier_season_of_the_same_league_is_used(self):
+        with db.connect() as connection:
+            for index in range(1, 4):
+                kickoff = self.now - timedelta(days=index * 20)
+                self._insert_match(connection, f'serie-h-{index}', 'Napoli', f'Opponent H{index}', kickoff, 2, 0, 'Italian Serie A 2025/26')
+                self._insert_match(connection, f'serie-a-{index}', f'Opponent A{index}', 'Lecce', kickoff - timedelta(hours=5), 0, 1, 'Italian Serie A 2024/25')
+            target = {
+                'id': 'serie-target', 'sport': 'football', 'competition': 'Italian Serie A 2026/27',
+                'home': 'Napoli', 'away': 'Lecce', 'starts_at': self.target,
+            }
+            built = build_features(connection, target)
+        self.assertIsNotNone(built)
+        self.assertGreaterEqual(built['features']['home_games'], 3)
+        self.assertGreaterEqual(built['features']['away_games'], 3)
+        self.assertEqual(league_key('England FA Cup'), 'fa-cup')
+        self.assertNotEqual(league_key('England FA Cup'), league_key('English Premier League 2026/27'))
+
+    def test_one_short_club_name_uses_that_league_history(self):
+        with db.connect() as connection:
+            for index in range(1, 4):
+                kickoff = self.now - timedelta(days=40 + index)
+                self._insert_match(connection, f'bayern-h-{index}', 'FC Bayern München', f'Opponent H{index}', kickoff, 3, 0, '1. Fußball-Bundesliga 2025/2026')
+                self._insert_match(connection, f'mainz-a-{index}', f'Opponent A{index}', '1. FSV Mainz 05', kickoff - timedelta(hours=4), 0, 2, '1. Fußball-Bundesliga 2025/2026')
+            built = build_features(connection, {
+                'id': 'bayern-short', 'sport': 'football', 'competition': 'Germany Bundesliga',
+                'home': 'Bayern Munich', 'away': 'Mainz', 'starts_at': self.target,
+            })
+        self.assertIsNotNone(built)
+        self.assertGreaterEqual(built['features']['home_games'], 3)
+        self.assertGreaterEqual(built['features']['away_games'], 3)
+
+    def test_european_fixture_uses_domestic_league_when_competition_has_no_finals(self):
+        with db.connect() as connection:
+            for index in range(1, 4):
+                kickoff = self.now - timedelta(days=30 + index)
+                self._insert_match(connection, f'united-{index}', 'Manchester United FC', f'Host {index}', kickoff, 2, 1, 'English Premier League 2025/26')
+                self._insert_match(connection, f'roma-{index}', f'Visitor {index}', 'AS Roma', kickoff - timedelta(hours=3), 1, 1, 'Italian Serie A 2025/26')
+            built = build_features(connection, {
+                'id': 'ucl-short', 'sport': 'football',
+                'competition': 'International Clubs UEFA Champions League',
+                'home': 'Man Utd', 'away': 'Roma', 'starts_at': self.target,
+            })
+        self.assertIsNotNone(built)
+        self.assertIn('stored league', built['features']['history_basis'])
 
     def test_match_analysis_uses_stored_results_and_no_invented_odds(self):
         with db.connect() as connection:

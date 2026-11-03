@@ -218,6 +218,28 @@ class AcquisitionEngineTests(unittest.TestCase):
         self.assertEqual([row['home_score'] for row in batch['fixtures']],[2,1])
         self.assertEqual([row['time_precision'] for row in batch['fixtures']],['date','date'])
 
+    def test_football_txt_reads_league_and_nations_scores(self):
+        provider={'provider_key': 'txt-openfootball'}
+        text=(
+            '= UEFA Champions League 2024/25\n'
+            'Tue Sep 17 2024\n'
+            '21:00  Real Madrid CF (ESP) v VfB Stuttgart (GER) 3-1 (0-0)\n'
+            '21:00  Liverpool FC (ENG) v Paris Saint-Germain FC (FRA) 1-4 pen. 0-1 a.e.t. (0-1)\n'
+            '= UEFA Nations League 2024\n'
+            'Thu Sep 5\n'
+            '  Portugal               2-1 Croatia                  @ Lisbon, Portugal\n'
+            '     (Diogo Dalot 7\')\n'
+        )
+        rows=acquisition_engine._football_txt_fixtures(
+            provider, 'https://raw.githubusercontent.com/openfootball/champions-league/master/2024-25/cl.txt', text,
+        )
+        self.assertEqual([(row['home'], row['away'], row['home_score'], row['away_score']) for row in rows], [
+            ('Real Madrid CF', 'VfB Stuttgart', 3, 1),
+            ('Portugal', 'Croatia', 2, 1),
+        ])
+        self.assertEqual(rows[0]['competition'], 'UEFA Champions League 2024/25')
+        self.assertEqual(rows[1]['competition'], 'UEFA Nations League 2024')
+
     def test_balldontlie_requires_key_and_uses_authenticated_pagination(self):
         provider=self._provider(
             adapter='balldontlie',config={'season':2026,'per_page':100},

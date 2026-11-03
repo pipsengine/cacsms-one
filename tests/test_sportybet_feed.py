@@ -81,6 +81,32 @@ class SportyBetFeedTests(unittest.TestCase):
         self.assertEqual(stored['decimal_odds'], 1.8)
         self.assertEqual(stored['bookmaker'], 'SportyBet')
 
+    def test_unmatched_league_becomes_a_fixture(self):
+        kickoff = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=3)
+        payload = {'data': {'tournaments': [{'categoryName': 'Spain', 'name': 'LaLiga', 'events': [{
+            'homeTeamName': 'Real Madrid', 'awayTeamName': 'Barcelona',
+            'estimateStartTime': int(kickoff.timestamp() * 1000),
+            'markets': [{'status': 0, 'desc': '1X2', 'outcomes': [
+                {'isActive': 1, 'desc': 'Home', 'odds': '1.70'},
+                {'isActive': 1, 'desc': 'Draw', 'odds': '3.80'},
+                {'isActive': 1, 'desc': 'Away', 'odds': '4.50'},
+            ]}],
+        }]}]}}
+        rows = quotes_from_payload(payload, 'football', 'https://www.sportybet.com/ng/sport/football')
+        with db.connect() as connection:
+            result = publish_quotes(connection, rows, rows[0]['source_url'])
+            fixture = connection.execute(
+                "SELECT id, competition, home, away FROM sports_ai_fixtures WHERE source='sportybet-displayed' AND competition='Spain LaLiga'",
+            ).fetchone()
+            prices = connection.execute(
+                'SELECT COUNT(*) FROM sports_ai_odds_snapshots WHERE fixture_id=?',
+                (fixture['id'],),
+            ).fetchone()[0]
+        self.assertEqual(result['imported'], 3)
+        self.assertEqual(fixture['home'], 'Real Madrid')
+        self.assertEqual(fixture['away'], 'Barcelona')
+        self.assertEqual(prices, 3)
+
 
 if __name__ == '__main__':
     unittest.main()

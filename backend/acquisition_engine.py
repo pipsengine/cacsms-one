@@ -173,8 +173,30 @@ def _record(source_id, external_id, sport, competition, home, away, starts_at,
 
 
 def _openligadb(provider, config, limit=MAX_RECORDS):
-    league = str(config.get('league', ''))
-    season = int(config.get('season', datetime.now().year))
+    leagues = config.get('leagues') or [config.get('league', '')]
+    seasons = config.get('seasons') or [config.get('season', datetime.now().year)]
+    if isinstance(leagues, str):
+        leagues = [leagues]
+    if isinstance(seasons, (int, str)):
+        seasons = [seasons]
+    fixtures, urls, errors = [], [], []
+    requests = [(str(league), int(season)) for league in leagues for season in seasons]
+    for league, season in requests:
+        try:
+            batch = _openligadb_season(provider, league, season, limit)
+        except CollectionError as error:
+            errors.append(str(error))
+            if len(requests) == 1:
+                raise
+            continue
+        fixtures.extend(batch['fixtures'])
+        urls.append(batch['source_url'])
+    if not urls:
+        raise CollectionError(errors[0] if errors else 'Configure a valid OpenLigaDB league and season')
+    return {'fixtures': fixtures, 'standings': [], 'source_url': urls[0], 'pages': len(urls)}
+
+
+def _openligadb_season(provider, league, season, limit):
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,20}', league) or not 2000 <= season <= datetime.now().year + 1:
         raise CollectionError('Configure a valid OpenLigaDB league and season')
     url = f'https://api.openligadb.de/getmatchdata/{urllib.parse.quote(league)}/{season}'
@@ -203,24 +225,157 @@ def _openligadb(provider, config, limit=MAX_RECORDS):
             final.get('pointsTeam2') if final else None,
             observed,
         ))
-    return {'fixtures': fixtures, 'standings': [], 'source_url': url, 'pages': 1}
+    return {'fixtures': fixtures, 'source_url': url}
+
+
+_TXT_MONTHS = {
+    'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+    'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
+}
+_TXT_DATE = re.compile(
+    r'^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+([A-Za-z]{3})\s+(\d{1,2})(?:\s+(20\d{2}))?$'
+)
+_TXT_VERSUS = re.compile(
+    r'^(?:(\d{1,2}:\d{2})\s+)?(.+?)\s+v\s+(.+?)\s+(\d{1,2})-(\d{1,2})\b'
+)
+_TXT_INLINE = re.compile(
+    r'^([A-Za-z].*?)\s+(\d{1,2})-(\d{1,2})\s+([A-Za-z].+?)(?:\s+@.*)?$'
+)
+_TXT_COUNTRY = re.compile(r'\s*\([A-Z]{3}\)')
+
+
+def _openfootball_kind(url):
+    parsed = urllib.parse.urlsplit(url)
+    path = parsed.path
+    if parsed.scheme != 'https' or parsed.hostname != 'raw.githubusercontent.com':
+        return ''
+    if path.startswith('/openfootball/football.json/') and path.endswith('.json'):
+        return 'json'
+    if path.startswith('/openfootball/champions-league/') and re.search(r'/(?:cl|el|conf)\.txt$', path):
+        return 'txt'
+    if (path.startswith('/openfootball/internationals/') and '/uefa_nations_league/' in path
+            and path.endswith('.txt')):
+        return 'txt'
+    return ''
+
+
+def _txt_team(value):
+    text = _TXT_COUNTRY.sub('', value)
+    return re.sub(r'\s+', ' ', text).strip(' .')
+
+
+def _football_txt_fixtures(provider, url, text, limit=MAX_RECORDS):
+    """Public-domain Football.TXT results. Extra-time and penalty lines are skipped."""
+    competition = ''
+    year = None
+    previous_month = None
+    current_date = None
+    fixtures = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#') or line.startswith('▪') or line.startswith('('):
+            continue
+        if line.startswith('='):
+            competition = line.lstrip('=').strip()
+            found = re.search(r'(20\d{2})', competition)
+            if found:
+                year = int(found.group(1))
+            continue
+        dated = _TXT_DATE.match(line)
+        if dated:
+            month = _TXT_MONTHS.get(dated.group(1).casefold())
+            if month is None or year is None:
+                current_date = None
+                continue
+            if dated.group(3):
+                year = int(dated.group(3))
+            elif previous_month is not None and month < previous_month:
+                year += 1
+            previous_month = month
+            current_date = f'{year:04d}-{month:02d}-{int(dated.group(2)):02d}'
+            continue
+        if current_date is None or 'pen.' in line or 'a.e.t.' in line or 'awarded' in line.casefold():
+            continue
+        versus = _TXT_VERSUS.match(line) if ' v ' in line else None
+        inline = None if versus else _TXT_INLINE.match(line)
+        if versus:
+            clock, home, away, home_score, away_score = versus.groups()
+        elif inline:
+            home, home_score, away_score, away = inline.groups()
+            clock = None
+        else:
+            continue
+        home, away = _txt_team(home), _txt_team(away)
+        if not home or not away or home == away:
+            continue
+        kickoff = f'{current_date}T{clock}:00+00:00' if clock else current_date
+        if clock:
+            settled = (datetime.fromisoformat(kickoff) + timedelta(hours=2)).isoformat()
+        else:
+            settled = kickoff
+        external_id = f'{competition}|{current_date}|{home}|{away}'
+        try:
+            fixtures.append(_record(
+                provider['provider_key'], external_id[:200], 'football', competition or 'Football',
+                home, away, kickoff, settled, url,
+                home_score=int(home_score), away_score=int(away_score), settled_at=settled,
+            ))
+        except CollectionError:
+            continue
+        if len(fixtures) >= limit:
+            break
+    if not fixtures:
+        raise CollectionError('Football.TXT file did not contain completed matches')
+    return fixtures
 
 
 def _openfootball(provider, config, limit=MAX_RECORDS):
-    url = str(config.get('dataset_url', ''))
-    parsed = urllib.parse.urlsplit(url)
-    if (parsed.scheme != 'https' or parsed.hostname != 'raw.githubusercontent.com'
-            or not parsed.path.startswith('/openfootball/football.json/')):
+    urls = []
+    if config.get('dataset_url'):
+        urls.append(str(config['dataset_url']))
+    extra = config.get('dataset_urls') or []
+    if isinstance(extra, str):
+        extra = [extra]
+    for item in extra:
+        if item and str(item) not in urls:
+            urls.append(str(item))
+    if not urls:
         raise CollectionError(
             'OpenFootball URL must be a reviewed raw.githubusercontent.com/openfootball/football.json dataset URL'
         )
+    fixtures, used, errors = [], [], []
+    for url in urls:
+        try:
+            fixtures.extend(_openfootball_url(provider, url, limit))
+            used.append(url)
+        except CollectionError as error:
+            errors.append(str(error))
+            if len(urls) == 1:
+                raise
+    if not used:
+        raise CollectionError(errors[0] if errors else 'OpenFootball returned no matches')
+    return {'fixtures': fixtures, 'standings': [], 'source_url': used[0], 'pages': len(used)}
+
+
+def _openfootball_url(provider, url, limit):
+    kind = _openfootball_kind(url)
+    if not kind:
+        raise CollectionError(
+            'OpenFootball URL must be a reviewed football.json, champions-league, or nations-league dataset'
+        )
+    if kind == 'txt':
+        body, _headers = _request(url, {'Accept': 'text/plain'})
+        try:
+            text = body.decode('utf-8-sig')
+        except UnicodeDecodeError as error:
+            raise CollectionError('Football.TXT dataset is not valid UTF-8') from error
+        return _football_txt_fixtures(provider, url, text, limit)
     payload, _ = _json_body(url, {'Accept': 'application/json'})
     if not isinstance(payload, dict) or not isinstance(payload.get('matches'), list):
         raise CollectionError('OpenFootball JSON must contain a matches list')
     now = utc_now()
-    matches = payload['matches'][:limit]
     fixtures = []
-    for index, item in enumerate(matches):
+    for index, item in enumerate(payload['matches'][:limit]):
         score_data = item.get('score') or {}
         full_time = (
             score_data.get('ft') if isinstance(score_data,dict)
@@ -235,7 +390,7 @@ def _openfootball(provider, config, limit=MAX_RECORDS):
             home_score=scores[0], away_score=scores[1],
             settled_at=item.get('date') if scores[0] is not None and scores[1] is not None else None,
         ))
-    return {'fixtures': fixtures, 'standings': [], 'source_url': url, 'pages': 1}
+    return fixtures
 
 
 def _football_data(provider, config, limit=MAX_RECORDS):

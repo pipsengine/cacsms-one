@@ -1,5 +1,6 @@
 """Supervised SportyBet quote matching. Nothing here places a wager or invents a price."""
 
+import hashlib
 import json
 import math
 import re
@@ -472,13 +473,12 @@ def _assess_value(connection, observation, odds_id, odds, now):
     if issue:
         _insert_opportunity(connection, prediction['id'], odds_id, None, None, 'suspended', 'An open high-severity data-quality issue blocks qualification.', now)
         return 'suspended', None
-    calibrated = (
-        prediction['active'] and prediction['model_status'] == 'validated' and (
-            (fixture['sport'] == 'football' and observation['canonical_market'] in {'HOME', 'DRAW', 'AWAY'})
-            or (fixture['sport'] == 'basketball' and observation['canonical_market'] in {'MONEYLINE_HOME', 'MONEYLINE_AWAY'})
-        )
+    production = bool(prediction['active']) and prediction['model_status'] in ('validated', 'active')
+    calibrated = production and (
+        (fixture['sport'] == 'football' and observation['canonical_market'] in {'HOME', 'DRAW', 'AWAY'})
+        or (fixture['sport'] == 'basketball' and observation['canonical_market'] in {'MONEYLINE_HOME', 'MONEYLINE_AWAY'})
     )
-    if not prediction['active'] or prediction['model_status'] != 'validated' or not calibrated:
+    if not production or not calibrated:
         reason = 'The model is not both explicitly activated and validated for this market.'
         _insert_opportunity(connection, prediction['id'], odds_id, None, None, 'awaiting_calibration', reason, now)
         return 'awaiting_calibration', None
@@ -554,6 +554,48 @@ def _rank_loaded(fixtures, observation):
     return {'ambiguous': ambiguous, 'best': best}
 
 
+def _ensure_displayed_fixture(connection, row, now):
+    """Store an upcoming match SportyBet displayed when no schedule fixture is the same game."""
+    sport = row.get('sport')
+    competition = (row.get('competition') or '').strip()
+    home = (row.get('home') or '').strip()
+    away = (row.get('away') or '').strip()
+    starts_at = row.get('starts_at')
+    if sport not in {'football', 'basketball'} or not competition or not home or not away or not starts_at:
+        return None
+    try:
+        kickoff = parse_time(starts_at)
+    except (TypeError, ValueError):
+        return None
+    if kickoff <= now:
+        return None
+    identity = '|'.join((
+        sport,
+        ' '.join(sorted(_tokens(home))),
+        ' '.join(sorted(_tokens(away))),
+        kickoff.isoformat(),
+    ))
+    external_id = hashlib.sha256(identity.encode()).hexdigest()[:32]
+    existing = connection.execute(
+        'SELECT id,sport,competition,home,away,starts_at,status FROM sports_ai_fixtures WHERE source=? AND external_id=?',
+        ('sportybet-displayed', external_id),
+    ).fetchone()
+    if existing:
+        return dict(existing)
+    fixture_id = str(uuid.uuid4())
+    connection.execute(
+        """INSERT INTO sports_ai_fixtures
+           (id,external_id,source,sport,competition,home,away,starts_at,status,statistics_json,odds_json,observed_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (fixture_id, external_id, 'sportybet-displayed', sport, competition[:200], home[:200], away[:200],
+         kickoff.isoformat(), 'scheduled', '{}', '{}', now.isoformat()),
+    )
+    return {
+        'id': fixture_id, 'sport': sport, 'competition': competition, 'home': home, 'away': away,
+        'starts_at': kickoff.isoformat(), 'status': 'scheduled',
+    }
+
+
 def accept_displayed_quotes(connection, observation_ids, actor, now=None):
     """Import structured SportyBet prices when one stored fixture is clearly the same match."""
     now = now or datetime.now(timezone.utc)
@@ -573,9 +615,21 @@ def accept_displayed_quotes(connection, observation_ids, actor, now=None):
                 pool[fixture['id']] = fixture
         ranked = _rank_loaded(pool.values(), row)
         best = ranked.get('best')
-        if ranked.get('ambiguous') or not best or best.get('swapped') or best['confidence'] < 0.7:
+        names_match = bool(best) and not best.get('swapped') and best['confidence'] >= 0.55
+        if ranked.get('ambiguous') or (best and best.get('swapped')) or (names_match and best['confidence'] < 0.7):
             skipped += 1
             continue
+        if not names_match:
+            created = _ensure_displayed_fixture(connection, row, now)
+            if not created:
+                skipped += 1
+                continue
+            for token in _tokens(created['home']) | _tokens(created['away']):
+                by_token.setdefault(token, []).append(created)
+            best = {
+                'fixture_id': created['id'], 'sport': created['sport'], 'confidence': 1.0,
+                'starts_at': created['starts_at'], 'swapped': False,
+            }
         try:
             kickoff = parse_time(best['starts_at'])
             observed = parse_time(row['starts_at']) if row.get('starts_at') else None

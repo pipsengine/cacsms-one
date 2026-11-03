@@ -2,6 +2,7 @@ import React, {useEffect, useMemo, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
 import {AlertCircle, Download, Pause, Play, RefreshCw, RotateCcw} from 'lucide-react';
 import {get, post, put} from './api';
+import {AutonomousPipeline, IntegrationStatus} from './CommandCentre';
 
 const adminHeaders = key => (key ? {'X-Sports-Admin-Key': key} : {});
 
@@ -70,6 +71,7 @@ export default function OperationsCentre({page, tab = 0}) {
   const [jobs, setJobs] = useState([]);
   const [providers, setProviders] = useState([]);
   const [browser, setBrowser] = useState(null);
+  const [status, setStatus] = useState(null);
   const [evaluations, setEvaluations] = useState({evaluations: [], drift: [], note: ''});
   const [rules, setRules] = useState([]);
   const [deliveries, setDeliveries] = useState([]);
@@ -85,15 +87,16 @@ export default function OperationsCentre({page, tab = 0}) {
     setError('');
     try {
       if (page === 'monitor') {
-        const [centre, health, research, quality, flow] = await Promise.all([
+        const [centre, health, research, quality, flow, overview] = await Promise.all([
           get('/operations/command'), get('/operations/providers/health'), get('/operations/browser-research'),
-          get('/operations/evaluations'), get('/operations/workflows'),
+          get('/operations/evaluations'), get('/operations/workflows'), get('/dashboard'),
         ]);
         setCommand(centre);
         setProviders(health);
         setBrowser(research);
         setEvaluations(quality);
         setWorkflows(flow);
+        setStatus(overview);
       } else if (page === 'scheduler') {
         const [rows, history] = await Promise.all([get('/operations/schedules'), get('/operations/jobs')]);
         setSchedules(rows);
@@ -182,7 +185,10 @@ export default function OperationsCentre({page, tab = 0}) {
       </section>
 
       {page === 'monitor' && tab === 0 && (
-        <section className="sp-panel">
+        <>
+          <IntegrationStatus data={status} />
+          <AutonomousPipeline data={status} />
+          <section className="sp-panel">
           <div className="sp-metrics">
             {cards.map(([label, value, target]) => (
               <button className="sp-metric" key={label} onClick={() => openCard(target)}>
@@ -200,6 +206,7 @@ export default function OperationsCentre({page, tab = 0}) {
             {events.length > 0 && <Table columns={[{key: 'from_state', label: 'From'}, {key: 'to_state', label: 'To'}, {key: 'reason', label: 'Reason'}, {key: 'created_at', label: 'When', render: row => localTime(row.created_at)}]} rows={events} empty="No workflow events." />}
           </>}
         </section>
+        </>
       )}
 
       {page === 'monitor' && tab === 1 && (
