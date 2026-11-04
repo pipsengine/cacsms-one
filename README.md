@@ -15,7 +15,7 @@ Open `http://localhost:5173`. For deployment, run `npm run build` and serve `dis
 
 ## Run the Sports AI backend
 
-The Sports AI portal is reachable from the existing Sports AI card or directly at `/sports/dashboard`. It returns to the hub at `/hub`. In one PowerShell terminal:
+The Sports AI portal is reachable from the existing Sports AI card or directly at `/sports/dashboard`. It returns to the hub at `/hub`. Install the Python dependencies once:
 
 ```powershell
 Set-Location 'C:\Projects Development\cacsms-one\backend'
@@ -23,13 +23,9 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 python -m playwright install chromium
-$env:SPORTS_SQLITE_PATH = Join-Path $env:LOCALAPPDATA 'CACSMS Sports AI\sports-ai.sqlite3'
-$env:SPORTS_LOCAL_PREVIEW='1'
-$env:SPORTS_ADMIN_API_KEY = 'set-a-private-local-admin-key'
-uvicorn main:app --host 127.0.0.1 --port 8011
 ```
 
-In a second terminal, start the frontend:
+Then start the app from the repository root:
 
 ```powershell
 Set-Location 'C:\Projects Development\cacsms-one'
@@ -37,16 +33,9 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173/sports/dashboard`. Vite proxies `/api/sports-ai/*` to the loopback backend. The backend applies additive migrations to the selected SQLite database and creates a timestamped backup before changing an existing database. Keep `SPORTS_SQLITE_PATH` on the same file for the API and worker.
+`npm run dev` starts the page, the API on `127.0.0.1:8011`, and the scheduler. If either Python process stops, the dev server starts it again. Both use `backend\sports_demo.sqlite3`. `SPORTS_LOCAL_PREVIEW=1` is set only for this loopback dev server.
 
-To run scheduled collection and analysis, use a third terminal with the same environment variables:
-
-```powershell
-Set-Location 'C:\Projects Development\cacsms-one\backend'
-.\.venv\Scripts\Activate.ps1
-$env:SPORTS_SQLITE_PATH = Join-Path $env:LOCALAPPDATA 'CACSMS Sports AI\sports-ai.sqlite3'
-python worker.py --loop
-```
+Open `http://localhost:5173/sports/dashboard`. Vite proxies `/api/sports-ai/*` to the loopback backend. The backend applies additive migrations to that SQLite database and creates a timestamped backup before changing an existing database.
 
 `SPORTS_LOCAL_PREVIEW=1` is strictly for loopback development, never production. This repository does not contain the CACSMS ONE backend/session service, so production authentication and role enforcement must be wired by the host backend before deployment. `SPORTS_ADMIN_API_KEY` protects provider configuration and model activation in the standalone adapter; it is not a replacement for shared SSO/RBAC.
 

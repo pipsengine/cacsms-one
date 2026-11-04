@@ -68,6 +68,10 @@ def _process_prediction_queue():
         print('prediction queue',job['trigger'],result.get('status'))
 
 
+def _report(label, error):
+    print(label, str(error).encode('ascii', 'backslashreplace').decode('ascii'))
+
+
 def tick():
     initialize()
     from operations_engine import orchestrate_once
@@ -92,7 +96,7 @@ def _process_browser_queue():
         booked = process_booking_queue()
         print('sportybet booking', booked.get('status'), 'qualified', booked.get('qualified', ''), 'places_wager', booked.get('places_wager'))
     except Exception as error:
-        print('browser queue failed', str(error))
+        _report('browser queue failed', error)
 
 
 def _govern_cycle():
@@ -121,7 +125,7 @@ def _govern_cycle():
             priced.get('reason', ''),
         )
     except Exception as error:
-        print('governance failed', str(error))
+        _report('governance failed', error)
 
 
 def _monitor_accumulators():
@@ -134,7 +138,7 @@ def _monitor_accumulators():
         print('accumulator monitor',result.get('status'),
               'settled',result.get('settled',0),'expired',result.get('expired',0))
     except Exception as error:
-        print('accumulator monitor failed',str(error))
+        _report('accumulator monitor failed', error)
 
 
 if __name__=='__main__':

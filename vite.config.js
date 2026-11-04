@@ -1,7 +1,17 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { startSportsDevServices } from './scripts/sports-dev-services.mjs';
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    {
+      name: 'sports-dev-services',
+      apply: 'serve',
+      configureServer() {
+        startSportsDevServices();
+      },
+    },
+  ],
   server: {
     port: 5173,
     proxy: {
