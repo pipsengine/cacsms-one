@@ -59,6 +59,7 @@ class BookingTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.server.shutdown()
+        cls.server.server_close()
         db.DB = cls.previous
         cls.temp.cleanup()
 
@@ -79,11 +80,43 @@ class BookingTests(unittest.TestCase):
 
     def test_duplicate_qualified_set_is_not_queued_twice(self):
         with db.connect() as connection:
+            connection.execute('DELETE FROM sports_ai_booking_jobs')
+            moment = '2026-11-04T09:00:00+00:00'
+            connection.execute(
+                """INSERT INTO sports_ai_qualification_decisions
+                   (id,prediction_id,fixture_id,sport,market,state,reason_code,reason,evidence_json,products_json,
+                    policy_version,decision_version,fingerprint,created_at,updated_at)
+                   VALUES('qual-pistons','pred-pistons','pistons','basketball','MONEYLINE_HOME','QUALIFIED',
+                          'QUALIFIED_OK','Stored qualification','{}','["booking"]',1,1,'fp',?,?)""",
+                (moment, moment),
+            )
             first = create_job(connection, [self.selection()])
             second = create_job(connection, [self.selection()])
         self.assertFalse(first['duplicate'])
         self.assertTrue(second['duplicate'])
         self.assertEqual(first['id'], second['id'])
+
+    def test_closed_window_does_not_open_a_browser(self):
+        from datetime import datetime, timezone
+        with db.connect() as connection:
+            connection.execute('DELETE FROM sports_ai_booking_jobs')
+            moment = '2026-11-04T09:00:00+00:00'
+            connection.execute(
+                """INSERT INTO sports_ai_qualification_decisions
+                   (id,prediction_id,fixture_id,sport,market,state,reason_code,reason,evidence_json,products_json,
+                    policy_version,decision_version,fingerprint,created_at,updated_at)
+                   VALUES('qual-window','pred-window','pistons','basketball','MONEYLINE_HOME','QUALIFIED',
+                          'QUALIFIED_OK','Stored qualification','{}','["booking"]',1,1,'fp-window',?,?)""",
+                (moment, moment),
+            )
+            create_job(connection, [self.selection()])
+        result = process_booking_queue(datetime(2026, 11, 4, 9, 0, tzinfo=timezone.utc))
+        self.assertEqual(result['status'], 'outside_window')
+        self.assertEqual(result['phase'], 'event')
+        self.assertFalse(result['places_wager'])
+        with db.connect() as connection:
+            status = connection.execute('SELECT status FROM sports_ai_booking_jobs').fetchone()['status']
+        self.assertEqual(status, 'QUEUED')
 
     def test_click_adds_the_price_and_reads_the_page_code(self):
         from playwright.async_api import async_playwright

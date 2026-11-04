@@ -15,6 +15,19 @@ from datetime import datetime, timezone
 from prediction_engine import _line_settlement
 
 TARGETS = (2, 5, 10, 25, 100, 1000, 5000, 25000)
+RANGE_TIERS = (
+    {'id': '1.50-1.99', 'label': '1.50–1.99', 'low': 1.50, 'high': 1.99, 'tier': 150, 'extreme': False},
+    {'id': '2.00-2.99', 'label': '2.00–2.99', 'low': 2.00, 'high': 2.99, 'tier': 200, 'extreme': False},
+    {'id': '3.00-4.99', 'label': '3.00–4.99', 'low': 3.00, 'high': 4.99, 'tier': 300, 'extreme': False},
+    {'id': '5.00-9.99', 'label': '5.00–9.99', 'low': 5.00, 'high': 9.99, 'tier': 500, 'extreme': False},
+    {'id': '10.00-19.99', 'label': '10.00–19.99', 'low': 10.00, 'high': 19.99, 'tier': 1001, 'extreme': False},
+    {'id': '20.00-49.99', 'label': '20.00–49.99', 'low': 20.00, 'high': 49.99, 'tier': 2000, 'extreme': True},
+    {'id': '50.00-99.99', 'label': '50.00–99.99', 'low': 50.00, 'high': 99.99, 'tier': 5001, 'extreme': True},
+    {'id': '100.00-249.99', 'label': '100.00–249.99', 'low': 100.00, 'high': 249.99, 'tier': 10001, 'extreme': True},
+    {'id': '250.00-499.99', 'label': '250.00–499.99', 'low': 250.00, 'high': 499.99, 'tier': 25001, 'extreme': True},
+    {'id': '500.00-1000.00', 'label': '500.00–1,000.00', 'low': 500.00, 'high': 1000.00, 'tier': 50000, 'extreme': True},
+)
+TIER_POLICY_KEY = 'ticket_tiers'
 CONFIG_ID = 'accumulator-default'
 STAKE_ASSUMPTION = 1.0
 HYPOTHETICAL_LABEL = (
@@ -370,6 +383,8 @@ def combination_issues(legs, config):
         for group in by_fixture.values():
             if len(group) > 1 and _contradictory(group):
                 issues.append(('contradictory', 'fail', 'Selections contain contradictory outcomes'))
+            elif len(group) > 1 and _same_score_family(group):
+                issues.append(('related_markets', 'fail', 'Score-distribution markets from one fixture are not combined.'))
             elif len(group) > 1:
                 issues.append(('related_markets', 'unverified', 'Related markets from one fixture have no validated joint distribution'))
     else:
@@ -401,6 +416,23 @@ def combination_issues(legs, config):
     else:
         issues.append(('partial_settlement', 'pass', 'Every leg is a binary win-or-loss market'))
     return issues
+
+
+def _same_score_family(legs):
+    """Markets priced from one full-time score or point distribution."""
+    def family(market):
+        market = (market or '').upper()
+        if market in _BINARY_FOOTBALL or market in ('MONEYLINE_HOME', 'MONEYLINE_AWAY'):
+            return 'score'
+        if re.fullmatch(r'(OVER|UNDER)_\d+(?:\.\d+)?', market):
+            return 'score'
+        if re.fullmatch(r'(HOME|AWAY)_(OVER|UNDER)_\d+(?:\.\d+)?', market):
+            return 'score'
+        if re.fullmatch(r'(HOME|AWAY)_(HANDICAP|SPREAD)_-?\d+(?:\.\d+)?', market):
+            return 'score'
+        return None
+    families = {family(leg.get('market')) for leg in legs}
+    return families == {'score'}
 
 
 def _contradictory(legs):
@@ -505,8 +537,87 @@ def _ticket_score(target, tolerance, legs, combined):
     return score, components
 
 
+def default_tier_policy():
+    return {
+        'version': 1,
+        'min_settled_before_activation': 20,
+        'tiers': [
+            {
+                'id': item['id'], 'label': item['label'], 'low': item['low'], 'high': item['high'],
+                'tier': item['tier'], 'extreme': item['extreme'], 'enabled': True,
+                'mode': 'simulation' if item['extreme'] else 'standard',
+            }
+            for item in RANGE_TIERS
+        ],
+    }
+
+
+def load_tier_policy(connection):
+    policy = default_tier_policy()
+    row = connection.execute('SELECT value_json FROM sports_ai_settings WHERE key=?', (TIER_POLICY_KEY,)).fetchone()
+    stored = _loads(row['value_json'], {}) if row else {}
+    saved = {item.get('id'): item for item in stored.get('tiers') or []}
+    minimum = stored.get('min_settled_before_activation')
+    if isinstance(minimum, int) and 1 <= minimum <= 1000:
+        policy['min_settled_before_activation'] = minimum
+    for item in policy['tiers']:
+        choice = saved.get(item['id']) or {}
+        if 'enabled' in choice:
+            item['enabled'] = bool(choice['enabled'])
+        mode = choice.get('mode')
+        if mode in ('standard', 'simulation'):
+            item['mode'] = mode
+        item['settled'] = _tier_settled_count(connection, item['tier'])
+        item['activation_ready'] = (not item['extreme']) or item['settled'] >= policy['min_settled_before_activation']
+    return policy
+
+
+def save_tier_policy(connection, updates):
+    policy = load_tier_policy(connection)
+    minimum = int(updates.get('min_settled_before_activation') or policy['min_settled_before_activation'])
+    if not 1 <= minimum <= 1000:
+        raise ValueError('Activation sample must be between 1 and 1000 stored settled tickets')
+    by_id = {item['id']: item for item in policy['tiers']}
+    for change in updates.get('tiers') or []:
+        item = by_id.get(change.get('id'))
+        if item is None:
+            raise ValueError('Unknown odds tier')
+        if 'enabled' in change:
+            item['enabled'] = bool(change['enabled'])
+        if 'mode' in change:
+            mode = change['mode']
+            if mode not in ('standard', 'simulation'):
+                raise ValueError('Tier mode must be standard or simulation')
+            if mode == 'standard' and item['extreme'] and item['settled'] < minimum:
+                raise ValueError(
+                    f"{item['label']} has {item['settled']} settled tickets. "
+                    f"It stays in simulation until {minimum} stored results exist."
+                )
+            item['mode'] = mode
+    policy['min_settled_before_activation'] = minimum
+    stored = {
+        'min_settled_before_activation': minimum,
+        'tiers': [{'id': item['id'], 'enabled': item['enabled'], 'mode': item['mode']} for item in policy['tiers']],
+    }
+    connection.execute(
+        """INSERT INTO sports_ai_settings(key,value_json,updated_at) VALUES(?,?,?)
+           ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at""",
+        (TIER_POLICY_KEY, json.dumps(stored), _now().isoformat()),
+    )
+    return load_tier_policy(connection)
+
+
+def _tier_settled_count(connection, tier):
+    return connection.execute(
+        "SELECT COUNT(*) FROM sports_ai_accumulator_tickets WHERE tier=? AND status='settled'",
+        (int(tier),),
+    ).fetchone()[0]
+
+
 def optimize_candidates(candidates, config, now=None):
     """Search each requested target. Never invent a leg to fill a tier."""
+    if config.get('ranges'):
+        return _optimize_ranges(candidates, config, now)
     current = _now(now)
     targets = [int(item) for item in (config.get('targets') or TARGETS)]
     ordered = sorted(candidates, key=lambda item: (-_quality(item), item['fixture_id'], item['market'], item['opportunity_id']))
@@ -582,8 +693,156 @@ def optimize_candidates(candidates, config, now=None):
     }
 
 
-def _gap(target, reason, truncated):
-    return {'target': target, 'status': 'no_qualifying_ticket', 'reason': reason, 'tickets': [], 'truncated': truncated}
+def _optimize_ranges(candidates, config, now=None):
+    """Keep a combination only when its product already sits inside a range. Do not add another leg after that."""
+    current = _now(now)
+    ranges = list(config.get('ranges') or [])
+    ordered = sorted(candidates, key=lambda item: (-_quality(item), item['fixture_id'], item['market'], item['opportunity_id']))
+    started = time.monotonic()
+    deadline = started + float(config['timeout_seconds'])
+    evaluations = 0
+    truncated = False
+    results = []
+    for band in ranges:
+        if time.monotonic() >= deadline:
+            truncated = True
+            results.append(_gap(band['tier'], 'The configured search timeout elapsed before this tier was searched', True, band))
+            continue
+        found, evaluations, tier_truncated = _search_band(ordered, band, config, deadline, evaluations)
+        truncated = truncated or tier_truncated
+        if not found:
+            if not ordered:
+                reason = 'No independently qualified selection is available'
+            elif tier_truncated:
+                reason = 'The search stopped at its configured limit before a combination inside this range was found. This is not proof that none exists'
+            else:
+                reason = (
+                    f"No qualified single or accumulator has combined odds between {band['low']:.2f} and {band['high']:.2f} "
+                    'under the fixture, team and competition limits. No selection was added to reach the range.'
+                )
+            results.append(_gap(band['tier'], reason, tier_truncated, band))
+            continue
+        ranked = []
+        for indexes in found:
+            legs = [ordered[index] for index in indexes]
+            combined = combine_ticket(legs, config)
+            if _hard_failure(combined['issues']):
+                continue
+            signature = '|'.join(sorted(leg['opportunity_id'] for leg in legs))
+            status = 'qualified' if combined['probability_basis'] == 'independent' else 'unverified_probability'
+            explanation = combined['explanation']
+            if band['mode'] == 'simulation':
+                status = 'review_required'
+                explanation = (
+                    f"{band['label']} stays in simulation until stored settled tickets support activation. "
+                    'This candidate is not available for booking. ' + explanation
+                )
+            ranked.append({
+                'tier': band['tier'],
+                'tier_id': band['id'],
+                'tier_label': band['label'],
+                'tier_mode': band['mode'],
+                'legs': legs,
+                'signature': signature,
+                'score': float(combined['estimated_edge'] or 0),
+                'components': {},
+                **combined,
+                'explanation': explanation,
+                'correlation_exposure': sum(1 for _check, result, _detail in combined['issues'] if result != 'pass'),
+                'status': status,
+            })
+        ranked.sort(key=lambda item: (
+            item['status'] != 'qualified',
+            len(item['legs']),
+            item['combined_odds'],
+            -(item['estimated_edge'] or -1),
+            item['signature'],
+        ))
+        kept = []
+        seen = set()
+        for item in ranked:
+            if item['signature'] in seen:
+                continue
+            seen.add(item['signature'])
+            kept.append(item)
+            if len(kept) >= int(config['max_tickets_per_tier']):
+                break
+        if kept:
+            results.append({
+                'target': band['tier'], 'tier_id': band['id'], 'label': band['label'], 'mode': band['mode'],
+                'status': 'generated', 'tickets': kept, 'truncated': tier_truncated,
+            })
+        else:
+            results.append(_gap(
+                band['tier'], 'Every combination inside the range broke a hard fixture, team or contradiction rule', tier_truncated, band,
+            ))
+    return {
+        'generated_at': current.isoformat(),
+        'evaluations': evaluations,
+        'truncated': truncated,
+        'candidate_count': len(ordered),
+        'tiers': results,
+    }
+
+
+def _gap(target, reason, truncated, band=None):
+    payload = {'target': target, 'status': 'no_qualifying_ticket', 'reason': reason, 'tickets': [], 'truncated': truncated}
+    if band:
+        payload.update({'tier_id': band['id'], 'label': band['label'], 'mode': band['mode']})
+    return payload
+
+
+def _search_band(candidates, band, config, deadline, evaluations):
+    low = math.log(float(band['low']))
+    high = math.log(float(band['high']))
+    min_legs = max(1, int(config.get('min_legs') or 1))
+    max_legs = int(config['max_legs'])
+    beam_width = int(config['beam_width'])
+    limit = int(config['search_limit'])
+    beam = [()]
+    found = []
+    truncated = False
+    for _depth in range(max_legs):
+        if time.monotonic() >= deadline or evaluations >= limit:
+            truncated = True
+            break
+        nxt = []
+        for prefix in beam:
+            start = prefix[-1] + 1 if prefix else 0
+            for index in range(start, len(candidates)):
+                evaluations += 1
+                if evaluations > limit or time.monotonic() >= deadline:
+                    truncated = True
+                    break
+                trial = prefix + (index,)
+                legs = [candidates[position] for position in trial]
+                if _hard_failure(combination_issues(legs, config)):
+                    continue
+                log_odds = sum(math.log(leg['decimal_odds']) for leg in legs)
+                if log_odds > high:
+                    continue
+                if len(trial) >= min_legs and log_odds >= low:
+                    found.append(trial)
+                    continue
+                if len(trial) < max_legs and log_odds < low:
+                    nxt.append(trial)
+            if truncated:
+                break
+        if not nxt or truncated:
+            break
+        nxt.sort(key=lambda item: _partial_key(item, candidates, float(band['low'])))
+        if len(nxt) > beam_width:
+            truncated = True
+            nxt = nxt[:beam_width]
+        beam = nxt
+    unique = []
+    seen = set()
+    for indexes in found:
+        key = tuple(sorted(indexes))
+        if key not in seen:
+            seen.add(key)
+            unique.append(indexes)
+    return unique, evaluations, truncated
 
 
 def _search_target(candidates, target, config, deadline, evaluations):
@@ -776,7 +1035,8 @@ def _blocked_fixtures(connection):
 
 def load_opportunity_rows(connection):
     rows = connection.execute(
-        """SELECT o.id AS opportunity_id, o.status AS opportunity_status, o.expected_edge, o.data_completeness,
+        """SELECT o.id AS opportunity_id, o.status AS opportunity_status, o.expected_edge,
+                  COALESCE(o.data_completeness, s.completeness) AS data_completeness,
                   p.market, p.outcome, p.probability, p.settlement_json, p.model_id,
                   f.id AS fixture_id, f.sport, f.competition, f.home, f.away, f.starts_at, f.status AS fixture_status,
                   q.decimal_odds, q.bookmaker, q.observed_at, q.market AS quote_market, q.outcome AS quote_outcome, q.line AS quote_line,
@@ -787,9 +1047,12 @@ def load_opportunity_rows(connection):
            JOIN sports_ai_fixtures f ON f.id=p.fixture_id
            JOIN sports_ai_model_registry m ON m.id=p.model_id
            JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
+           JOIN sports_ai_qualification_decisions d ON d.opportunity_id=o.id AND d.state='QUALIFIED'
+           LEFT JOIN sports_ai_feature_snapshots s ON s.id=p.feature_id
            WHERE o.status='qualified'""",
     ).fetchall()
-    return [dict(row) for row in rows]
+    from market_registry import choose_best
+    return choose_best([dict(row) for row in rows])
 
 
 def generate_accumulators(connection, actor, audit, sport_mode='mixed', overrides=None, idempotency_key=None, now=None, trigger='manual'):
@@ -803,11 +1066,25 @@ def generate_accumulators(connection, actor, audit, sport_mode='mixed', override
     config = load_config(connection)
     config.update(overrides or {})
     config['sport_mode'] = sport_mode
-    config['targets'] = [int(item) for item in config.get('targets') or TARGETS if int(item) in TARGETS]
+    legacy = 'targets' in (overrides or {})
+    if legacy:
+        config['targets'] = [int(item) for item in config.get('targets') or [] if int(item) in TARGETS]
+        if not config['targets']:
+            raise ValueError('Choose at least one of the eight target odds')
+    else:
+        policy = load_tier_policy(connection)
+        selected = set(config.pop('range_ids', None) or [])
+        ranges = [item for item in policy['tiers'] if item['enabled'] and (not selected or item['id'] in selected)]
+        if selected and len(ranges) != len(selected):
+            raise ValueError('Each range must be one of the ten configured odds tiers')
+        if not ranges:
+            raise ValueError('Choose at least one odds range')
+        if 'min_legs' not in (overrides or {}):
+            config['min_legs'] = 1
+        config['ranges'] = ranges
+        config['targets'] = [item['tier'] for item in ranges]
     if int(config['min_legs']) > int(config['max_legs']):
         raise ValueError('Minimum legs cannot exceed maximum legs')
-    if not config['targets']:
-        raise ValueError('Choose at least one of the eight target odds')
     run_id = str(uuid.uuid4())
     connection.execute(
         """INSERT INTO sports_ai_accumulator_runs
@@ -816,6 +1093,8 @@ def generate_accumulators(connection, actor, audit, sport_mode='mixed', override
         (run_id, CONFIG_ID, sport_mode, trigger, key, json.dumps(_public_config(config)), actor, current.isoformat()),
     )
     try:
+        from qualification_engine import revalidate
+        revalidate(connection, actor, current)
         rows = load_opportunity_rows(connection)
         accepted, decisions = qualify_candidates(rows, config, current, _blocked_fixtures(connection))
         search = optimize_candidates(accepted, config, current)
@@ -843,6 +1122,9 @@ def generate_accumulators(connection, actor, audit, sport_mode='mixed', override
                 stored.append(_ticket_payload(connection, ticket_id))
             entry = {
                 'target': tier['target'],
+                'tier_id': tier.get('tier_id'),
+                'label': tier.get('label'),
+                'mode': tier.get('mode'),
                 'status': 'generated' if ids else tier['status'],
                 'reason': tier.get('reason') if not ids else None,
                 'ticket_ids': ids,
@@ -893,7 +1175,12 @@ def _public_config(config):
         'max_tickets_per_tier', 'beam_width', 'search_limit', 'timeout_seconds', 'allow_same_fixture',
         'sport_mode', 'markets', 'competitions', 'bookmakers',
     )
-    return {key: config.get(key) for key in keys if key in config or key in default_config()}
+    payload = {key: config.get(key) for key in keys if key in config or key in default_config()}
+    if config.get('ranges'):
+        payload['ranges'] = [
+            {'id': item['id'], 'label': item['label'], 'mode': item['mode']} for item in config['ranges']
+        ]
+    return payload
 
 
 def _insert_ticket(connection, run_id, ticket, config, current, change_type, reason, family_id=None, version=1):
@@ -909,6 +1196,10 @@ def _insert_ticket(connection, run_id, ticket, config, current, change_type, rea
         'score_components': ticket.get('components') or {},
         'search_limit': config.get('search_limit'),
         'beam_width': config.get('beam_width'),
+        'tier_id': ticket.get('tier_id'),
+        'tier_label': ticket.get('tier_label'),
+        'tier_mode': ticket.get('tier_mode'),
+        'correlation_exposure': ticket.get('correlation_exposure'),
     }
     connection.execute(
         """INSERT INTO sports_ai_accumulator_tickets
@@ -1222,10 +1513,18 @@ def accept_ticket(connection, actor, audit, ticket_id, now=None):
         return {'error': 'Revalidation failed', 'revalidation': check}
     ticket = _ticket_payload(connection, ticket_id)
     config = load_config(connection)
-    if ticket['probability_basis'] != 'independent' or ticket['leg_count'] < config['min_legs']:
+    parameters = ticket.get('parameters') or {}
+    if parameters.get('tier_mode') == 'simulation':
+        return {'error': 'This odds tier remains in simulation until stored settled results support activation', 'revalidation': check}
+    minimum = 1 if parameters.get('tier_id') else int(config['min_legs'])
+    if ticket['probability_basis'] != 'independent' or ticket['leg_count'] < minimum:
         return {'error': 'The ticket remains unverified or below the minimum leg count', 'revalidation': check}
-    low = ticket['tier'] * (1 - config['tolerance'])
-    high = ticket['tier'] * (1 + config['tolerance'])
+    band = next((item for item in RANGE_TIERS if item['tier'] == ticket['tier']), None)
+    if band:
+        low, high = band['low'], band['high']
+    else:
+        low = ticket['tier'] * (1 - config['tolerance'])
+        high = ticket['tier'] * (1 + config['tolerance'])
     if ticket['combined_odds'] is None or not low <= ticket['combined_odds'] <= high:
         return {'error': 'Combined odds are outside the tier tolerance', 'revalidation': check}
     connection.execute(
@@ -1310,6 +1609,19 @@ def monitor_accumulators(connection, actor, audit, idempotency_key, now=None):
             elif outcome == 'pending' and started:
                 summary['awaiting_result'] += 1
                 _event_once(connection, ticket['id'], run_id, 'awaiting_result', current)
+            elif ticket['status'] == 'qualified':
+                from qualification_engine import ticket_is_bookable
+                if ticket_is_bookable(connection, ticket['id']):
+                    summary['unchanged'] += 1
+                else:
+                    connection.execute(
+                        "UPDATE sports_ai_accumulator_tickets SET status='review_required' WHERE id=?",
+                        (ticket['id'],),
+                    )
+                    _event(connection, ticket['id'], run_id, 'qualification_lapsed', {
+                        'detail': 'A selection no longer has a current QUALIFIED booking decision.',
+                    }, current)
+                    summary['review_required'] = summary.get('review_required', 0) + 1
             else:
                 summary['unchanged'] += 1
         refresh_performance(connection, current)
@@ -1507,7 +1819,14 @@ def command_centre(connection):
         ) v ON v.family_id=t.family_id AND v.version=t.version
     """
     tickets = [dict(row) for row in connection.execute(latest)]
-    by_tier = {str(target): {'target': target, 'total': 0, 'qualified': 0, 'unverified_probability': 0, 'expired': 0, 'review_required': 0, 'settled': 0} for target in TARGETS}
+    policy = load_tier_policy(connection)
+    by_tier = {
+        str(item['tier']): {
+            'target': item['tier'], 'label': item['label'], 'mode': item['mode'], 'tier_id': item['id'],
+            'total': 0, 'qualified': 0, 'unverified_probability': 0, 'expired': 0, 'review_required': 0, 'settled': 0,
+        }
+        for item in policy['tiers']
+    }
     by_mode = {'football': 0, 'basketball': 0, 'mixed': 0}
     counts = {'qualified': 0, 'awaiting_odds': 0, 'expired': 0, 'review_required': 0, 'unverified_probability': 0, 'settled': 0, 'void': 0}
     for ticket in tickets:

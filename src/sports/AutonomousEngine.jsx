@@ -11,6 +11,7 @@ const TABS = [
   ['Model Performance', TrendingUp],
   ['Automation Logs', FileText],
   ['Settings', Settings],
+  ['Production Readiness', ShieldCheck],
 ];
 
 function clock(value) {
@@ -129,6 +130,10 @@ export default function AutonomousEngine({nav}) {
     [Ticket, 'Tickets generated', count(summary.tickets), summary.tickets ? 'Stored suggestions' : 'None qualified', 'violet'],
     [BarChart3, 'Prediction accuracy', percent(summary.accuracy), summary.settled ? `${count(summary.settled)} settled` : 'No settled results', 'orange'],
     [TrendingUp, 'Model edge (avg)', summary.edge == null ? '—' : `+${Number(summary.edge).toFixed(1)}%`, summary.edge == null ? 'No qualified edge' : 'Qualified average', 'green'],
+    [ShieldCheck, 'Qualified decisions', count(summary.qualified_decisions), 'Central qualification', 'blue'],
+    [CheckCircle2, 'Verified codes', count(summary.verified_codes), 'Displayed by SportyBet', 'green'],
+    [AlertCircle, 'Failed jobs', count(summary.failures), summary.pending_jobs == null ? '—' : `${count(summary.pending_jobs)} pending`, 'orange'],
+    [Clock3, 'Rollover campaigns', count(summary.rollover_campaigns), 'Simulation only', 'violet'],
   ];
 
   return <div className="ae">
@@ -154,7 +159,7 @@ export default function AutonomousEngine({nav}) {
 
     {tab === 'Autonomous Overview' && <>
       <div className="ae-metrics">{metrics.map(([Icon, label, value, detail, color]) => <div className="ae-metric" key={label}><div className={`ae-metric-icon ${color}`}><Icon size={22}/></div><div><span>{label}</span><strong>{value}</strong><small>{detail}</small></div></div>)}</div>
-      <div className="ae-pipeline"><div className="ae-pipe-lead"><Bot size={28}/><div><strong>Autonomous Workflow</strong><small>End-to-end pipeline</small></div></div>{(data?.stages || []).map((stage, index) => <div className="ae-pipe-step" key={stage.name}>{stage.ok ? <CheckCircle2 size={16} className="ok"/> : <CheckCircle2 size={16} className="muted"/>}<div><b>{index + 1}. {stage.name}</b><small>{stage.detail}</small></div>{index < 5 && <ChevronRight className="ae-arrow" size={18}/>}</div>)}</div>
+      <div className="ae-pipeline"><div className="ae-pipe-lead"><Bot size={28}/><div><strong>Autonomous Workflow</strong><small>End-to-end pipeline</small></div></div>{(data?.stages || []).map((stage, index, stages) => <div className="ae-pipe-step" key={stage.name}>{stage.ok ? <CheckCircle2 size={16} className="ok"/> : <CheckCircle2 size={16} className="muted"/>}<div><b>{index + 1}. {stage.name}</b><small>{stage.detail}</small></div>{index < stages.length - 1 && <ChevronRight className="ae-arrow" size={18}/>}</div>)}</div>
       <div className="ae-grid">
         <section className="ae-panel operations">
           <div className="ae-head"><h2><Activity size={18}/> Live Operations</h2><span className="ae-pill mint">{running && data?.scheduler_fresh ? 'Scheduler heartbeat fresh' : 'Scheduler idle'}</span></div>
@@ -181,7 +186,41 @@ export default function AutonomousEngine({nav}) {
     </>}
 
     {tab === 'Execution Pipeline' && <section className="ae-panel">
-      <div className="ae-head"><h2><Workflow size={18}/> Execution Pipeline</h2></div>
+      <div className="ae-head"><h2><Workflow size={18}/> Opportunity pipeline</h2><span className="ae-pill">{data?.pipeline?.phase || '—'}</span></div>
+      <div className="ae-table-wrap"><table><thead><tr><th>Stage</th><th>Stored count</th></tr></thead><tbody>
+        {(data?.pipeline?.stages || []).map(stage => <tr key={stage.stage}><td>{stage.stage}</td><td>{count(stage.count)}</td></tr>)}
+        {!data?.pipeline?.stages?.length && <tr><td className="ae-empty" colSpan="2">No pipeline snapshot is stored.</td></tr>}
+      </tbody></table></div>
+      <h3 className="ae-subhead">Blockers</h3>
+      {(data?.pipeline?.blockers || []).map(item => <p key={`${item.stage}-${item.reason}`}>{item.stage}: {item.reason}</p>)}
+      {!data?.pipeline?.blockers?.length && <p className="ae-empty">No blocker is stored.</p>}
+      <h3 className="ae-subhead">Booking diagnostics</h3>
+      <p className="ae-note">Next publication window: {clock(data?.pipeline?.next_publication_at)}. A code is stored only when SportyBet displays it.</p>
+      <div className="ae-table-wrap"><table><thead><tr><th>When</th><th>Reason</th><th>Tickets</th><th>Detail</th></tr></thead><tbody>
+        {(data?.pipeline?.booking_diagnostics || []).map(row => <tr key={row.reason_code}><td>{clock(row.created_at)}</td><td>{row.reason_code}</td><td>{count(row.total)}</td><td>{row.detail}</td></tr>)}
+        {!data?.pipeline?.booking_diagnostics?.length && <tr><td className="ae-empty" colSpan="4">No booking diagnostic is stored.</td></tr>}
+      </tbody></table></div>
+      <h3 className="ae-subhead">Prediction review flags</h3>
+      <div className="ae-table-wrap"><table><thead><tr><th>Flag</th><th>Qualified selections</th></tr></thead><tbody>
+        {(data?.pipeline?.prediction_reviews || []).map(row => <tr key={row.reason_code}><td>{row.reason_code}</td><td>{count(row.total)}</td></tr>)}
+        {!data?.pipeline?.prediction_reviews?.length && <tr><td className="ae-empty" colSpan="2">No qualified selection is flagged.</td></tr>}
+      </tbody></table></div>
+      <h3 className="ae-subhead">Fixture reconciliation</h3>
+      <div className="ae-table-wrap"><table><thead><tr><th>Decision</th><th>Fixtures</th></tr></thead><tbody>
+        {(data?.pipeline?.reconciliation || []).map(row => <tr key={row.status}><td>{row.status}</td><td>{count(row.total)}</td></tr>)}
+        {!data?.pipeline?.reconciliation?.length && <tr><td className="ae-empty" colSpan="2">No fixture reconciliation is stored.</td></tr>}
+      </tbody></table></div>
+      <h3 className="ae-subhead">Feature timing audit</h3>
+      <div className="ae-table-wrap"><table><thead><tr><th>Finding</th><th>Records</th></tr></thead><tbody>
+        {(data?.pipeline?.feature_audit || []).map(row => <tr key={row.finding}><td>{row.finding}</td><td>{count(row.total)}</td></tr>)}
+        {!data?.pipeline?.feature_audit?.length && <tr><td className="ae-empty" colSpan="2">No feature audit is stored.</td></tr>}
+      </tbody></table></div>
+      <h3 className="ae-subhead">Rejection reasons</h3>
+      <div className="ae-table-wrap"><table><thead><tr><th>Reason</th><th>Decisions</th></tr></thead><tbody>
+        {(data?.pipeline?.rejection_reasons || []).map(row => <tr key={row.reason_code}><td>{row.reason_code}</td><td>{count(row.count)}</td></tr>)}
+      </tbody></table></div>
+      <p className="ae-note">Fresh prices use the stored {data?.pipeline?.refresh?.freshness_minutes ?? 15}-minute window. The refresh queue is waiting on {count(data?.pipeline?.refresh?.queued)} fixtures. Blocked {count(data?.pipeline?.refresh?.blocked)}. Refreshed from a stored SportyBet price {count(data?.pipeline?.refresh?.refreshed)}. Weekly draw rows and rollover campaigns on this page come from the same tables. No wager is placed.</p>
+      <div className="ae-head"><h2><Workflow size={18}/> Scheduler stages</h2></div>
       <div className="ae-table-wrap"><table><thead><tr><th>Stage</th><th>Last run</th><th>Next run</th><th>Status</th><th>Evidence</th></tr></thead><tbody>
         {(data?.stages || []).map(stage => <tr key={stage.name}><td>{stage.name}<small>{stage.detail}</small></td><td>{clock(stage.last_run_at)}</td><td>{clock(stage.next_run_at)}</td><td><em className={`ae-status ${tone(stage.status)}`}>{stage.status}</em></td><td>{stage.result || '—'}</td></tr>)}
       </tbody></table></div>
@@ -225,10 +264,23 @@ export default function AutonomousEngine({nav}) {
         <label>Odds tolerance<input type="number" min="0.01" max="0.5" step="0.01" value={form.odds_tolerance} onChange={event => setForm({...form, odds_tolerance: event.target.value})}/></label>
         <label>Odds freshness, minutes<input type="number" min="1" max="1440" step="1" value={form.odds_max_age_minutes} onChange={event => setForm({...form, odds_max_age_minutes: event.target.value})}/></label>
         <label>Form half-life, days<input type="number" min="1" max="3650" step="1" value={form.form_half_life_days} onChange={event => setForm({...form, form_half_life_days: event.target.value})}/></label>
+        <label className="ae-check"><input type="checkbox" checked={form.autonomous_tickets !== false} onChange={event => setForm({...form, autonomous_tickets: event.target.checked})}/> Build tickets automatically from current QUALIFIED selections</label>
         <button className="ae-btn primary" disabled={busy}>Save risk controls</button>
         {saved && <span className="ae-saved">{saved}</span>}
       </form>
       <p className="ae-note">These limits are the stored engine settings. Pause and Stop disable the scheduler rows. They do not activate a model and they do not place a wager.</p>
+    </section>}
+
+    {tab === 'Production Readiness' && <section className="ae-panel">
+      <div className="ae-head"><h2><ShieldCheck size={18}/> Production readiness</h2><span className={`ae-pill ${data?.readiness?.ready ? 'green' : 'amber'}`}>{data?.readiness?.ready ? 'Ready' : 'Not production-ready'}</span></div>
+      <div className="ae-table-wrap"><table><thead><tr><th>Check</th><th>Result</th><th>Evidence</th></tr></thead><tbody>
+        {(data?.readiness?.checks || []).map(item => <tr key={item.name}><td>{item.name}</td><td><em className={`ae-status ${item.ok ? 'good' : 'warn'}`}>{item.ok ? 'Met' : 'Open'}</em></td><td>{item.detail}</td></tr>)}
+      </tbody></table></div>
+      <h3 className="ae-subhead">Operating procedure</h3>
+      {(data?.readiness?.procedures || []).map(item => <p key={item}>{item}</p>)}
+      <h3 className="ae-subhead">Rollback</h3>
+      {(data?.readiness?.rollback || []).map(item => <p key={item}>{item}</p>)}
+      <p className="ae-note">Paid wagering stays off. A green check is evidence already stored or configured. An open check is unresolved.</p>
     </section>}
 
     <footer className="ae-footer">
@@ -255,7 +307,7 @@ function TaskTable({tasks, all, filter, onFilter}) {
 }
 
 function OpportunityTable({rows, onOpen}) {
-  return <div className="ae-table-wrap"><table><thead><tr><th>#</th><th>Fixture</th><th>Market</th><th>Odds</th><th>Model P</th><th>Edge</th><th>Confidence</th></tr></thead><tbody>
+  return <div className="ae-table-wrap"><table><thead><tr><th>#</th><th>Fixture</th><th>Market</th><th>Odds</th><th>AI Probability</th><th>Edge</th><th>Confidence</th></tr></thead><tbody>
     {rows.map((row, index) => <tr key={`${row.fixture}-${row.market}`} className="click" onClick={() => onOpen(row)}><td>{index + 1}</td><td>{row.fixture}</td><td>{row.market}</td><td>{Number(row.odds).toFixed(2)}</td><td>{row.probability}%</td><td className="ae-positive">+{row.edge}%</td><td><em className="ae-status neutral">Not stored</em></td></tr>)}
     {!rows.length && <tr><td className="ae-empty" colSpan="7">No qualified opportunity is stored. A row appears after an active validated model and a current verified price produce a positive edge.</td></tr>}
   </tbody></table></div>;

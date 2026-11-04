@@ -8,3 +8,4 @@
 .sp-filter-bar{justify-content:flex-start;position:sticky;top:0;z-index:5}.sp-filter-bar label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:#64748B}.sp-filter-bar input,.sp-filter-bar select{border:1px solid #cbd5e1;border-radius:8px;padding:8px;min-width:140px;background:#fff;color:#0f172a}
 .sp-table-limit{max-height:560px}
 @media(max-width:1100px){.sp-kpi-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:700px){.sp-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.sp-intel-overlay{position:fixed;inset:0;background:#0b1d3866;display:grid;place-items:center;padding:18px;z-index:40}.sp-intel-overlay .sp-panel{max-width:640px;width:100%;max-height:86vh;overflow:auto}

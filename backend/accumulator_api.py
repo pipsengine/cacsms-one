@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from accumulator_engine import (
+    RANGE_TIERS,
     TARGETS,
     accept_ticket,
     command_centre,
@@ -15,6 +16,7 @@ from accumulator_engine import (
     list_tickets,
     load_config,
     load_opportunity_rows,
+    load_tier_policy,
     monitor_accumulators,
     qualify_candidates,
     recalculate_ticket,
@@ -23,6 +25,7 @@ from accumulator_engine import (
     run_backtest,
     save_config,
     save_ticket,
+    save_tier_policy,
 )
 from db import connect
 from sportybet_adapter import (
@@ -53,12 +56,24 @@ class ConfigIn(BaseModel):
     allow_same_fixture: int = Field(default=0, ge=0, le=1)
 
 
+class TierChoiceIn(BaseModel):
+    id: str
+    enabled: bool | None = None
+    mode: str | None = None
+
+
+class TierPolicyIn(BaseModel):
+    min_settled_before_activation: int | None = Field(default=None, ge=1, le=1000)
+    tiers: list[TierChoiceIn] = Field(default_factory=list)
+
+
 class GenerateIn(BaseModel):
     sport_mode: str = 'mixed'
     tiers: list[int] | None = None
+    range_ids: list[str] | None = None
     min_edge: float | None = None
-    min_legs: int | None = Field(default=None, ge=2, le=12)
-    max_legs: int | None = Field(default=None, ge=2, le=12)
+    min_legs: int | None = Field(default=None, ge=1, le=12)
+    max_legs: int | None = Field(default=None, ge=1, le=12)
     markets: list[str] = Field(default_factory=list)
     competitions: list[str] = Field(default_factory=list)
     bookmakers: list[str] = Field(default_factory=list)
@@ -97,7 +112,12 @@ def build_accumulator_router(auth, require_admin):
     def get_config(user=Depends(auth)):
         with connect() as connection:
             config = load_config(connection)
+            config['tier_policy'] = load_tier_policy(connection)
         config['supported_targets'] = list(TARGETS)
+        config['supported_ranges'] = [
+            {'id': item['id'], 'label': item['label'], 'low': item['low'], 'high': item['high'], 'tier': item['tier']}
+            for item in RANGE_TIERS
+        ]
         return config
 
     @router.put('/config')
@@ -105,20 +125,53 @@ def build_accumulator_router(auth, require_admin):
         try:
             with connect() as connection:
                 saved = save_config(connection, payload.model_dump())
+                saved['tier_policy'] = load_tier_policy(connection)
                 audit(connection, user, 'accumulator.config', {'targets': saved['targets']})
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
         return saved
 
+    @router.put('/tiers')
+    def put_tiers(payload: TierPolicyIn, user=Depends(auth), _admin=Depends(admin)):
+        with connect() as connection:
+            try:
+                saved = save_tier_policy(connection, payload.model_dump())
+            except ValueError as error:
+                raise HTTPException(422, str(error)) from error
+            audit(connection, user, 'accumulator.tiers', {
+                'tiers': [{'id': item['id'], 'mode': item['mode'], 'enabled': item['enabled']} for item in saved['tiers']],
+            })
+        return saved
+
+    @router.get('/compare')
+    def compare(left: str, right: str, user=Depends(auth)):
+        with connect() as connection:
+            tickets = list_tickets(connection)
+        chosen = {ticket['id']: ticket for ticket in tickets}
+        if left not in chosen or right not in chosen:
+            raise HTTPException(404, 'Both tickets must be stored')
+        return {
+            'left': _comparison(chosen[left]),
+            'right': _comparison(chosen[right]),
+            'note': 'Comparison uses the odds, probabilities and correlation checks stored on the tickets.',
+        }
+
     @router.post('/generate')
     def generate(payload: GenerateIn, user=Depends(auth)):
         if payload.sport_mode not in ('football', 'basketball', 'mixed'):
             raise HTTPException(422, 'Sport mode must be football, basketball or mixed')
+        known_ranges = {item['id'] for item in RANGE_TIERS}
+        if payload.tiers and payload.range_ids:
+            raise HTTPException(422, 'Send either legacy point targets or odds ranges')
         if payload.tiers and any(item not in TARGETS for item in payload.tiers):
             raise HTTPException(422, 'Each tier must be one of the eight target odds')
+        if payload.range_ids and any(item not in known_ranges for item in payload.range_ids):
+            raise HTTPException(422, 'Each range must be one of the ten configured odds tiers')
         overrides = {}
         if payload.tiers:
             overrides['targets'] = payload.tiers
+        elif payload.range_ids is not None:
+            overrides['range_ids'] = payload.range_ids
         if payload.min_edge is not None:
             overrides['min_edge'] = payload.min_edge
         if payload.min_legs is not None:
@@ -295,3 +348,22 @@ def build_accumulator_router(auth, require_admin):
 def _blocked(connection):
     from accumulator_engine import _blocked_fixtures
     return _blocked_fixtures(connection)
+
+
+def _comparison(ticket):
+    parameters = ticket.get('parameters') or {}
+    failed = [row for row in ticket.get('correlation') or [] if row.get('result') != 'pass']
+    return {
+        'id': ticket['id'],
+        'label': parameters.get('tier_label') or str(ticket['tier']),
+        'mode': parameters.get('tier_mode') or 'standard',
+        'status': ticket['status'],
+        'sport_mode': ticket['sport_mode'],
+        'leg_count': ticket['leg_count'],
+        'combined_odds': ticket.get('combined_odds'),
+        'joint_probability': ticket.get('joint_probability'),
+        'uncertainty': ticket.get('uncertainty'),
+        'estimated_edge': ticket.get('estimated_edge'),
+        'probability_basis': ticket.get('probability_basis'),
+        'correlation_exposure': parameters.get('correlation_exposure', len(failed)),
+    }

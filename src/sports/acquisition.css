@@ -283,3 +283,26 @@
     grid-template-columns: 1fr;
   }
 }
+
+.sp-catalog-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 4px 0 14px;
+}
+
+.sp-catalog-filters input,
+.sp-catalog-filters select {
+  min-width: 0;
+  border: 1px solid #cdd9ea;
+  border-radius: 8px;
+  padding: 9px 11px;
+  background: #fff;
+  color: #12264d;
+  font: inherit;
+  font-size: 13px;
+}
+
+.sp-catalog-filters input {
+  flex: 1 1 220px;
+}

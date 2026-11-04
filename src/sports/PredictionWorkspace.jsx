@@ -201,7 +201,7 @@ export default function PredictionWorkspace({sport, run, loading}) {
     </div>
     <div className="pw-tabs" role="tablist">{tabs.map(([label], index) => <button key={label} className={tab === index ? 'on' : ''} aria-selected={tab === index} onClick={() => setTab(index)}>{label}</button>)}</div>
     <article className="pw-panel">
-      <div className="pw-head"><div><h2>Predictions</h2><p>Each row is one upcoming fixture and the highest stored probability in this market group.</p></div>
+      <div className="pw-head"><div><h2>Predictions</h2><p>Each row shows the stored market with the highest AI Probability in this group. A booking uses the qualified market with the highest expected edge, which can be a different selection.</p></div>
         <div className="pw-tools">
           <button className="pw-outline" onClick={() => setRevision(value => value + 1)}><RefreshCw size={15}/> Refresh</button>
           <button className="pw-outline" onClick={exportCsv}><Download size={15}/> Export</button>
@@ -216,7 +216,7 @@ export default function PredictionWorkspace({sport, run, loading}) {
         <label>Team <input value={team} placeholder="Search team" onChange={event => setTeam(event.target.value)}/></label>
         <label>Rows <select value={pageSize} onChange={event => setPageSize(Number(event.target.value))}><option value="10">10</option><option value="25">25</option><option value="50">50</option></select></label>
       </div>
-      <div className="pw-scroll"><table><thead><tr>{['#', 'Fixture', 'Competition', 'Tip / Market', 'Model P', 'Odds', 'Edge', 'Confidence', 'Analysis', 'Status', 'Action'].map(heading => <th key={heading}>{heading}</th>)}</tr></thead><tbody>
+      <div className="pw-scroll"><table><thead><tr>{['#', 'Fixture', 'Competition', 'Tip / Market', 'AI Probability', 'Odds', 'Edge', 'Confidence', 'Analysis', 'Status', 'Action'].map(heading => <th key={heading}>{heading}</th>)}</tr></thead><tbody>
         {items.map((row, index) => {
           const tone = band(row.probability);
           const edge = edgeLabel(row.edge);
@@ -244,7 +244,7 @@ export default function PredictionWorkspace({sport, run, loading}) {
     </div>
     <div className="pw-foot">
       <span><Clock3/> Next Analysis Cycle <b>{countdown(summary?.next_run_at, clock)}</b></span>
-      <span><BrainCircuit/> Active Models <b>{model ? `${model.name} v${model.version}${model.active ? '' : ' · not activated'}` : 'None stored'}</b></span>
+      <span><BrainCircuit/> Model lifecycle <b>{model ? `${model.name} v${model.version} · ${model.lifecycle || 'research'}` : 'None stored'}</b></span>
       <span><Database/> Data Sources <b>{summary?.sources?.length ? summary.sources.join(', ') : 'None operational'}</b></span>
       <span><Target/> Opportunities Today <b>{count(summary?.opportunities_today)}</b></span>
       <span><Ticket/> Tickets Generated <b>{count(summary?.tickets)}</b></span>
@@ -256,6 +256,8 @@ export default function PredictionWorkspace({sport, run, loading}) {
       <p className="pw-note">{selected.competition} · {when(selected.starts_at)} · {selected.model_name} v{selected.model_version}{selected.model_active ? '' : ' · not activated'}</p>
       <p><b>Tip:</b> {tipLabel(selected)}</p>
       <p><b>Model probability:</b> {(Number(selected.probability) * 100).toFixed(1)}%</p>
+      <p><b>Lifecycle:</b> {selected.lifecycle || 'research'}. A research, validated or suspended model cannot qualify a booking.</p>
+      <p><b>Market suitability:</b> {selected.suitability_rank == null ? 'Not ranked from stored features' : `${Number(selected.suitability_rank).toFixed(0)} / 100`}{selected.booking_ready ? ' · booking ready' : ' · not booking ready'}</p>
       <p><b>Displayed odds:</b> {selected.odds == null ? 'Awaiting odds' : Number(selected.odds).toFixed(2)}</p>
       <p><b>Expected edge:</b> {edgeLabel(selected.edge)?.text || 'Not stored'}</p>
       <p><b>Value status:</b> {STATUS_LABEL[selected.opportunity_status] || 'Not assessed'}{selected.opportunity_reason ? ` — ${selected.opportunity_reason}` : ''}</p>

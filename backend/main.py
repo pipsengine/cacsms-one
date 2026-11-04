@@ -1,12 +1,13 @@
-import os, json, re, uuid, threading, hmac, math
+import os, json, re, sqlite3, uuid, threading, hmac, math, time
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlsplit
 from fastapi import FastAPI, APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Literal
 from fastapi import BackgroundTasks
 from db import connect, initialize, DB
-from engine import evaluate, build_tickets
+from engine import evaluate
 from acquisition import CollectionError, import_basketball_rows
 from acquisition_api import build_acquisition_router
 from acquisition_engine import run_collection, validate_public_config
@@ -20,20 +21,94 @@ from operations_api import build_operations_router
 from browser_api import build_browser_router
 from sportybet_api import build_sportybet_router
 from sportybet_booking import build_booking_router
+from draw_engine import build_draw_router
+from weekly_draw_engine import build_weekly_draw_router
+from rollover_engine import build_rollover_router
+from learning_engine import build_learning_router
 
 app=FastAPI(title='CACSMS Sports AI module',version='1.0.0')
 router=APIRouter(prefix='/api/sports-ai',tags=['Sports AI'])
 lock=threading.RLock()
 initialize()
 
-def auth(request:Request,x_sports_dev_key:str|None=Header(default=None)):
-    # Development-only standalone adapter. Replace with CACSMS ONE session dependency.
-    if os.environ.get('SPORTS_LOCAL_PREVIEW')=='1' and request.client and request.client.host in ('127.0.0.1','::1'):
-        return 'local-preview-user'
-    key=os.environ.get('SPORTS_DEV_API_KEY')
-    if not key or x_sports_dev_key!=key:
+def _assert_production_configuration():
+    if os.environ.get('SPORTS_PRODUCTION')!='1':
+        return
+    if os.environ.get('SPORTS_LOCAL_PREVIEW')=='1':
+        raise RuntimeError('SPORTS_LOCAL_PREVIEW cannot be enabled when SPORTS_PRODUCTION=1')
+    if not os.environ.get('SPORTS_ADMIN_API_KEY') or not os.environ.get('SPORTS_DEV_API_KEY'):
+        raise RuntimeError('Production requires SPORTS_ADMIN_API_KEY and SPORTS_DEV_API_KEY')
+
+_assert_production_configuration()
+_RATE_BUCKETS={}
+_RATE_LIMIT=240
+_RATE_WINDOW=60
+
+@app.middleware('http')
+async def limit_requests(request:Request,call_next):
+    if request.url.path.endswith('/health'):
+        return await call_next(request)
+    host=(request.client.host if request.client else 'unknown')
+    now=time.monotonic()
+    bucket=[stamp for stamp in _RATE_BUCKETS.get(host,[]) if now-stamp<_RATE_WINDOW]
+    if len(bucket)>=_RATE_LIMIT:
+        return JSONResponse({'detail':'Rate limit exceeded'},status_code=429)
+    bucket.append(now)
+    _RATE_BUCKETS[host]=bucket
+    return await call_next(request)
+
+def _key_matches(name, presented):
+    expected=os.environ.get(name)
+    return bool(expected and presented and hmac.compare_digest(expected, presented))
+
+def _role_permissions(role):
+    fallback={
+        'super_administrator':['read','models.activate','policy.write','booking.execute','diagnostics.admin','config.write','credentials.manage'],
+        'administrator':['read','models.activate','policy.write','booking.execute','diagnostics.admin','config.write'],
+        'analyst':['read'],
+        'operator':['read','booking.execute'],
+        'read_only':['read'],
+        'local_preview':['read'],
+    }
+    if role=='local_preview':
+        return list(fallback['local_preview'])
+    try:
+        with connect() as connection:
+            row=connection.execute('SELECT permissions_json FROM sports_ai_roles WHERE role_name=?',(role,)).fetchone()
+        loaded=json.loads(row['permissions_json']) if row else None
+        if isinstance(loaded, list) and loaded:
+            return loaded
+    except (json.JSONDecodeError, TypeError, sqlite3.Error):
+        pass
+    return list(fallback.get(role, ['read']))
+
+def auth(request:Request,x_sports_dev_key:str|None=Header(default=None),x_sports_admin_key:str|None=Header(default=None),x_sports_operator_key:str|None=Header(default=None)):
+    # Loopback preview is development only. SPORTS_PRODUCTION=1 refuses it.
+    production=os.environ.get('SPORTS_PRODUCTION')=='1'
+    preview=os.environ.get('SPORTS_LOCAL_PREVIEW')=='1'
+    if production and preview:
+        raise HTTPException(503,'Loopback preview authentication is disabled when SPORTS_PRODUCTION=1')
+    if not production and preview and request.client and request.client.host in ('127.0.0.1','::1'):
+        role, actor='local_preview','local-preview-user'
+    elif _key_matches('SPORTS_ADMIN_API_KEY', x_sports_admin_key):
+        role, actor='super_administrator','production-admin'
+    elif _key_matches('SPORTS_OPERATOR_API_KEY', x_sports_operator_key):
+        role, actor='operator','production-operator'
+    elif _key_matches('SPORTS_DEV_API_KEY', x_sports_dev_key):
+        role, actor='analyst','local-dev-user'
+    else:
         raise HTTPException(401,'Configure SPORTS_DEV_API_KEY and supply X-Sports-Dev-Key, or replace auth with CACSMS ONE session authentication')
-    return 'local-dev-user'
+    request.state.sports_role=role
+    request.state.sports_permissions=_role_permissions(role)
+    return actor
+
+def authorize(request:Request, permission, admin_key=None):
+    role=getattr(request.state,'sports_role','')
+    if role=='local_preview':
+        require_admin_key(admin_key)
+        return
+    if permission not in set(getattr(request.state,'sports_permissions',[])):
+        raise HTTPException(403,'This role cannot perform that operation')
 
 class FixtureIn(BaseModel):
     external_id:str=Field(min_length=1,max_length=160)
@@ -178,12 +253,43 @@ def booking_centre(connection):
              )""",
         (now.isoformat(),),
     ).fetchone()[0]
+    ready = connection.execute(
+        """SELECT COUNT(*) FROM sports_ai_accumulator_tickets
+           WHERE status='qualified' AND publication_state='READY_FOR_WINDOW'""",
+    ).fetchone()[0]
+    not_bookable = connection.execute(
+        """SELECT COUNT(*) FROM sports_ai_accumulator_tickets t
+           WHERE NOT (t.status='qualified' AND t.publication_state='READY_FOR_WINDOW')
+             AND NOT EXISTS (
+               SELECT 1 FROM sports_ai_booking_codes b
+               WHERE b.accumulator_ticket_id=t.id
+                 AND b.status='verified'
+                 AND b.verification_method IN ('displayed','sportybet_page','page')
+                 AND TRIM(COALESCE(b.code,''))<>''
+                 AND (b.expires_at IS NULL OR b.expires_at>?)
+             )""",
+        (now.isoformat(),),
+    ).fetchone()[0]
     tickets = allrows(
         connection,
-        """SELECT id, sport_mode, tier, leg_count, combined_odds, joint_probability, status, created_at
-           FROM sports_ai_accumulator_tickets
-           ORDER BY created_at DESC
-           LIMIT 5""",
+        """SELECT t.id, t.sport_mode, t.tier, t.leg_count, t.combined_odds, t.joint_probability,
+                  t.status, t.publication_state, t.created_at,
+                  (SELECT group_concat(l.home || ' vs ' || l.away, ' · ')
+                   FROM sports_ai_accumulator_legs l WHERE l.ticket_id=t.id) AS matchup
+           FROM sports_ai_accumulator_tickets t
+           WHERE t.status='qualified'
+              OR EXISTS (
+                SELECT 1 FROM sports_ai_booking_codes b
+                WHERE b.accumulator_ticket_id=t.id AND b.status='verified'
+                  AND b.verification_method IN ('displayed','sportybet_page','page')
+                  AND TRIM(COALESCE(b.code,''))<>''
+              )
+           ORDER BY CASE WHEN EXISTS (
+                SELECT 1 FROM sports_ai_booking_codes b
+                WHERE b.accumulator_ticket_id=t.id AND b.status='verified'
+                  AND TRIM(COALESCE(b.code,''))<>''
+              ) THEN 0 ELSE 1 END, t.created_at DESC
+           LIMIT 8""",
     )
     legs_by = {ticket['id']: [] for ticket in tickets}
     if tickets:
@@ -201,6 +307,12 @@ def booking_centre(connection):
     items = []
     for ticket in tickets:
         ticket.update(_ticket_code(ticket, linked.get(ticket['id']), now))
+        if ticket['code_status'] == 'awaiting_code' and ticket.get('publication_state') == 'READY_FOR_WINDOW':
+            ticket['code_status'] = 'ready'
+            ticket['code_label'] = 'Ready for the next window'
+        elif ticket['code_status'] == 'awaiting_code' and ticket.get('publication_state') == 'BOOKING_PENDING':
+            ticket['code_status'] = 'pending'
+            ticket['code_label'] = 'Request in progress'
         ticket['legs'] = legs_by.get(ticket['id'], [])
         items.append(ticket)
     integration = integration_status()
@@ -212,6 +324,8 @@ def booking_centre(connection):
             'verified_codes': len(verified_codes),
             'prepared_tickets': prepared,
             'awaiting_codes': awaiting,
+            'ready_for_window': ready,
+            'not_bookable': not_bookable,
         },
         'generation_available': bool(integration.get('automatic_booking_code')),
         'last_attempt': {
@@ -243,14 +357,11 @@ def dashboard(user=Depends(auth)):
         counts['recent_predictions']=allrows(c,
             """SELECT f.home||' vs '||f.away AS fixture,f.sport,p.market,
                       q.decimal_odds AS odds,p.probability,o.expected_edge AS edge
-               FROM sports_ai_fixtures f
-               JOIN sports_ai_engine_predictions p ON p.id=(
-                 SELECT p2.id FROM sports_ai_engine_predictions p2
-                 WHERE p2.fixture_id=f.id
-                   AND p2.market IN ('HOME','DRAW','AWAY','MONEYLINE_HOME','MONEYLINE_AWAY')
-                 ORDER BY p2.created_at DESC, p2.probability DESC LIMIT 1)
+               FROM sports_ai_engine_predictions p
+               JOIN sports_ai_fixtures f ON f.id=p.fixture_id
                LEFT JOIN sports_ai_value_opportunities o ON o.prediction_id=p.id
                LEFT JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
+               WHERE p.market IN ('HOME','DRAW','AWAY','MONEYLINE_HOME','MONEYLINE_AWAY')
                ORDER BY p.created_at DESC LIMIT 8""")
         counts['recent_opportunities']=allrows(c,
             """SELECT f.home||' vs '||f.away AS fixture,f.sport,p.market,
@@ -308,24 +419,29 @@ def dashboard(user=Depends(auth)):
                 gaps[int(target)]=reason
         counts['tier_gaps']=[{'tier':tier,'reason':reason} for tier,reason in sorted(gaps.items())]
         counts['highlights']=allrows(c,
-            f"""SELECT f.id AS fixture_id,f.sport,f.competition,f.home,f.away,f.starts_at,p.market,p.probability,
+            f"""WITH chosen AS (
+                 SELECT f.id,f.sport,f.competition,f.home,f.away,f.starts_at
+                 FROM sports_ai_fixtures f
+                 WHERE {upcoming_fixture_sql('f')}
+                   AND EXISTS (SELECT 1 FROM sports_ai_match_analyses a WHERE a.fixture_id=f.id)
+                 ORDER BY {upcoming_order_sql('f')}
+                 LIMIT 5
+               )
+               SELECT chosen.id AS fixture_id,chosen.sport,chosen.competition,chosen.home,chosen.away,chosen.starts_at,
+                      p.market,p.probability,
                       (SELECT q.decimal_odds FROM sports_ai_odds_snapshots q
-                       WHERE q.fixture_id=f.id AND q.bookmaker='SportyBet'
+                       WHERE q.fixture_id=chosen.id AND q.bookmaker='SportyBet'
                          AND (
                            (p.market IN ('HOME','MONEYLINE_HOME') AND q.market='h2h' AND q.outcome='home')
                            OR (p.market IN ('AWAY','MONEYLINE_AWAY') AND q.market='h2h' AND q.outcome='away')
                            OR (p.market='DRAW' AND q.market='h2h' AND q.outcome='draw')
                          )
                        ORDER BY q.observed_at DESC LIMIT 1) AS decimal_odds
-               FROM sports_ai_fixtures f
+               FROM chosen
                JOIN sports_ai_engine_predictions p ON p.id=(
                  SELECT p2.id FROM sports_ai_engine_predictions p2
-                 WHERE p2.fixture_id=f.id AND p2.market IN ('HOME','DRAW','AWAY','MONEYLINE_HOME','MONEYLINE_AWAY')
-                 ORDER BY p2.created_at DESC, p2.probability DESC LIMIT 1)
-               WHERE {upcoming_fixture_sql('f')}
-                 AND EXISTS (SELECT 1 FROM sports_ai_match_analyses a WHERE a.fixture_id=f.id)
-               ORDER BY {upcoming_order_sql('f')}
-               LIMIT 5""")
+                 WHERE p2.fixture_id=chosen.id AND p2.market IN ('HOME','DRAW','AWAY','MONEYLINE_HOME','MONEYLINE_AWAY')
+                 ORDER BY p2.created_at DESC, p2.probability DESC LIMIT 1)""")
         age_row=c.execute("SELECT value_json FROM sports_ai_settings WHERE key='engine'").fetchone()
         try:
             odds_age=int(json.loads(age_row[0]).get('odds_max_age_minutes',15)) if age_row else 15
@@ -346,6 +462,8 @@ def dashboard(user=Depends(auth)):
                  JOIN sports_ai_fixtures f ON f.id=p.fixture_id
                  JOIN sports_ai_model_registry m ON m.id=p.model_id
                  JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
+                 JOIN sports_ai_qualification_decisions d
+                   ON d.prediction_id=p.id AND d.market=p.market AND d.state='QUALIFIED'
                  WHERE o.status='qualified' AND o.expected_edge>0 AND m.active=1 AND m.status='active'
                    AND {upcoming_fixture_sql('f')} AND q.observed_at>=? AND q.decimal_odds>1
                )
@@ -403,6 +521,36 @@ def dashboard(user=Depends(auth)):
         counts['discovery_enabled']=bool(discovery and discovery['enabled'])
         counts['pipeline_blockers']=blockers
         counts['booking_centre']=booking_centre(c)
+        from booking_schedule import describe as describe_booking
+        from pipeline_engine import latest_snapshot
+        snapshot = latest_snapshot(c)
+        stages = {item['stage']: item['count'] for item in (snapshot or {}).get('stages') or []}
+        schedule = describe_booking(datetime.now(timezone.utc))
+        counts['risk_review']=c.execute(
+            "SELECT COUNT(*) FROM sports_ai_qualification_decisions WHERE state='MONITORING' AND reason_code='RISK_REVIEW'",
+        ).fetchone()[0]
+        counts['qualified_by_sport']=[dict(item) for item in c.execute(
+            "SELECT sport AS name, COUNT(*) AS total FROM sports_ai_qualification_decisions WHERE state='QUALIFIED' GROUP BY sport",
+        )]
+        counts['operating']={
+            'timezone': schedule['timezone'],
+            'local_time': schedule['local_time'],
+            'phase': schedule['phase'],
+            'publishes': schedule['publishes'],
+            'next_publication_at': schedule['next_publication_at'],
+            'places_wager': False,
+            'qualified_now': stages.get('QUALIFIED'),
+            'ready_tickets': stages.get('TICKET_READY'),
+            'fresh_prices': stages.get('ODDS_FRESH'),
+            'codes_verified': stages.get('CODE_VERIFIED'),
+            'codes_displayed': stages.get('DISPLAYED'),
+            'risk_review': counts['risk_review'],
+            'snapshot_at': None if not snapshot else snapshot['created_at'],
+        }
+        from command_view import command_view
+        counts['command_view']=command_view(c, datetime.now(timezone.utc))
+        counts['command_view']['next_window']=schedule['next_publication_at']
+        counts['command_view']['publication_open']=schedule['publishes']
         return counts
 
 def _fixture_select():
@@ -782,10 +930,10 @@ def providers(user=Depends(auth)):
 
 @router.put('/providers/{provider_id}')
 def provider_update(
-    provider_id:str,payload:ProviderUpdate,
+    provider_id:str,payload:ProviderUpdate,request:Request,
     x_sports_admin_key:str|None=Header(default=None),user=Depends(auth),
 ):
-    require_admin_key(x_sports_admin_key)
+    authorize(request,'config.write',x_sports_admin_key)
     if not isinstance(payload.config,dict):
         raise HTTPException(422,'Provider configuration must be a JSON object')
     try:
@@ -902,17 +1050,11 @@ def analysis(user=Depends(auth)):
         setting_row=c.execute("SELECT value_json FROM sports_ai_settings WHERE key='engine'").fetchone()
         cfg=json.loads(setting_row[0]) if setting_row else {'min_edge':0.05,'max_legs':6,'odds_tolerance':0.15}
         picks=[p for p in picks if p['edge']>=cfg['min_edge']]
-        groups=build_tickets(picks,max_legs=cfg['max_legs'],per_tier=12,tolerance=cfg['odds_tolerance'])
-        run_id=str(uuid.uuid4());count=sum(map(len,groups.values()))
-        c.execute('INSERT INTO sports_ai_analysis_runs(id,fixture_count,selection_count,ticket_count,status,details_json) VALUES(?,?,?,?,?,?)',(run_id,len(records),len(picks),count,'complete',json.dumps({'freshness_minutes':60,'calibrated':False})))
+        run_id=str(uuid.uuid4());count=0
+        c.execute('INSERT INTO sports_ai_analysis_runs(id,fixture_count,selection_count,ticket_count,status,details_json) VALUES(?,?,?,?,?,?)',(run_id,len(records),len(picks),count,'complete',json.dumps({'freshness_minutes':60,'calibrated':False,'tickets':'qualification_required'})))
         for p in picks:c.execute('INSERT INTO sports_ai_predictions(id,run_id,fixture_id,sport,fixture,market,odds,probability,edge,model_name) VALUES(?,?,?,?,?,?,?,?,?,?)',(str(uuid.uuid4()),run_id,p['event_id'],p['sport'],p['match'],p['market'],p['odds'],p['probability'],p['edge'],'baseline-v1'))
-        for group in groups.values():
-            for t in group:
-                tid=str(uuid.uuid4())
-                c.execute('INSERT INTO sports_ai_tickets(id,run_id,tier,combined_odds,estimated_probability,estimated_ev,selection_count) VALUES(?,?,?,?,?,?,?)',(tid,run_id,t['target'],t['odds'],t['probability'],t['estimated_ev'],len(t['legs'])))
-                for leg in t['legs']:c.execute('INSERT INTO sports_ai_ticket_legs(id,ticket_id,fixture_id,market,decimal_odds,estimated_probability) VALUES(?,?,?,?,?,?)',(str(uuid.uuid4()),tid,leg['event_id'],leg['market'],leg['odds'],leg['probability']))
-        audit(c,user,'analysis.run',{'run_id':run_id,'picks':len(picks),'tickets':count})
-    return {'run_id':run_id,'fixtures':len(records),'qualifying_picks':len(picks),'tickets':count,'model_calibrated':False}
+        audit(c,user,'analysis.run',{'run_id':run_id,'picks':len(picks),'tickets':0,'reason':'qualification_required'})
+    return {'run_id':run_id,'fixtures':len(records),'qualifying_picks':len(picks),'tickets':0,'model_calibrated':False,'qualification_required':True}
 
 @router.post('/training/run')
 def training_run(payload:TrainingIn,user=Depends(auth)):
@@ -936,9 +1078,9 @@ def model_registry(user=Depends(auth)):
 
 @router.post('/models/{model_id}/activate')
 def model_activate(
-    model_id:str,x_sports_admin_key:str|None=Header(default=None),user=Depends(auth),
+    model_id:str,request:Request,x_sports_admin_key:str|None=Header(default=None),user=Depends(auth),
 ):
-    require_admin_key(x_sports_admin_key)
+    authorize(request,'models.activate',x_sports_admin_key)
     with lock,connect() as c:
         model=c.execute(
             """SELECT m.*,t.status AS training_status,c.sample_size AS calibration_sample_size
@@ -955,27 +1097,143 @@ def model_activate(
                 or metrics['calibration_error']>.20):
             raise HTTPException(409,'Model has insufficient chronological validation or held-out calibration evidence')
         c.execute(
-            "UPDATE sports_ai_model_registry SET active=0,status='inactive' WHERE sport=? AND active=1",
+            "UPDATE sports_ai_model_registry SET active=0,status='inactive',lifecycle='suspended' WHERE sport=? AND active=1",
             (model['sport'],),
         )
         c.execute(
-            """UPDATE sports_ai_model_registry SET active=1,status='active',activated_at=?
+            """UPDATE sports_ai_model_registry SET active=1,status='active',lifecycle='active',activated_at=?
                WHERE id=?""",(datetime.now(timezone.utc).isoformat(),model_id),
         )
+        from suitability import sync_lifecycles
+        sync_lifecycles(c)
         audit(c,user,'models.activate',{'model_id':model_id,'sport':model['sport']})
     return {'activated':True,'model_id':model_id}
 
 @router.post('/models/{model_id}/rollback')
 def model_rollback(
-    model_id:str,x_sports_admin_key:str|None=Header(default=None),user=Depends(auth),
+    model_id:str,request:Request,x_sports_admin_key:str|None=Header(default=None),user=Depends(auth),
 ):
-    require_admin_key(x_sports_admin_key)
+    authorize(request,'models.activate',x_sports_admin_key)
     with lock,connect() as c:
         result=rollback_model(c,model_id)
         if result is None:raise HTTPException(404,'Model not found')
         if not result['rolled_back']:raise HTTPException(409,result['reason'])
         audit(c,user,'models.rollback',{'model_id':model_id,**result})
     return result
+
+@router.get('/models/lifecycle')
+def model_lifecycle(user=Depends(auth)):
+    from suitability import list_lifecycle
+    with connect() as c:
+        return list_lifecycle(c)
+
+@router.get('/models/comparison')
+def model_comparison(sport: str = 'football', user=Depends(auth)):
+    from suitability import compare_models
+    with connect() as c:
+        return compare_models(c, sport)
+
+@router.get('/predictions/evaluation-report')
+def prediction_evaluation_report(sport: str = 'football', user=Depends(auth)):
+    from suitability import evaluation_report
+    with connect() as c:
+        return evaluation_report(c, sport)
+
+@router.post('/models/{model_id}/suspend')
+def model_suspend(model_id:str,request:Request,x_sports_admin_key:str|None=Header(default=None),user=Depends(auth)):
+    authorize(request,'models.activate',x_sports_admin_key)
+    with lock,connect() as c:
+        model=c.execute('SELECT id,sport,active FROM sports_ai_model_registry WHERE id=?',(model_id,)).fetchone()
+        if not model:raise HTTPException(404,'Model not found')
+        c.execute(
+            """UPDATE sports_ai_model_registry
+               SET active=0,status='inactive',lifecycle='suspended' WHERE id=?""",
+            (model_id,),
+        )
+        audit(c,user,'models.suspend',{'model_id':model_id,'sport':model['sport']})
+    return {'suspended':True,'model_id':model_id,'lifecycle':'suspended'}
+
+class QualificationPolicyIn(BaseModel):
+    odds_max_age_minutes:int|None=Field(default=None,ge=1,le=180)
+    min_completeness:float|None=Field(default=None,ge=0,le=1)
+    max_calibration_error:float|None=Field(default=None,gt=0,le=1)
+    min_holdout_fixtures:int|None=Field(default=None,ge=1,le=10000)
+    max_uncertainty:float|None=Field(default=None,ge=0,le=1)
+    max_same_team:int|None=Field(default=None,ge=1,le=10)
+    max_open_qualified:int|None=Field(default=None,ge=1,le=200)
+    markets:dict|None=None
+
+@router.get('/markets/registry')
+def market_registry_report(user=Depends(auth)):
+    from market_registry import list_registry, refresh_market_registry
+    with connect() as connection:
+        existing = connection.execute('SELECT COUNT(*) FROM sports_ai_market_registry').fetchone()[0]
+        if not existing:
+            refresh_market_registry(connection)
+        return list_registry(connection)
+
+
+@router.get('/qualification/summary')
+def qualification_summary(user=Depends(auth)):
+    from qualification_engine import summary
+    with connect() as c:
+        return summary(c)
+
+@router.get('/qualification/decisions')
+def qualification_decisions(
+    state:str|None=None, sport:str|None=None, market:str|None=None, competition:str|None=None,
+    product:str|None=None, page:int=Query(default=1,ge=1), page_size:int=Query(default=25,ge=1,le=100),
+    user=Depends(auth),
+):
+    from qualification_engine import list_decisions
+    if state and state not in ('QUALIFIED','MONITORING','REJECTED','AWAITING_DATA','EXPIRED','SUSPENDED'):
+        raise HTTPException(422,'Unknown qualification state')
+    if product and product not in ('booking','weekly_draw','daily_rollover'):
+        raise HTTPException(422,'Unknown qualification product')
+    with connect() as c:
+        return list_decisions(c, state, sport, market, competition, product, page, page_size)
+
+@router.get('/qualification/decisions/{decision_id}')
+def qualification_decision(decision_id:str, user=Depends(auth)):
+    from qualification_engine import decision_detail
+    with connect() as c:
+        detail=decision_detail(c, decision_id)
+    if not detail:
+        raise HTTPException(404,'Qualification decision not found')
+    return detail
+
+@router.get('/qualification/policy')
+def qualification_policy(user=Depends(auth)):
+    from qualification_engine import load_policy
+    with connect() as c:
+        return load_policy(c)
+
+@router.put('/qualification/policy')
+def qualification_policy_save(body:QualificationPolicyIn, request:Request, x_sports_admin_key:str|None=Header(default=None), user=Depends(auth)):
+    authorize(request,'policy.write',x_sports_admin_key)
+    from qualification_engine import revalidate, save_policy
+    with lock, connect() as c:
+        try:
+            policy=save_policy(c, body.model_dump(exclude_none=True), user)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        audit(c, user, 'qualification.policy', {'version': policy['version']})
+        revalidate(c, user)
+    return policy
+
+@router.post('/qualification/revalidate')
+def qualification_revalidate(user=Depends(auth)):
+    from qualification_engine import revalidate
+    with lock, connect() as c:
+        result=revalidate(c, user)
+        audit(c, user, 'qualification.revalidate', result)
+    return result
+
+@router.get('/qualification/model-health')
+def qualification_model_health(user=Depends(auth)):
+    from qualification_engine import model_health
+    with connect() as c:
+        return model_health(c)
 
 @router.post('/analysis/cycle')
 def analysis_cycle(user=Depends(auth)):
@@ -1254,7 +1512,7 @@ def prediction_summary(sport: Literal['football', 'basketball'], market_group: s
                GROUP BY date(f.starts_at) ORDER BY day""",
             (sport,))
         model = c.execute(
-            """SELECT model_name, version, status, active FROM sports_ai_model_registry
+            """SELECT model_name, version, status, active, lifecycle FROM sports_ai_model_registry
                WHERE sport=? ORDER BY created_at DESC LIMIT 1""",
             (sport,),
         ).fetchone()
@@ -1311,6 +1569,7 @@ def prediction_summary(sport: Literal['football', 'basketball'], market_group: s
             'model': None if not model else {
                 'name': model['model_name'], 'version': model['version'],
                 'status': model['status'], 'active': bool(model['active']),
+                'lifecycle': model['lifecycle'] if 'lifecycle' in model.keys() else 'research',
             },
             'sources': sources,
             'next_run_at': None if not nxt else nxt['next_run_at'],
@@ -1348,6 +1607,7 @@ def predictions(
                     ORDER BY p2.created_at DESC, p2.probability DESC LIMIT 1
                 )
                 JOIN sports_ai_model_registry m ON m.id=p.model_id
+                LEFT JOIN sports_ai_market_suitability s ON s.prediction_id=p.id
                 LEFT JOIN sports_ai_value_opportunities o ON o.id=(
                     SELECT o2.id FROM sports_ai_value_opportunities o2
                     WHERE o2.prediction_id=p.id
@@ -1360,6 +1620,8 @@ def predictions(
             rows = allrows(c, f"""
                 SELECT f.id AS fixture_id, f.sport, f.competition, f.home, f.away, f.starts_at, f.status AS fixture_status,
                        m.model_name, m.version AS model_version, m.status AS model_status, m.active AS model_active,
+                       m.lifecycle, s.rank_score AS suitability_rank, s.booking_ready,
+                       p.id AS prediction_id, p.explanation_json,
                        p.market, p.probability, p.run_id, o.expected_edge AS edge, o.status AS opportunity_status,
                        o.reason AS opportunity_reason, q.decimal_odds AS odds,
                        (SELECT COUNT(*) FROM sports_ai_engine_predictions x
@@ -1369,6 +1631,18 @@ def predictions(
                 {joined}
                 ORDER BY {upcoming_order_sql('f')}
                 LIMIT ? OFFSET ?""", args + [page_size, (page - 1) * page_size])
+            from suitability import record_from_evidence, sync_lifecycles
+            sync_lifecycles(c)
+            for row in rows:
+                if row.get('suitability_rank') is None and row.get('prediction_id'):
+                    assessment = record_from_evidence(
+                        c, row['prediction_id'], row['sport'], row['market'],
+                        row.get('explanation_json'), row.get('lifecycle'),
+                    )
+                    row['suitability_rank'] = assessment['rank_score']
+                    row['booking_ready'] = assessment['booking_ready']
+                row.pop('explanation_json', None)
+                row['booking_ready'] = bool(row.get('booking_ready'))
             return {'items': rows, 'total': total, 'page': page, 'page_size': page_size}
         rows=allrows(c,
             """SELECT p.id,p.fixture_id,f.sport,p.market,p.probability,
@@ -1391,9 +1665,13 @@ def tickets(tier:int|None=Query(None),user=Depends(auth)):
         return allrows(c,q+(' WHERE tier=?' if tier else '')+' ORDER BY t.rowid DESC LIMIT 500',(tier,) if tier else ())
 
 @router.post('/tickets/{ticket_id}/booking-code')
-def booking_code(ticket_id:str,payload:BookingCodeIn,user=Depends(auth)):
+def booking_code(ticket_id:str,payload:BookingCodeIn,request:Request,x_sports_admin_key:str|None=Header(default=None),user=Depends(auth)):
+    authorize(request,'booking.execute',x_sports_admin_key)
     with lock,connect() as c:
         if not c.execute('SELECT 1 FROM sports_ai_tickets WHERE id=?',(ticket_id,)).fetchone():raise HTTPException(404,'Ticket not found')
+        from qualification_engine import ticket_is_bookable
+        if not ticket_is_bookable(c, ticket_id, 'sports_ai_ticket_legs'):
+            raise HTTPException(409,'A booking code requires a current QUALIFIED decision for every leg')
         c.execute('INSERT INTO sports_ai_booking_codes(id,ticket_id,code,verification_method,evidence,status) VALUES(?,?,?,?,?,?) ON CONFLICT(ticket_id) DO UPDATE SET code=excluded.code,evidence=excluded.evidence,status=excluded.status',(str(uuid.uuid4()),ticket_id,payload.code,'manual',payload.evidence,'unverified'))
         audit(c,user,'booking_code.record',{'ticket_id':ticket_id})
     return {'status':'unverified','message':'Manually recorded; not independently validated by SportyBet'}
@@ -1433,6 +1711,7 @@ class SettingsIn(BaseModel):
     odds_tolerance:float=Field(ge=0.01,le=0.5)
     odds_max_age_minutes:int=Field(default=15,ge=1,le=1440)
     form_half_life_days:float=Field(default=180,gt=0,le=3650)
+    autonomous_tickets:bool=True
 class RoleIn(BaseModel):
     role_name:str=Field(min_length=2,max_length=80)
     permissions:list[str]
@@ -1441,7 +1720,8 @@ class RoleIn(BaseModel):
 def results(user=Depends(auth)):
     with connect() as c:return allrows(c,'SELECT r.*,f.home,f.away,f.sport,f.competition FROM sports_ai_results r JOIN sports_ai_fixtures f ON f.id=r.fixture_id ORDER BY r.settled_at DESC')
 @router.post('/results')
-def save_result(p:ResultIn,user=Depends(auth)):
+def save_result(p:ResultIn,request:Request,x_sports_admin_key:str|None=Header(default=None),user=Depends(auth)):
+    authorize(request,'config.write',x_sports_admin_key)
     with lock,connect() as c:
         fixture=c.execute('SELECT starts_at FROM sports_ai_fixtures WHERE id=?',(p.fixture_id,)).fetchone()
         if not fixture:raise HTTPException(404,'Fixture not found')
@@ -1532,7 +1812,8 @@ def settings(user=Depends(auth)):
     defaults={'min_edge':0.05,'max_legs':6,'odds_tolerance':0.15,'odds_max_age_minutes':15,'form_half_life_days':180}
     return {**defaults, **(json.loads(r[0]) if r else {})}
 @router.put('/settings')
-def settings_save(p:SettingsIn,user=Depends(auth)):
+def settings_save(p:SettingsIn,request:Request,x_sports_admin_key:str|None=Header(default=None),user=Depends(auth)):
+    authorize(request,'config.write',x_sports_admin_key)
     with lock,connect() as c:
         c.execute("INSERT INTO sports_ai_settings(key,value_json) VALUES('engine',?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=CURRENT_TIMESTAMP",(p.model_dump_json(),))
         audit(c,user,'settings.update',p.model_dump())
@@ -1541,11 +1822,12 @@ def settings_save(p:SettingsIn,user=Depends(auth)):
 def roles(user=Depends(auth)):
     with connect() as c:return allrows(c,'SELECT * FROM sports_ai_roles ORDER BY role_name')
 @router.post('/roles')
-def role_add(p:RoleIn,user=Depends(auth)):
+def role_add(p:RoleIn,request:Request,x_sports_admin_key:str|None=Header(default=None),user=Depends(auth)):
+    authorize(request,'credentials.manage',x_sports_admin_key)
     with lock,connect() as c:
         c.execute('INSERT INTO sports_ai_roles(id,role_name,permissions_json) VALUES(?,?,?) ON CONFLICT(role_name) DO UPDATE SET permissions_json=excluded.permissions_json',(str(uuid.uuid4()),p.role_name,json.dumps(p.permissions)))
         audit(c,user,'roles.upsert',p.model_dump())
-    return {'saved':True,'note':'Permission templates require mapping to CACSMS ONE identity provider'}
+    return {'saved':True,'note':'Stored role permissions are enforced on privileged API operations. Loopback preview remains development-only.'}
 @router.get('/ticket-legs/{ticket_id}')
 def ticket_legs(ticket_id:str,user=Depends(auth)):
     with connect() as c:return allrows(c,'SELECT l.*,f.home,f.away,f.sport FROM sports_ai_ticket_legs l JOIN sports_ai_fixtures f ON f.id=l.fixture_id WHERE l.ticket_id=?',(ticket_id,))
@@ -1646,8 +1928,24 @@ def autonomous_overview(user=Depends(auth)):
     with connect() as c:
         return build_overview(c)
 
+@router.post('/bookings/diagnostic')
+def booking_diagnostic(request:Request, x_sports_admin_key:str|None=Header(default=None), user=Depends(auth)):
+    authorize(request,'diagnostics.admin',x_sports_admin_key)
+    from sportybet_booking import diagnose_booking
+    with connect() as c:
+        report=diagnose_booking(c)
+        audit(c, user, 'booking.diagnostic', {'places_wager': False, 'publishes_code': False, 'blockers': [item['code'] for item in report['blockers']]})
+    return report
+
+@router.get('/autonomous/readiness')
+def autonomous_readiness(user=Depends(auth)):
+    from autonomous_engine import production_readiness
+    with connect() as c:
+        return production_readiness(c)
+
 @router.post('/autonomous/control')
-def autonomous_control(body:AutonomousControl,user=Depends(auth)):
+def autonomous_control(body:AutonomousControl,request:Request,x_sports_admin_key:str|None=Header(default=None),user=Depends(auth)):
+    authorize(request,'config.write',x_sports_admin_key)
     from autonomous_engine import apply_control
     with lock,connect() as c:
         return apply_control(c,body.action,audit,user)
@@ -1659,3 +1957,7 @@ app.include_router(build_operations_router(auth, require_admin_key))
 app.include_router(build_sportybet_router(auth, require_admin_key))
 app.include_router(build_browser_router(auth))
 app.include_router(build_booking_router(auth))
+app.include_router(build_draw_router(auth))
+app.include_router(build_weekly_draw_router(auth, require_admin_key))
+app.include_router(build_rollover_router(auth))
+app.include_router(build_learning_router(auth, audit))

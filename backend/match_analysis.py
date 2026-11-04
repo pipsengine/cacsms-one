@@ -648,6 +648,8 @@ def attach_live_evidence(connection, report):
     if not isinstance(report, dict) or not report.get('fixture_id'):
         return report
     fixture_id = report['fixture_id']
+    sport_row = connection.execute('SELECT sport FROM sports_ai_fixtures WHERE id=?', (fixture_id,)).fetchone()
+    sport = sport_row['sport'] if sport_row else 'football'
     for market in report.get('markets') or []:
         key = _QUOTE_KEYS.get(market['market'])
         quote = None
@@ -683,8 +685,36 @@ def attach_live_evidence(connection, report):
             market['data_completeness'] = opportunity['data_completeness']
             if market.get('implied_probability') is None:
                 market['implied_probability'] = opportunity['implied_probability']
+        stored = connection.execute(
+            """SELECT p.explanation_json, m.lifecycle, m.active, m.status
+               FROM sports_ai_engine_predictions p
+               JOIN sports_ai_model_registry m ON m.id=p.model_id
+               WHERE p.fixture_id=? AND p.market=?
+               ORDER BY p.created_at DESC LIMIT 1""",
+            (fixture_id, market['market']),
+        ).fetchone()
+        if stored:
+            try:
+                evidence = json.loads(stored['explanation_json'] or '{}')
+            except json.JSONDecodeError:
+                evidence = {}
+            from suitability import assess_market
+            assessment = assess_market(
+                sport, market['market'],
+                evidence.get('raw_features') or evidence.get('features') or {},
+                stored['lifecycle'] or 'research',
+                evidence.get('calibration_status') == 'validated',
+                evidence.get('data_completeness'),
+            )
+            market['suitability_rank'] = assessment['rank_score']
+            market['booking_ready'] = bool(assessment['booking_ready'])
+            market['suitability_reason'] = assessment['reasons'][-1] if assessment['reasons'] else ''
+        else:
+            market['suitability_rank'] = None
+            market['booking_ready'] = False
+            market['suitability_reason'] = 'No stored prediction exists for this market.'
     registry = connection.execute(
-        """SELECT model_name, version, status, active, metrics_json
+        """SELECT model_name, version, status, active, lifecycle, metrics_json
            FROM sports_ai_model_registry
            WHERE sport=(SELECT sport FROM sports_ai_fixtures WHERE id=?)
            ORDER BY active DESC, created_at DESC LIMIT 1""",
@@ -700,6 +730,7 @@ def attach_live_evidence(connection, report):
             'version': registry['version'],
             'status': registry['status'],
             'active': bool(registry['active']),
+            'lifecycle': registry['lifecycle'] if 'lifecycle' in registry.keys() else 'research',
             'brier_score': metrics.get('brier_score'),
             'log_loss': metrics.get('log_loss'),
             'calibration_error': metrics.get('calibration_error'),

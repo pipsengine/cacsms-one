@@ -2,3 +2,4 @@ __pycache__/
 *.py[cod]
 .venv/
 backend/*.sqlite3*
+backend/catalog_evidence/

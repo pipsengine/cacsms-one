@@ -20,7 +20,7 @@ from db import DB, connect
 _FIELDS = {'h2h', 'form', 'standings', 'statistics', 'odds'}
 _SUPPORTED_ADAPTERS = {
     'football_data','openligadb','openfootball','balldontlie',
-    'sportsdataverse_csv','the_odds_api','browser',
+    'sportsdataverse_csv','the_odds_api','browser','authorized_json',
 }
 _ADMIN_SOURCE_KEYS = {'csv_import': 'basketball-csv'}
 
@@ -54,6 +54,20 @@ class ResearchRequest(BaseModel):
 
 class ExtractionUpdate(BaseModel):
     fields: dict[str, str]
+
+
+class CatalogSportCreate(BaseModel):
+    code: str = Field(min_length=2, max_length=41, pattern=r'^[a-z][a-z0-9_]+$')
+    name: str = Field(min_length=2, max_length=120)
+    notes: str = ''
+
+
+class CatalogBackfillRequest(BaseModel):
+    source_ids: list[str] = Field(default_factory=list, max_length=50)
+
+
+class CatalogPolicy(BaseModel):
+    per_day: int = Field(ge=0, le=24)
 
 
 def _safe_json(value, fallback):
@@ -114,7 +128,19 @@ def build_acquisition_router(auth_dependency):
         except CollectionError as error:
             raise HTTPException(422,str(error)) from error
         provider_key = _ADMIN_SOURCE_KEYS.get(payload.adapter, payload.source_key)
+        if payload.adapter == 'authorized_json':
+            catalog_sport = str(payload.config.get('catalog_sport') or '')
+            feed_url = str(payload.config.get('feed_url') or '')
+            if not re.fullmatch(r'[a-z][a-z0-9_]{1,40}', catalog_sport) or not feed_url.startswith('https://'):
+                raise HTTPException(422, 'authorized_json requires catalog_sport and an https feed_url')
         with connect() as connection:
+            if payload.adapter == 'authorized_json':
+                known = connection.execute(
+                    'SELECT 1 FROM sports_ai_sports WHERE code=?',
+                    (str(payload.config.get('catalog_sport')),),
+                ).fetchone()
+                if not known:
+                    raise HTTPException(422, 'Register the sport before attaching an authorized feed')
             duplicate = connection.execute(
                 'SELECT 1 FROM sports_ai_provider_registry WHERE provider_key=? OR id=?',
                 (provider_key,payload.source_key),
@@ -739,6 +765,93 @@ def build_acquisition_router(auth_dependency):
                     for row in evidence
                 ],
             }
+
+    @router.get('/acquisition/catalog/overview')
+    def catalog_overview(user=Depends(auth_dependency)):
+        from catalog_engine import coverage, list_errors
+        with connect() as connection:
+            payload = coverage(connection)
+            payload['errors'] = list_errors(connection, limit=30)
+            return payload
+
+    @router.get('/acquisition/catalog/sports')
+    def catalog_sports(user=Depends(auth_dependency)):
+        from catalog_engine import list_sports
+        with connect() as connection:
+            return list_sports(connection)
+
+    @router.post('/acquisition/catalog/sports')
+    def catalog_add_sport(payload: CatalogSportCreate, user=Depends(auth_dependency)):
+        from catalog_engine import register_sport
+        try:
+            with connect() as connection:
+                return register_sport(connection, payload.code, payload.name, user, payload.notes)
+        except CollectionError as error:
+            raise HTTPException(422, str(error)) from error
+
+    @router.get('/acquisition/catalog/countries')
+    def catalog_countries(q: str = '', user=Depends(auth_dependency)):
+        from catalog_engine import list_countries
+        with connect() as connection:
+            return list_countries(connection, q.strip())
+
+    @router.get('/acquisition/catalog/leagues')
+    def catalog_leagues(
+        sport: str = '', country: str = '', q: str = '', freshness: str = '',
+        page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=200),
+        user=Depends(auth_dependency),
+    ):
+        from catalog_engine import list_leagues
+        with connect() as connection:
+            return list_leagues(connection, sport, country, q.strip(), freshness, page, page_size)
+
+    @router.get('/acquisition/catalog/teams')
+    def catalog_teams(
+        sport: str = '', q: str = '',
+        page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=200),
+        user=Depends(auth_dependency),
+    ):
+        from catalog_engine import list_teams
+        with connect() as connection:
+            return list_teams(connection, sport, q.strip(), page, page_size)
+
+    @router.get('/acquisition/catalog/errors')
+    def catalog_errors(user=Depends(auth_dependency)):
+        from catalog_engine import list_errors
+        with connect() as connection:
+            return list_errors(connection)
+
+    @router.post('/acquisition/catalog/discover')
+    def catalog_discover(user=Depends(auth_dependency)):
+        from catalog_engine import run_catalog_discovery
+        result = run_catalog_discovery()
+        with connect() as connection:
+            connection.execute(
+                """INSERT INTO sports_ai_audit_events(id,actor,action,metadata_json) VALUES(?,?,?,?)""",
+                (str(uuid.uuid4()), user, 'catalog.discovery.requested',
+                 json.dumps({'status': result.get('status'), 'saved': result.get('saved')})),
+            )
+        return result
+
+    @router.post('/acquisition/catalog/backfill')
+    def catalog_backfill(payload: CatalogBackfillRequest, user=Depends(auth_dependency)):
+        from catalog_engine import queue_backfill
+        try:
+            with connect() as connection:
+                result = queue_backfill(connection, payload.source_ids)
+                connection.execute(
+                    """INSERT INTO sports_ai_audit_events(id,actor,action,metadata_json) VALUES(?,?,?,?)""",
+                    (str(uuid.uuid4()), user, 'catalog.backfill.queued', json.dumps(result)),
+                )
+                return result
+        except CollectionError as error:
+            raise HTTPException(422, str(error)) from error
+
+    @router.put('/acquisition/catalog/backfill-policy')
+    def catalog_policy(payload: CatalogPolicy, user=Depends(auth_dependency)):
+        from catalog_engine import set_backfill_policy
+        with connect() as connection:
+            return set_backfill_policy(connection, payload.per_day, user)
 
     return router
 

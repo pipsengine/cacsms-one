@@ -1,6 +1,6 @@
 import React from 'react';
 import {useNavigate} from 'react-router-dom';
-import {AlertCircle,ArrowLeft,BarChart3,BrainCircuit,CalendarDays,ChevronDown,Clock3,Copy,Database,Dribbble,Flame,Goal,Hash,Layers3,Link2,Play,RefreshCw,Target,Ticket} from 'lucide-react';
+import {BarChart3,ChevronDown,Clock3,Copy,Dribbble,Eye,Goal,Hash,Layers3,Link2,Play,RefreshCw,Target,TriangleAlert,Trophy} from 'lucide-react';
 import {get} from './api';
 import './command.css';
 
@@ -34,6 +34,14 @@ function ago(value) {
   const hours = Math.round(minutes / 60);
   if (hours < 48) return `Completed ${hours} hr ago`;
   return `Completed ${Math.round(hours / 24)} days ago`;
+}
+function clock(value) {
+  const parsed = stamp(value);
+  if (!parsed) return 'not scheduled';
+  return parsed.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+}
+function shown(value) {
+  return value === null || value === undefined ? '—' : fmt(value);
 }
 function ahead(value) {
   const parsed = stamp(value);
@@ -143,7 +151,7 @@ function BookingCentre({data, nav}) {
   }
   const counts = centre?.counts || {};
   const tickets = centre?.tickets || [];
-  const tone = {verified: 'success', awaiting_code: 'warning', unverified: 'neutral', expired: 'neutral'};
+  const tone = {verified: 'success', ready: 'success', pending: 'warning', awaiting_code: 'warning', unverified: 'neutral', expired: 'neutral'};
   const category = {football: 'Football', basketball: 'Basketball', mixed: 'Mixed'};
   return <section className="cc-panel booking">
     <header>
@@ -153,18 +161,18 @@ function BookingCentre({data, nav}) {
     {!centre && <p className="cc-note">Loading stored tickets…</p>}
     {centre && <>
       <div className="cc-book-stats">
-        <div className="verified"><strong>{fmt(counts.verified_codes)}</strong><span>Verified codes</span></div>
-        <div className="prepared"><strong>{fmt(counts.prepared_tickets)}</strong><span>Prepared tickets</span></div>
-        <div className="awaiting"><strong>{fmt(counts.awaiting_codes)}</strong><span>Awaiting codes</span></div>
+        <div className="verified"><strong>{fmt(counts.verified_codes)}</strong><span>Displayed codes</span></div>
+        <div className="prepared"><strong>{fmt(counts.ready_for_window)}</strong><span>Ready for the next window</span></div>
+        <div className="awaiting"><strong>{fmt(counts.not_bookable)}</strong><span>Stored, not bookable</span></div>
       </div>
-      <p className="cc-note">A booking code is stored when SportyBet displays it after the ticket prices and the Book Bet control are selected. Place bet is never used. This card refreshes every minute.{centre.last_attempt?.error ? ` Latest attempt: ${centre.last_attempt.error}` : ''}</p>
-      <p className="cc-book-caption">Latest {tickets.length} of {fmt(counts.prepared_tickets)} prepared tickets</p>
+      <p className="cc-note">One ready ticket is sent to SportyBet only while a publication window is open. A code is stored only when SportyBet displays it. Place bet is never used. Stored tickets that are not ready are not a queue.{centre.last_attempt?.error ? ` Latest attempt: ${centre.last_attempt.error}` : ''}</p>
+      <p className="cc-book-caption">Ready tickets and displayed codes</p>
       {!tickets.length && <p className="cc-note">No prepared accumulator ticket is stored.</p>}
       {tickets.map(ticket => <article className={`cc-slip ${ticket.code_status}`} key={ticket.id}>
         <div className="cc-slip-head">
           <button type="button" className="cc-slip-toggle" aria-expanded={open === ticket.id} onClick={() => setOpen(open === ticket.id ? null : ticket.id)}>
             <span className={`cc-chip ${ticket.sport_mode}`}>{category[ticket.sport_mode] || ticket.sport_mode}</span>
-            <span className="cc-slip-meta">{ticket.leg_count} selections · {Number(ticket.combined_odds || 0).toFixed(2)} combined · {ticket.tier}× target · {ticket.code ? 'Generated' : 'Prepared'} {when(ticket.generated_at || ticket.created_at)}</span>
+            <span className="cc-slip-meta">{ticket.matchup || `${ticket.leg_count} selections`} · {Number(ticket.combined_odds || 0).toFixed(2)} combined · {ticket.code ? 'Displayed' : 'Checked'} {when(ticket.generated_at || ticket.created_at)}</span>
             <ChevronDown size={14} className={open === ticket.id ? 'open' : ''}/>
           </button>
           <div className={`cc-slip-side${ticket.code ? ' has-code' : ''}`}>
@@ -179,145 +187,146 @@ function BookingCentre({data, nav}) {
             <span>{selectionLabel(leg)} · {leg.market} · {Number(leg.decimal_odds).toFixed(2)} · {leg.probability == null ? 'Probability not stored' : `${(Number(leg.probability) * 100).toFixed(1)}%`}</span>
           </div>)}
           {!ticket.legs?.length && <p className="cc-note">No selections are stored on this ticket.</p>}
+          <p className="cc-note">Product target {ticket.tier}×. Combined price {Number(ticket.combined_odds || 0).toFixed(2)}.</p>
         </div>}
       </article>)}
     </>}
   </section>;
 }
 
+function lagosClock() {
+  const text = new Date().toLocaleString('en-GB', {weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Africa/Lagos'});
+  return `${text.replace(',', '')} WAT (Africa/Lagos)`;
+}
+function ProbBar({value}) {
+  const width = value == null ? 0 : Math.max(0, Math.min(100, Number(value)));
+  const tone = value == null ? 'empty' : width >= 65 ? 'high' : width >= 30 ? 'mid' : 'low';
+  return <span className={`ccx-prob ${tone}`}><i style={{width: `${width}%`}}/><b>{value == null ? '—' : `${Number(value).toFixed(1)}%`}</b></span>;
+}
+function pillClass(status) {
+  if (status === 'Qualified' || status === 'Active' || status === 'Ready') return 'qualified';
+  if (status === 'Risk Review') return 'risk';
+  if (status === 'Monitoring' || status === 'Research') return 'monitoring';
+  return 'unsupported';
+}
+
 export default function CommandCentre({data, nav, run, loading, refresh}) {
   const navigate = useNavigate();
-  const [sport, setSport] = React.useState('all');
+  const view = data?.command_view || {};
+  const kpis = view.kpis || {};
+  const [sport, setSport] = React.useState('All');
+  const [codeTab, setCodeTab] = React.useState('codes');
+  const [copied, setCopied] = React.useState('');
+  const [now, setNow] = React.useState(lagosClock);
   React.useEffect(() => {
     if (!refresh) return undefined;
     const timer = setInterval(() => { refresh(); }, 60000);
     return () => clearInterval(timer);
   }, [refresh]);
+  React.useEffect(() => {
+    const timer = setInterval(() => setNow(lagosClock()), 30000);
+    return () => clearInterval(timer);
+  }, []);
   function openFixture(row) {
-    const sport = row.sport === 'basketball' ? 'basketball' : 'football';
-    navigate(`/sports/${sport}-analysis?fixture=${encodeURIComponent(row.fixture_id)}`, {
-      state: {
-        fixture: {
-          id: row.fixture_id,
-          sport: row.sport,
-          competition: row.competition,
-          home: row.home,
-          away: row.away,
-          kickoff_at: row.starts_at,
-        },
-      },
+    if (!row.fixture_id) return;
+    const sportKey = row.sport === 'basketball' ? 'basketball' : 'football';
+    navigate(`/sports/${sportKey}-analysis?fixture=${encodeURIComponent(row.fixture_id)}`, {
+      state: {fixture: {id: row.fixture_id, sport: row.sport, competition: row.competition, home: row.home, away: row.away, kickoff_at: row.starts_at}},
     });
   }
-  const upcoming = (data?.football_fixtures || 0) + (data?.basketball_fixtures || 0);
-  const activity = data?.activity_today || {};
-  const activityRows = [
-    ['Fixtures collected', activity.fixtures || 0, '#2563eb'],
-    ['Predictions generated', activity.predictions || 0, '#7c3aed'],
-    ['Odds updated', activity.odds || 0, '#0891b2'],
-    ['Value rows evaluated', activity.opportunities || 0, '#059669'],
-    ['Accumulator tickets', activity.tickets || 0, '#d97706'],
-    ['Results stored', activity.results || 0, '#0f766e'],
-  ];
-  const peak = Math.max(1, ...activityRows.map(row => row[1]));
-  const sports = data?.prediction_sports || [];
-  const sportTotal = sports.reduce((sum, row) => sum + row.total, 0) || 1;
-  const won = data?.settled_outcomes?.won || 0;
-  const lost = data?.settled_outcomes?.lost || 0;
-  const pending = upcoming;
-  const settledTotal = won + lost + pending;
-  const wonPct = settledTotal ? (won / settledTotal) * 100 : 0;
-  const lostPct = settledTotal ? (lost / settledTotal) * 100 : 0;
-  const tiers = [2, 5, 10, 25, 100, 1000, 5000, 25000];
-  const tierCount = Object.fromEntries((data?.tier_counts || []).map(row => [row.tier, row.total]));
-  const tierClass = ['', '', 'b', 'b', 'c', 'd', 'd', 'e'];
-  return <div className="cc">
-    <div className="cc-head">
+  async function copy(code) {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(code);
+    } catch {
+      setCopied('');
+    }
+  }
+  const filters = ['All', 'Football', 'Basketball', 'Tennis'];
+  const rows = (view.opportunities || []).filter(row => sport === 'All' || row.sport_label === sport);
+  const pipelineMax = Math.max(1, ...(view.pipeline || []).map(item => Number(item.count) || 0));
+  const performance = view.performance || {};
+  const featured = (view.codes || [])[0];
+  const windowLabel = view.publication_open ? 'Open now' : clock(view.next_window);
+  return <div className="ccx">
+    <header className="ccx-top">
       <div>
-        <div className="eyebrow">CACSMS ONE / SPORTS AI</div>
         <h1>Sports Intelligence Command Centre</h1>
-        <p>Monitor, analyse and manage football and basketball intelligence with stored records.</p>
+        <p>Multi-sport · Multi-market · AI probabilities · Booking codes · Draw games · Autonomous</p>
       </div>
-      <div className="cc-actions">
-        <button className="sp-secondary" onClick={refresh}><RefreshCw size={15}/>Refresh</button>
-        <button className="sp-secondary" onClick={() => window.location.assign(import.meta.env.VITE_CACSMS_HUB_URL || '/hub')}><ArrowLeft size={15}/>Central Hub</button>
-        <button className="sp-primary" onClick={run} disabled={loading}><Play size={15}/>{loading ? 'Running…' : 'Run Analysis'}</button>
+      <div className="ccx-top-side">
+        <span className="ccx-clock"><Clock3 size={15}/>{now}</span>
+        <span className="ccx-env">{view.environment || 'Development'}</span>
+        <button className="ccx-refresh" onClick={refresh}><RefreshCw size={15}/>Refresh</button>
+        <button className="ccx-run" onClick={run} disabled={loading}><Play size={15}/>{loading ? 'Running…' : 'Run Analysis'}</button>
       </div>
-    </div>
-    <div className="cc-kpis">
-      <button className="cc-kpi blue" onClick={() => nav('football-fixtures')}><i><CalendarDays size={20}/></i><div><span>Upcoming Fixtures</span><strong>{fmt(upcoming)}</strong><small>Scheduled</small></div></button>
-      <button className="cc-kpi purple" onClick={() => nav('football-predictions')}><i><BrainCircuit size={20}/></i><div><span>Predictions</span><strong>{fmt(data?.predictions)}</strong><small>Stored rows</small></div></button>
-      <button className="cc-kpi green" onClick={() => nav('value')}><i><Target size={20}/></i><div><span>Qualified Value</span><strong>{fmt(data?.qualified_opportunities)}</strong><small>{data?.qualified_opportunities ? 'Qualified' : 'Needs active model'}</small></div></button>
-      <button className="cc-kpi orange" onClick={() => nav('tickets')}><i><Ticket size={20}/></i><div><span>Accumulator Tickets</span><strong>{fmt(data?.accumulator_tickets)}</strong><small>{data?.accumulator_tickets ? 'Stored' : 'None qualified'}</small></div></button>
-      <button className="cc-kpi cyan" onClick={() => nav('odds')}><i><Database size={20}/></i><div><span>Odds Snapshots</span><strong>{fmt(data?.odds_snapshots)}</strong><small>{data?.odds_snapshots ? 'Stored quotes' : 'Awaiting Odds'}</small></div></button>
-      <button className="cc-kpi red" onClick={() => nav('scheduler')}><i><AlertCircle size={20}/></i><div><span>Failed Jobs</span><strong>{fmt(data?.failed_jobs)}</strong><small>{data?.failed_jobs ? 'Needs attention' : 'Healthy'}</small></div></button>
-    </div>
-    <div className="cc-grid three">
-      <BookingCentre data={data} nav={nav} />
-      <section className="cc-panel opportunities">
-        <header><strong><Target size={18}/>Top Games with Opportunities</strong><button className="cc-link" onClick={() => nav('value')}>View All</button></header>
-        <div className="cc-filters" role="tablist">
-          {[['all', 'All Sports'], ['football', 'Football'], ['basketball', 'Basketball']].map(([key, label]) => <button key={key} className={sport === key ? `on ${key}` : ''} aria-pressed={sport === key} onClick={() => setSport(key)}>{label}</button>)}
-        </div>
-        {(data?.top_opportunities || []).filter(row => sport === 'all' || row.sport === sport).slice(0, 5).map(row => {
-          const pick = pickTeam(row);
-          const Icon = row.sport === 'basketball' ? Dribbble : Goal;
-          return <button className={`cc-opp ${row.sport}`} key={row.fixture_id} onClick={() => openFixture(row)}>
-            <Icon className={`cc-sport ${row.sport}`} size={15}/>
-            <b>{row.home} vs {row.away}<small>{when(row.starts_at)} · {pick ? pick.label : row.market}</small></b>
-            <span className="cc-prob">{(Number(row.probability) * 100).toFixed(1)}%</span>
-            <span>{Number(row.decimal_odds).toFixed(2)} {row.bookmaker}</span>
-            <span className="cc-edge">+{(Number(row.edge) * 100).toFixed(1)}%<small>Qualified</small></span>
-          </button>;
-        })}
-        {!(data?.top_opportunities || []).filter(row => sport === 'all' || row.sport === sport).length && <p className="cc-note">No qualified opportunity is waiting. A game appears here only after an active validated model and a current verified price produce a positive edge.</p>}
-      </section>
-      <section className="cc-panel">
-        <header><strong><BarChart3 size={18}/>Today's Activity</strong><button className="cc-link" onClick={() => nav('activity')}>View Details</button></header>
-        <div className="cc-activity">{activityRows.map(([name, count, color]) => <div key={name}><span>{name}</span><div className="cc-bar"><i style={{width: `${Math.max(count ? 4 : 0, (count / peak) * 100)}%`, background: color}}/></div><b>{fmt(count)}</b></div>)}</div>
-      </section>
-    </div>
-    <div className="cc-grid bottom">
-      <section className="cc-panel">
-        <header><strong><Target size={18}/>Prediction Outcomes</strong></header>
-        <div className="cc-outcomes">
-          <div className="cc-donut" style={{background: `conic-gradient(#20b66c 0 ${wonPct}%, #ef4444 ${wonPct}% ${wonPct + lostPct}%, #cbd5e1 ${wonPct + lostPct}% 100%)`}}><div><b>{fmt(won + lost)}</b><small>Settled</small></div></div>
-          <div className="cc-legend">
-            <p><i className="cc-swatch" style={{background: '#20b66c'}}/>Won<b>{fmt(won)}</b></p>
-            <p><i className="cc-swatch" style={{background: '#ef4444'}}/>Lost<b>{fmt(lost)}</b></p>
-            <p><i className="cc-swatch" style={{background: '#94a3b8'}}/>Upcoming<b>{fmt(pending)}</b></p>
-            <p className="cc-note">Settled counts use only predictions stored before kickoff. ROI stays blank until a qualified selection has a final result.</p>
-          </div>
-        </div>
-      </section>
-      <section className="cc-panel">
-        <header><strong><Target size={18}/>Predictions by sport</strong></header>
-        <div className="cc-sports">{[...sports].sort((a, b) => a.name === 'football' ? -1 : 1).map(row => <div key={row.name}><b>{row.name[0].toUpperCase() + row.name.slice(1)}</b><div className="cc-bar"><i style={{width: `${(row.total / sportTotal) * 100}%`, background: row.name === 'football' ? '#2563eb' : '#7c3aed'}}/></div><strong>{((row.total / sportTotal) * 100).toFixed(1)}%</strong></div>)}</div>
-        <p className="cc-note">Share of stored prediction rows. Qualified opportunities are {fmt(data?.qualified_opportunities)}.</p>
-      </section>
-      <section className="cc-panel">
-        <header><strong><Flame size={18}/>Upcoming analysed fixtures</strong><button className="cc-link" onClick={() => nav('football-fixtures')}>View All</button></header>
-        <div className="cc-table-scroll"><table className="cc-table"><thead><tr><th>Fixture</th><th>Sport</th><th>League</th><th>Kickoff</th><th>Pick</th><th>Prob.</th><th>SportyBet</th></tr></thead><tbody>
-          {(data?.highlights || []).map(row => {
-            const pick = pickTeam(row);
-            return <tr key={row.fixture_id} className="cc-fixture" tabIndex={0} onClick={() => openFixture(row)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openFixture(row); } }}><td className="cc-name"><span className={pick?.side === 'home' ? 'cc-fav' : ''}>{row.home}</span> vs <span className={pick?.side === 'away' ? 'cc-fav' : ''}>{row.away}</span></td><td>{row.sport}</td><td>{row.competition || '—'}</td><td>{when(row.starts_at)}</td><td>{pick ? <span className="cc-fav-pill">{pick.label}</span> : '—'}</td><td><span className="cc-prob">{(Number(row.probability) * 100).toFixed(1)}%</span></td><td>{row.decimal_odds == null ? 'Awaiting Odds' : Number(row.decimal_odds).toFixed(2)}</td></tr>;
-          })}
-          {!(data?.highlights || []).length && <tr><td colSpan="7">No upcoming fixture has a stored prediction yet.</td></tr>}
+    </header>
+    <section className="ccx-kpis">
+      <button onClick={() => nav('qualification')}><i className="green"><Target size={18}/></i><div><span>Qualified Opportunities</span><strong>{shown(kpis.qualified)}</strong><small>{kpis.qualified_new ? `+ ${fmt(kpis.qualified_new)} new` : 'Current decisions'}</small></div></button>
+      <button onClick={() => nav('tickets')}><i className="blue"><Layers3 size={18}/></i><div><span>Bet Slips Ready</span><strong>{shown(kpis.slips)}</strong><small>for booking codes</small></div></button>
+      <button onClick={() => nav('codes')}><i className="purple"><Hash size={18}/></i><div><span>Active Booking Codes</span><strong>{shown(kpis.codes)}</strong><small>{kpis.codes_on_qualified_ticket ? `${fmt(kpis.codes_on_qualified_ticket)} on a qualified ticket` : 'historical'}</small></div></button>
+      <button onClick={() => nav('results')}><i className="amber"><Trophy size={18}/></i><div><span>Settled Results</span><strong>{shown(kpis.settled)}</strong><small>{kpis.settled ? 'prospective' : 'awaiting finals'}</small></div></button>
+      <button onClick={() => nav('weekly-draw')}><i className="teal"><Goal size={18}/></i><div><span>Draw Opportunities</span><strong>{shown(kpis.draws)}</strong><small>this week</small></div></button>
+      <button onClick={() => nav('sources')}><i className="rose"><Dribbble size={18}/></i><div><span>Active Sports</span><strong>{shown(kpis.active_sports)}</strong><small>{(kpis.active_sport_names || []).join(', ') || 'None active'}</small></div></button>
+    </section>
+    <div className="ccx-primary">
+      <section className="ccx-card">
+        <header><strong><Target size={16}/>Live Opportunities <small>(Top 8)</small></strong><div className="ccx-filters">{filters.map(name => <button key={name} className={sport === name ? 'on' : ''} onClick={() => setSport(name)}>{name}</button>)}<button className="ccx-link" onClick={() => nav('qualification')}>View All</button></div></header>
+        <div className="ccx-table-scroll"><table className="ccx-table"><thead><tr><th>#</th><th>Sport</th><th>Fixture</th><th>Market</th><th>Selection</th><th>AI Probability</th><th>Odds</th><th>Status</th></tr></thead><tbody>
+          {rows.map((row, index) => <tr key={`${row.fixture_id || row.fixture}-${row.selection}`} onClick={() => openFixture(row)}><td>{index + 1}</td><td><span className="ccx-sport">{row.sport === 'basketball' ? <Dribbble size={13}/> : <Goal size={13}/>}{row.sport_label}</span></td><td>{row.fixture}</td><td>{row.market}</td><td>{row.selection}</td><td><ProbBar value={row.probability}/></td><td className="ccx-odds">{row.odds == null ? '—' : Number(row.odds).toFixed(2)}</td><td><span className={`ccx-pill ${pillClass(row.status)}`}>{row.status}</span></td></tr>)}
+          {!rows.length && <tr><td colSpan="8">No matching opportunities.</td></tr>}
         </tbody></table></div>
       </section>
-    </div>
-    <div className="cc-grid last">
-      <section className="cc-panel">
-        <header><strong><Layers3 size={18}/>Accumulator Targets & Availability</strong></header>
-        <div className="cc-tiers">{tiers.map((tier, index) => <button key={tier} className={`cc-tier ${tierClass[index]}`} onClick={() => nav('tiers')}><strong>{fmt(tier)}×</strong><small>{fmt(tierCount[tier] || 0)} tickets</small></button>)}</div>
-        {(data?.tier_gaps || []).map(item => <p className="cc-note" key={item.tier}><b>{fmt(item.tier)}×.</b> {item.reason}</p>)}
-      </section>
-      <section className="cc-panel">
-        <header><strong><Clock3 size={18}/>Next Scheduled Operations</strong><button className="cc-link" onClick={() => nav('scheduler')}>View Scheduler</button></header>
-        {(data?.schedules || []).filter(item => item.enabled).map(item => <div className="cc-row" key={item.name}><Clock3 size={14}/><span>{item.name}</span><b>{ahead(item.next_run_at)}</b></div>)}
-        {!(data?.schedules || []).some(item => item.enabled) && <p className="cc-note">No schedule is enabled.</p>}
+      <section className="ccx-card ccx-codes">
+        <header><strong><Hash size={16}/>Booking Code Centre</strong><button className="ccx-link" onClick={() => nav('codes')}>View Centre</button></header>
+        <div className="ccx-tabs"><button className={codeTab === 'codes' ? 'on' : ''} onClick={() => setCodeTab('codes')}>Active Codes ({fmt((view.codes || []).length)})</button><button className={codeTab === 'slips' ? 'on' : ''} onClick={() => setCodeTab('slips')}>Bet Slips Ready ({fmt((view.slips || []).length)})</button><button className={codeTab === 'history' ? 'on' : ''} onClick={() => setCodeTab('history')}>History</button></div>
+        {codeTab === 'codes' && (featured ? <article className="ccx-code">
+          <div><span>Verified Code</span><strong>{featured.code}</strong><small>{featured.selection_count == null ? 'Selections not stored' : `${featured.selection_count} selections`}{featured.combined_odds == null ? '' : ` · Combined odds ${Number(featured.combined_odds).toFixed(2)}`}</small><small>Created {when(featured.created_at)} · {featured.bookmaker}{featured.historical ? ' · Not on a current qualified ticket' : ''}</small></div>
+          <div className="ccx-code-actions"><span className="ccx-pill qualified">Verified</span><button onClick={() => copy(featured.code)}><Copy size={13}/>{copied === featured.code ? 'Copied' : 'Copy'}</button><button onClick={() => nav('codes')}><Eye size={13}/>View</button></div>
+        </article> : <p className="ccx-empty">No verified booking codes available.</p>)}
+        {codeTab === 'slips' && <div className="ccx-slips">{(view.slips || []).map((slip, index) => <div key={slip.id}><b>Slip #{index + 1}</b><span>{slip.matchup || 'Selections stored'}</span><small>{slip.selections} selections{slip.probability == null ? '' : ` · Prob. ${Number(slip.probability).toFixed(0)}%`}{slip.odds == null ? '' : ` · Odds ${Number(slip.odds).toFixed(2)}`}</small><em>Ready</em></div>)}{!(view.slips || []).length && <p className="ccx-empty">No ticket is ready for the next window.</p>}</div>}
+        {codeTab === 'history' && <div className="ccx-slips">{(view.codes || []).slice(1).map(code => <div key={code.code}><b>{code.code}</b><small>{when(code.created_at)} · {code.bookmaker}</small></div>)}{(view.codes || []).length < 2 && <p className="ccx-empty">No earlier displayed code is stored.</p>}</div>}
       </section>
     </div>
-    <p className="cc-foot">Figures come from the Sports AI database. Missing odds stay at zero snapshots, and no return is invented.</p>
+    <div className="ccx-secondary">
+      <section className="ccx-card">
+        <header><strong><Goal size={16}/>Draw Games Opportunities <small>(This Week)</small></strong><button className="ccx-link" onClick={() => nav('weekly-draw')}>View All</button></header>
+        <div className="ccx-table-scroll"><table className="ccx-table compact"><thead><tr><th>#</th><th>Fixture</th><th>Competition</th><th>AI Probability</th><th>Odds</th><th>Status</th></tr></thead><tbody>
+          {(view.draws || []).map((row, index) => <tr key={row.fixture}><td>{index + 1}</td><td>{row.fixture}</td><td>{row.competition}</td><td><ProbBar value={row.probability}/></td><td className="ccx-odds">{row.odds == null ? '—' : Number(row.odds).toFixed(2)}</td><td><span className={`ccx-pill ${pillClass(row.status)}`}>{row.status}</span></td></tr>)}
+          {!(view.draws || []).length && <tr><td colSpan="6">No draw is in this week's queue.</td></tr>}
+        </tbody></table></div>
+      </section>
+      <section className="ccx-card">
+        <header><strong><Dribbble size={16}/>Sports Coverage</strong><button className="ccx-link" onClick={() => nav('sources')}>View All</button></header>
+        <div className="ccx-coverage">{(view.sports || []).map(item => <div key={item.name}><b>{item.name}</b><span>{fmt(item.fixtures)} fixtures</span><em className={pillClass(item.status)}>{item.status}</em></div>)}{!(view.sports || []).length && <p className="ccx-empty">No upcoming fixture is stored.</p>}</div>
+      </section>
+      <section className="ccx-card">
+        <header><strong><BarChart3 size={16}/>Pipeline <small>(Current Cycle)</small></strong><span className={`ccx-pill ${view.engine_online ? 'qualified' : 'monitoring'}`}>{view.engine_online ? 'Operational' : 'Idle'}</span></header>
+        <div className="ccx-pipeline">{(view.pipeline || []).map(item => <div key={item.name}><span>{item.name}</span><i><b style={{width: `${Math.max(4, (Number(item.count) || 0) / pipelineMax * 100)}%`}}/></i><strong>{fmt(item.count)}</strong></div>)}{!(view.pipeline || []).length && <p className="ccx-empty">The latest worker cycle has not reported a snapshot.</p>}</div>
+      </section>
+    </div>
+    <div className="ccx-bottom">
+      <section className="ccx-card">
+        <header><strong><BarChart3 size={16}/>Performance <small>(Last 30 days)</small></strong></header>
+        <div className="ccx-metrics">
+          <div><i className="green"><Target size={16}/></i><span>Win Rate</span><strong>{performance.win_rate == null ? 'Awaiting results' : `${performance.win_rate}%`}</strong></div>
+          <div><i className="blue"><BarChart3 size={16}/></i><span>Total Predictions</span><strong>{shown(performance.predictions_30d)}</strong></div>
+          <div><i className="teal"><Hash size={16}/></i><span>Average Odds</span><strong>{performance.average_odds == null ? '—' : Number(performance.average_odds).toFixed(2)}</strong></div>
+        </div>
+      </section>
+      <section className="ccx-card ccx-action">
+        <header><strong><Clock3 size={16}/>Next Key Action</strong></header>
+        <p>Next publication window</p>
+        <strong>{windowLabel} WAT</strong>
+        <small>{view.publication_open ? 'One ready ticket can be sent to SportyBet. No wager is placed.' : 'Africa/Lagos. No wager is placed.'}</small>
+      </section>
+      <section className="ccx-card ccx-alerts">
+        <header><strong><TriangleAlert size={16}/>Key Alerts</strong><button className="ccx-link" onClick={() => nav('alerts')}>View All</button></header>
+        {(view.alerts || []).map(item => <p key={item.id}><TriangleAlert size={14}/>{item.message}</p>)}
+        {!(view.alerts || []).length && <p className="ccx-empty">No alert is stored for this cycle.</p>}
+      </section>
+    </div>
+    <footer className="ccx-engine"><span className={view.engine_online ? 'on' : 'off'}/>{view.engine_online ? 'Engine Online' : 'Engine idle'}<small>Last sync {when(view.updated_at)}</small><small>Next window {windowLabel} WAT</small></footer>
   </div>;
 }
 
@@ -362,7 +371,7 @@ export function PredictionBoard({sport, tab = 0}) {
     <div className="sp-filter-bar">
       <label>Rows<select value={pageSize} onChange={event => setPageSize(Number(event.target.value))}><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></label>
     </div>
-    <div className="sp-table-scroll sp-table-limit"><table className="sp-table"><thead><tr><th>Fixture</th><th>Competition</th><th>Kickoff</th><th>Analysis</th><th>Top market</th><th>Model P</th><th>Odds</th><th>Edge</th><th>Model</th><th></th></tr></thead><tbody>
+    <div className="sp-table-scroll sp-table-limit"><table className="sp-table"><thead><tr><th>Fixture</th><th>Competition</th><th>Kickoff</th><th>Analysis</th><th>Top market</th><th>AI Probability</th><th>Odds</th><th>Edge</th><th>Model</th><th></th></tr></thead><tbody>
       {items.map(row => <tr key={row.fixture_id}><td>{row.home} vs {row.away}</td><td>{row.competition}</td><td>{when(row.starts_at)}</td><td>{row.analysis_status || 'stored prediction'}</td><td>{row.market}</td><td>{`${(Number(row.probability) * 100).toFixed(1)}%`}</td><td>{row.odds == null ? 'Awaiting Odds' : Number(row.odds).toFixed(2)}</td><td>{edgeText(row.edge)}</td><td>{row.model_name} v{row.model_version}{row.model_active ? '' : ' · inactive'}</td><td><button className="sp-text-action" onClick={() => open(row)}>View</button></td></tr>)}
       {!items.length && <tr><td className="sp-empty" colSpan="10">No upcoming fixture has a stored prediction yet. The scheduler analyses a small batch at a time.</td></tr>}
     </tbody></table></div>

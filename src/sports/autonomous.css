@@ -28,7 +28,7 @@
 .ae-tabs{display:flex;gap:3px;overflow:auto;border-bottom:1px solid #d8e2f1;margin-bottom:13px}
 .ae-tabs button{background:transparent;border:0;border-bottom:3px solid transparent;padding:11px 14px;white-space:nowrap;display:flex;align-items:center;gap:8px;font-weight:700;color:#304367}
 .ae-tabs button.current{background:#0c58ef;color:#fff;border-radius:8px 8px 0 0}
-.ae-metrics{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:9px;margin-bottom:12px}
+.ae-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:9px;margin-bottom:12px}
 .ae-metric,.ae-panel,.ae-pipeline{background:#fff;border:1px solid #dce5f3;border-radius:12px;box-shadow:0 2px 7px #0e3a8b0c}
 .ae-metric{display:flex;align-items:center;gap:10px;padding:12px 10px;min-height:84px}
 .ae-metric-icon{padding:10px;border-radius:11px;display:flex}

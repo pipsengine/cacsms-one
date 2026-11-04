@@ -56,6 +56,10 @@ ADAPTER_INFO = {
         'sport': 'both', 'terms_url': 'https://www.betexplorer.com/',
         'credential_env': '',
     },
+    'authorized_json': {
+        'sport': 'both', 'terms_url': '',
+        'credential_env': '',
+    },
 }
 
 
@@ -196,9 +200,12 @@ def _openligadb(provider, config, limit=MAX_RECORDS):
     return {'fixtures': fixtures, 'standings': [], 'source_url': urls[0], 'pages': len(urls)}
 
 
-def _openligadb_season(provider, league, season, limit):
+def _openligadb_season(provider, league, season, limit, sport='football'):
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,20}', league) or not 2000 <= season <= datetime.now().year + 1:
         raise CollectionError('Configure a valid OpenLigaDB league and season')
+    if sport == 'football':
+        from catalog_engine import sport_for_openligadb
+        sport = sport_for_openligadb(league, season)
     url = f'https://api.openligadb.de/getmatchdata/{urllib.parse.quote(league)}/{season}'
     payload, _ = _json_body(url)
     if not isinstance(payload, list):
@@ -215,7 +222,7 @@ def _openligadb_season(provider, league, season, limit):
         observed = item.get('lastUpdateDateTime') or now
         fixtures.append(_record(
             provider['provider_key'], item.get('matchID'),
-            'football', item.get('leagueName') or league,
+            sport, item.get('leagueName') or league,
             (item.get('team1') or {}).get('teamName'),
             (item.get('team2') or {}).get('teamName'),
             item.get('matchDateTimeUTC') or item.get('matchDateTime'),
@@ -470,6 +477,67 @@ def _football_data(provider, config, limit=MAX_RECORDS):
             'next_offset':offset if offset < count else None}
 
 
+def _authorized_json(provider, config, limit=MAX_RECORDS):
+    """Collect a reviewed JSON feed. The host must already be an approved source permission."""
+    from browser_operator import BrowserResearchError, validate_research_url
+    sport = str(config.get('catalog_sport') or '')
+    url = str(config.get('feed_url') or '')
+    if not re.fullmatch(r'[a-z][a-z0-9_]{1,40}', sport):
+        raise CollectionError('Set catalog_sport to a registered sport code')
+    with connect() as connection:
+        if not connection.execute('SELECT 1 FROM sports_ai_sports WHERE code=?', (sport,)).fetchone():
+            raise CollectionError('Register the sport in the catalog before collecting this feed')
+        approved = {
+            row['hostname'].casefold()
+            for row in connection.execute(
+                'SELECT hostname FROM sports_ai_source_permissions WHERE approved=1',
+            )
+        }
+    try:
+        validate_research_url(url, approved)
+    except BrowserResearchError as error:
+        raise CollectionError(str(error)) from error
+    payload, _headers = _json_body(url, {'Accept': 'application/json'})
+    matches = payload.get('matches') if isinstance(payload, dict) else None
+    if not isinstance(matches, list):
+        raise CollectionError('Authorized feed JSON must contain a matches list')
+    now = utc_now()
+    fixtures = []
+    for item in matches[:limit]:
+        if not isinstance(item, dict):
+            raise CollectionError('Authorized feed contains a match that is not an object')
+        statistics = item.get('statistics') if isinstance(item.get('statistics'), dict) else None
+        record = _record(
+            provider['provider_key'], item.get('id'), sport,
+            item.get('competition'), item.get('home'), item.get('away'),
+            item.get('starts_at'), item.get('observed_at') or now, url.split('?', 1)[0],
+            item.get('status') or 'SCHEDULED',
+            item.get('home_score'), item.get('away_score'),
+            item.get('settled_at'), statistics,
+        )
+        quotes = []
+        for quote in item.get('odds') or []:
+            if not isinstance(quote, dict):
+                raise CollectionError('Authorized feed contains an odds quote that is not an object')
+            bookmaker = str(quote.get('bookmaker') or '').strip()
+            market = str(quote.get('market') or '').strip()
+            outcome = str(quote.get('outcome') or '').strip()
+            if not bookmaker or not market or not outcome or quote.get('decimal_odds') is None:
+                raise CollectionError('An odds quote is missing bookmaker, market, outcome or decimal_odds')
+            price = float(quote['decimal_odds'])
+            if price <= 1:
+                raise CollectionError('Odds must be decimal prices greater than 1')
+            quotes.append({
+                'bookmaker': bookmaker[:120], 'market': market[:80], 'outcome': outcome[:80],
+                'decimal_odds': price, 'line': quote.get('line'),
+            })
+        record['odds'] = quotes
+        fixtures.append(record)
+    if not fixtures:
+        raise CollectionError('Authorized feed did not contain a usable match')
+    return {'fixtures': fixtures, 'standings': [], 'source_url': url.split('?', 1)[0], 'pages': 1}
+
+
 def _balldontlie(provider, config, limit=MAX_RECORDS):
     _, token = _safe_key(provider['adapter'])
     season = int(config.get('season', datetime.now().year))
@@ -721,15 +789,50 @@ def _persist(connection, provider, batch):
              record.get('source_url', '')),
         )
         if record.get('home_score') is not None and record.get('away_score') is not None:
+            existing_result = connection.execute(
+                'SELECT home_score, away_score FROM sports_ai_results WHERE fixture_id=?',
+                (fixture_id,),
+            ).fetchone()
+            if existing_result and (
+                existing_result['home_score'] != record['home_score']
+                or existing_result['away_score'] != record['away_score']
+            ):
+                open_conflict = connection.execute(
+                    """SELECT 1 FROM sports_ai_data_quality_issues
+                       WHERE fixture_id=? AND issue_type='result_conflict' AND resolved_at IS NULL
+                       LIMIT 1""",
+                    (fixture_id,),
+                ).fetchone()
+                if not open_conflict:
+                    connection.execute(
+                        """INSERT INTO sports_ai_data_quality_issues
+                           (id,fixture_id,provider_id,severity,issue_type,details_json)
+                           VALUES(?,?,?,'high','result_conflict',?)""",
+                        (str(uuid.uuid4()), fixture_id, provider['id'], json.dumps({
+                            'stored': [existing_result['home_score'], existing_result['away_score']],
+                            'incoming': [record['home_score'], record['away_score']],
+                            'provider_key': provider['provider_key'],
+                        })),
+                    )
+            else:
+                connection.execute(
+                    """INSERT INTO sports_ai_results
+                       (id,fixture_id,home_score,away_score,source,status,settled_at)
+                       VALUES(?,?,?,?,?,'final',?)
+                       ON CONFLICT(fixture_id) DO UPDATE SET home_score=excluded.home_score,
+                       away_score=excluded.away_score,source=excluded.source,status='final',
+                       settled_at=excluded.settled_at""",
+                    (str(uuid.uuid4()),fixture_id,record['home_score'],record['away_score'],
+                     provider['provider_key'],record['settled_at']),
+                )
+        for quote in record.get('odds') or []:
             connection.execute(
-                """INSERT INTO sports_ai_results
-                   (id,fixture_id,home_score,away_score,source,status,settled_at)
-                   VALUES(?,?,?,?,?,'final',?)
-                   ON CONFLICT(fixture_id) DO UPDATE SET home_score=excluded.home_score,
-                   away_score=excluded.away_score,source=excluded.source,status='final',
-                   settled_at=excluded.settled_at""",
-                (str(uuid.uuid4()),fixture_id,record['home_score'],record['away_score'],
-                 provider['provider_key'],record['settled_at']),
+                """INSERT OR IGNORE INTO sports_ai_odds_snapshots
+                   (id,fixture_id,provider_id,bookmaker,market,outcome,line,decimal_odds,source_url,observed_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (str(uuid.uuid4()), fixture_id, provider['id'], quote['bookmaker'], quote['market'],
+                 quote['outcome'], quote.get('line'), quote['decimal_odds'],
+                 record['source_url'], record['observed_at']),
             )
         for metric, value in record.get('statistics', {}).items():
             connection.execute(
@@ -753,6 +856,8 @@ def _persist(connection, provider, batch):
              json.dumps(row.get('details', {}),allow_nan=False),row['source_url'],
              row['observed_at']),
         )
+    from catalog_engine import sync_persisted_batch
+    sync_persisted_batch(connection, provider, batch)
     return seen, saved
 
 
@@ -765,6 +870,7 @@ def collect_provider(provider, connection=None, limit=MAX_RECORDS):
         'football_data': _football_data,
         'balldontlie': _balldontlie,
         'sportsdataverse_csv': _sportsdataverse_csv,
+        'authorized_json': _authorized_json,
     }
     if adapter == 'the_odds_api':
         key_name, token = _safe_key(adapter)

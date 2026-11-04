@@ -476,7 +476,20 @@ def _execute_kind(connection, kind, audit, idempotency_key, now):
         from browser_jobs import enqueue_authorized_jobs
         return enqueue_authorized_jobs(connection)
     if kind == 'booking_queue':
-        return {'status': 'deferred', 'places_wager': False, 'reason': 'Booking runs after the scheduler transaction and only for qualified selections'}
+        from booking_schedule import describe
+        return {'status': 'deferred', 'places_wager': False, 'schedule': describe(now), 'reason': 'Booking runs in the worker after this transaction, and only inside a WAT publication window'}
+    if kind == 'wat_window':
+        from booking_schedule import describe
+        return {'status': 'observed', 'places_wager': False, **describe(now)}
+    if kind == 'weekly_draw':
+        from weekly_draw_engine import describe_schedule
+        return {'status': 'observed', 'places_wager': False, **describe_schedule(now)}
+    if kind == 'rollover':
+        from rollover_engine import describe_schedule
+        return {'status': 'observed', 'places_wager': False, **describe_schedule(now)}
+    if kind == 'learning':
+        from learning_engine import describe_schedule
+        return {'status': 'observed', **describe_schedule()}
     if kind == 'collection':
         return {
             'status': 'complete',

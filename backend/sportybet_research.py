@@ -474,9 +474,11 @@ def _assess_value(connection, observation, odds_id, odds, now):
         _insert_opportunity(connection, prediction['id'], odds_id, None, None, 'suspended', 'An open high-severity data-quality issue blocks qualification.', now)
         return 'suspended', None
     production = bool(prediction['active']) and prediction['model_status'] in ('validated', 'active')
+    from market_registry import is_active
     calibrated = production and (
         (fixture['sport'] == 'football' and observation['canonical_market'] in {'HOME', 'DRAW', 'AWAY'})
         or (fixture['sport'] == 'basketball' and observation['canonical_market'] in {'MONEYLINE_HOME', 'MONEYLINE_AWAY'})
+        or is_active(connection, fixture['sport'], observation['canonical_market'])
     )
     if not production or not calibrated:
         reason = 'The model is not both explicitly activated and validated for this market.'
@@ -503,6 +505,13 @@ def _assess_value(connection, observation, odds_id, odds, now):
 
 
 def _insert_opportunity(connection, prediction_id, odds_id, implied, edge, status, reason, now):
+    if odds_id is not None:
+        existing = connection.execute(
+            'SELECT 1 FROM sports_ai_value_opportunities WHERE prediction_id=? AND odds_id=?',
+            (prediction_id, odds_id),
+        ).fetchone()
+        if existing:
+            return
     connection.execute(
         """INSERT INTO sports_ai_value_opportunities
            (id,prediction_id,odds_id,implied_probability,expected_edge,status,reason,evaluated_at)

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Clock3, Eye, Globe2, Pause, Play, Plus, RefreshCw, RotateCw, Save, ShieldCheck, XCircle } from 'lucide-react';
 import { get, post, put } from './api';
 import { parseCsv } from './Intelligence';
+import CatalogCentre from './CatalogCentre';
 import './acquisition.css';
 
 const providerChoices = [
@@ -11,6 +12,7 @@ const providerChoices = [
   ['balldontlie', 'BALLDONTLIE'],
   ['sportsdataverse_csv', 'SportsDataverse dataset CSV'],
   ['the_odds_api', 'The Odds API'],
+  ['authorized_json', 'Authorized JSON feed'],
 ];
 
 const supportedFields = ['h2h', 'form', 'standings', 'statistics', 'odds'];
@@ -546,5 +548,9 @@ export default function Acquisition({ tab = 0 }) {
   if (tab === 5) return <CollectionScheduler reload={reload} />;
   if (tab === 6) return <CollectionHistory reload={reload} />;
   if (tab === 7) return <SourcePermissions />;
+  if (tab === 8) return <CatalogCentre view="sports" />;
+  if (tab === 9) return <CatalogCentre view="leagues" />;
+  if (tab === 10) return <CatalogCentre view="teams" />;
+  if (tab === 11) return <CatalogCentre view="coverage" />;
   return <ProviderRegistry reload={reload} onReload={refresh} />;
 }

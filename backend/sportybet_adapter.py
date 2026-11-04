@@ -25,8 +25,9 @@ def integration_status():
         'verified': False,
         'reason': (
             'Displayed SportyBet prices are collected from the public page. '
-            'A booking code is requested only for a selection the value engine has qualified, '
-            'and only by clicking the booking-code control. No wager is placed, and no code is invented.'
+            'A booking code is requested only for a qualified ticket, only during 07:00–08:00, 12:00–13:00 or 17:00–18:00 WAT, '
+            'and only by clicking the booking-code control. The code is stored only when the page shows it. '
+            'No wager is placed, and no code is invented.'
         ),
     }
 
@@ -76,6 +77,10 @@ def register_manual_code(connection, actor, audit, ticket_id, code, evidence, no
     if not check['ok']:
         _log(connection, ticket_id, 'booking_blocked', {'revalidation': check, 'automation': 'unavailable'})
         return {'error': 'Booking code was not stored because the ticket failed revalidation', 'revalidation': check}
+    from qualification_engine import ticket_is_bookable
+    if not ticket_is_bookable(connection, ticket_id):
+        _log(connection, ticket_id, 'booking_blocked', {'reason_code': 'QUALIFICATION_REQUIRED'})
+        return {'error': 'Booking code was not stored because a leg has no current QUALIFIED decision'}
     existing = connection.execute(
         """SELECT code,status,created_at FROM sports_ai_booking_codes
            WHERE accumulator_ticket_id=? ORDER BY created_at DESC LIMIT 1""",

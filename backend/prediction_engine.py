@@ -808,6 +808,9 @@ def football_market(features, market, rho=0.0):
         if handicap:
             margin = h - a if handicap.group(1) == 'HOME' else a - h
             return _line_settlement(margin, -float(handicap.group(2)), True)
+        correct = re.fullmatch(r'CORRECT_(\d+)_(\d+)', market)
+        if correct:
+            return 1 if h == int(correct.group(1)) and a == int(correct.group(2)) else -1
         return None
 
     return _settlement_from_grid(
@@ -1530,9 +1533,14 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None):
         })),
     )
     stats = {'predictions': 0, 'opportunities': 0, 'qualified': 0, 'skipped': {}, 'snapshots_reused': 0}
+    from market_registry import active_keys
+    active_markets = active_keys(connection)
     for fixture in fixtures:
         if deadline and datetime.now(timezone.utc) > deadline:
             raise TimeoutError('Prediction job exceeded its timeout')
+        if fixture['sport'] not in ('football', 'basketball'):
+            stats['skipped']['sport_not_modelled'] = stats['skipped'].get('sport_not_modelled', 0) + 1
+            continue
         model = models.get(fixture['sport'])
         if not model:
             continue
@@ -1635,10 +1643,12 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None):
                     probability=calibrated[0 if market=='MONEYLINE_HOME' else 1]
                     settlement={'p_win':probability,'p_half_win':0.0,'p_push':0.0,
                                 'p_half_loss':0.0,'p_loss':1-probability}
+                registry_active = (fixture['sport'], market) in active_markets
                 market_calibrated=(
                     model['active'] and
                     ((fixture['sport']=='football' and market in ('HOME','DRAW','AWAY'))
-                     or (fixture['sport']=='basketball' and market in ('MONEYLINE_HOME','MONEYLINE_AWAY')))
+                     or (fixture['sport']=='basketball' and market in ('MONEYLINE_HOME','MONEYLINE_AWAY'))
+                     or registry_active)
                 )
                 prediction_id = str(uuid.uuid4())
                 summary, factors, missing = _explain(
@@ -1664,13 +1674,18 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None):
                     'scorelines': _scorelines(fixture['sport'], adjusted, rho),
                     'market_implied_probability': None,
                 }
+                kickoff = parse_time(fixture['starts_at'])
+                cohort = 'prospective' if kickoff and kickoff > now else 'historical'
+                if cohort == 'historical':
+                    stats['skipped']['after_kickoff'] = stats['skipped'].get('after_kickoff', 0) + 1
+                    continue
                 connection.execute(
                     """INSERT INTO sports_ai_engine_predictions
                        (id,run_id,fixture_id,model_id,feature_id,market,outcome,probability,
-                        settlement_json,explanation_json,created_at)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                        settlement_json,explanation_json,created_at,cohort)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (prediction_id,run_id,fixture['id'],model['id'],feature_id,market,market,
-                     settlement['p_win'],json.dumps(settlement),json.dumps(evidence),now.isoformat()),
+                     settlement['p_win'],json.dumps(settlement),json.dumps(evidence),now.isoformat(),cohort),
                 )
                 connection.execute(
                     """INSERT INTO sports_ai_prediction_explanations
@@ -1678,6 +1693,13 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None):
                        VALUES(?,?,?,?,?)""",
                     (str(uuid.uuid4()), prediction_id, summary, json.dumps(factors), json.dumps(missing)),
                 )
+                from suitability import assess_market, record_suitability
+                lifecycle = model['lifecycle'] if 'lifecycle' in model.keys() else ('active' if model['active'] else 'research')
+                assessment = assess_market(
+                    fixture['sport'], market, adjusted, lifecycle,
+                    market_calibrated, built['completeness'],
+                )
+                record_suitability(connection, prediction_id, fixture['sport'], market, assessment)
                 stats['predictions'] += 1
                 available = [(quote, canonical) for quote, canonical in mapped if canonical == market]
                 if market in conflicted and not available:
@@ -1730,8 +1752,13 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None):
                         if edge is None or edge < min_edge:
                             status, reason = 'rejected', 'Expected value is below the configured edge. This is not a guaranteed or risk-free selection.'
                         else:
-                            status, reason = 'qualified', 'Fresh permitted quote and validated active model meet the qualification checks. Expected value is an estimate, not a guarantee.'
-                            stats['qualified'] += 1
+                            from suitability import qualification_block
+                            blocked = qualification_block(assessment)
+                            if blocked:
+                                status, reason = 'rejected', blocked
+                            else:
+                                status, reason = 'qualified', 'Fresh permitted quote and validated active model meet the qualification checks. Expected value is an estimate, not a guarantee.'
+                                stats['qualified'] += 1
                     edge = expected_value(settlement,float(quote['decimal_odds']))
                     rank, uncertainty = _rank_score(
                         edge, reliability.get('calibration_error'), settlement['p_win'], built['completeness'], fresh,
@@ -1756,6 +1783,8 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None):
         except (ValueError,TypeError,KeyError,OverflowError) as error:
             kind = type(error).__name__
             stats['skipped'][kind] = stats['skipped'].get(kind, 0) + 1
+    if not fixture_id and not fixtures:
+        stats['snapshots_reused'] += _reuse_existing_snapshots(connection)
     details = {**stats,'minimum_edge':min_edge,'odds_max_age_minutes':odds_age_limit,
                'activated_models':[item['id'] for item in models.values() if item['active']]}
     connection.execute(
@@ -1765,6 +1794,66 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None):
     audit(connection,actor,'prediction_engine.run',{'run_id':run_id,**stats})
     return {'run_id':run_id,'fixtures':len(fixtures),**stats,
             'model_activation_required':not any(item['active'] for item in models.values())}
+
+
+def classify_cohorts(connection):
+    """Label stored forecasts from their original timestamps. Timestamps are not rewritten."""
+    connection.execute(
+        """UPDATE sports_ai_engine_predictions
+           SET cohort='prospective'
+           WHERE (cohort IS NULL OR cohort='')
+             AND created_at < (
+               SELECT starts_at FROM sports_ai_fixtures f WHERE f.id=sports_ai_engine_predictions.fixture_id
+             )""",
+    )
+    connection.execute(
+        """UPDATE sports_ai_engine_predictions
+           SET cohort='historical'
+           WHERE cohort IS NULL OR cohort=''""",
+    )
+    row = connection.execute(
+        """SELECT
+             SUM(CASE WHEN cohort='prospective' THEN 1 ELSE 0 END) AS prospective,
+             SUM(CASE WHEN cohort='historical' THEN 1 ELSE 0 END) AS historical,
+             SUM(CASE WHEN cohort='prospective' AND EXISTS (
+               SELECT 1 FROM sports_ai_results r
+               WHERE r.fixture_id=sports_ai_engine_predictions.fixture_id AND r.status='final'
+             ) THEN 1 ELSE 0 END) AS prospective_settled
+           FROM sports_ai_engine_predictions""",
+    ).fetchone()
+    return {
+        'prospective': int(row['prospective'] or 0),
+        'historical': int(row['historical'] or 0),
+        'prospective_settled': int(row['prospective_settled'] or 0),
+    }
+
+
+def _reuse_existing_snapshots(connection):
+    """Count an unchanged pre-match snapshot without writing another forecast."""
+    reused = 0
+    rows = connection.execute(
+        f"""SELECT * FROM sports_ai_fixtures f
+            WHERE {upcoming_fixture_sql('f')}
+              AND EXISTS (SELECT 1 FROM sports_ai_feature_snapshots s WHERE s.fixture_id=f.id)
+            ORDER BY {upcoming_order_sql('f')}
+            LIMIT 40""",
+    ).fetchall()
+    for row in rows:
+        fixture = dict(row)
+        try:
+            built = build_features(connection, fixture)
+        except (ValueError, TypeError, KeyError, OverflowError):
+            continue
+        if not built:
+            continue
+        existing = connection.execute(
+            """SELECT input_fingerprint FROM sports_ai_feature_snapshots
+               WHERE fixture_id=? AND cutoff_at=?""",
+            (fixture['id'], built['cutoff_at']),
+        ).fetchone()
+        if existing and existing['input_fingerprint'] == built['fingerprint']:
+            reused += 1
+    return reused
 
 
 def recover_timed_out_jobs(connection, now=None):
@@ -1904,6 +1993,8 @@ def rollback_model(connection, model_id):
                SET active=1,status='active',activated_at=? WHERE id=?""",
             (datetime.now(timezone.utc).isoformat(), restored),
         )
+    from suitability import sync_lifecycles
+    sync_lifecycles(connection)
     return {'rolled_back': True, 'restored_model_id': restored}
 
 
@@ -2018,6 +2109,8 @@ def govern_models(connection, actor, audit, now=None):
     state['decisions'] = decisions
     state['evaluated_at'] = current.isoformat()
     _save_setting(connection, 'model_governance', state, current)
+    from suitability import sync_lifecycles
+    sync_lifecycles(connection)
     return {'decisions': decisions, 'activated': [item['model_id'] for item in decisions if item['action'] == 'activated']}
 
 
@@ -2051,6 +2144,8 @@ def review_degradation(connection, actor, audit, now=None):
             audit(connection, actor, 'models.rollback', {'model_id': model['id'], 'reason': 'live_calibration_error', 'calibration_error': worst})
     if rolled:
         _save_setting(connection, 'model_governance', state, current)
+    from suitability import sync_lifecycles
+    sync_lifecycles(connection)
     return {'rolled_back': rolled}
 
 
@@ -2145,8 +2240,8 @@ def reprice_active_batch(connection, actor, audit, limit=20, now=None):
             prediction_id = str(uuid.uuid4())
             connection.execute(
                 """INSERT INTO sports_ai_engine_predictions
-                   (id,run_id,fixture_id,model_id,feature_id,market,outcome,probability,settlement_json,explanation_json,created_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                   (id,run_id,fixture_id,model_id,feature_id,market,outcome,probability,settlement_json,explanation_json,created_at,cohort)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,'prospective')""",
                 (prediction_id, run_id, fixture['id'], fixture['model_id'], snapshot['id'], market, market,
                  settlement['p_win'], json.dumps(settlement), json.dumps({'source': 'active_model_reprice'}), current.isoformat()),
             )

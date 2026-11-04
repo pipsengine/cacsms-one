@@ -4,18 +4,25 @@ Stopping or pausing disables stored schedules. It does not place a wager or acti
 """
 
 import json
+import os
+import uuid
 from datetime import datetime, timedelta, timezone
 
 AUTONOMOUS_KINDS = (
     'prediction', 'accumulator', 'settlement', 'model_evaluation', 'browser_queue', 'booking_queue',
+    'collection', 'weekly_draw', 'rollover', 'learning', 'wat_window',
 )
 STAGE_KINDS = (
-    ('Discover', 'Fixtures and leagues', 'collection'),
-    ('Collect Odds', 'Authorized sources', 'browser_queue'),
-    ('Validate', 'Data integrity', None),
-    ('Analyse', 'Stored models', 'prediction'),
-    ('Generate Picks', 'Value and tickets', 'accumulator'),
-    ('Monitor & Update', 'Results and alerts', 'settlement'),
+    ('Discover', 'Global catalog and fixtures', 'collection', 'catalog'),
+    ('Collect Odds', 'Authorized SportyBet prices', 'browser_queue', None),
+    ('Validate', 'Data integrity', None, None),
+    ('Analyse', 'Stored models', 'prediction', None),
+    ('Qualify', 'Central qualification', None, 'qualification'),
+    ('Tickets', 'Odds tiers and weekly draws', 'accumulator', 'weekly_draw'),
+    ('Rollover', 'Simulation only', 'rollover', 'rollover'),
+    ('Booking codes', 'Displayed code retrieval', 'booking_queue', 'booking'),
+    ('Settle', 'Verified results', 'settlement', None),
+    ('Learn', 'Performance evaluation', 'learning', 'learning'),
 )
 
 
@@ -94,7 +101,15 @@ def build_overview(connection, now=None):
             'uptime': _age(heartbeat_at, now) if fresh else None,
             'health': health,
             'heartbeat_at': heartbeat_at,
+            'qualified_decisions': connection.execute("SELECT COUNT(*) FROM sports_ai_qualification_decisions WHERE state='QUALIFIED'").fetchone()[0],
+            'verified_codes': connection.execute("SELECT COUNT(*) FROM sports_ai_booking_codes WHERE status='verified' AND verification_method='displayed'").fetchone()[0],
+            'pending_jobs': connection.execute("SELECT COUNT(*) FROM sports_ai_jobs WHERE status IN ('queued','running','retry_pending')").fetchone()[0],
+            'failures': connection.execute("SELECT COUNT(*) FROM sports_ai_jobs WHERE status IN ('failed','dead_letter')").fetchone()[0],
+            'weekly_tickets': connection.execute("SELECT COUNT(*) FROM sports_ai_accumulator_tickets WHERE json_extract(parameters_json,'$.product')='weekly_draw'").fetchone()[0],
+            'rollover_campaigns': connection.execute('SELECT COUNT(*) FROM sports_ai_rollover_campaigns').fetchone()[0],
+            'prospective_settled': total,
         },
+        'readiness': production_readiness(connection, now),
         'tasks': tasks,
         'stages': _stages(connection, schedules, jobs, now),
         'engines': _engines(connection, schedules, jobs, fresh, now),
@@ -103,6 +118,7 @@ def build_overview(connection, now=None):
         'logs': _logs(connection),
         'models': _models(connection),
         'settings': _settings(connection),
+        'pipeline': _pipeline(connection, now),
         'jobs': _recent_jobs(connection),
         'next_cycle': min((row['next_run_at'] for row in enabled if row['next_run_at']), default=None),
     }
@@ -178,10 +194,90 @@ def _task(schedule, job, now):
     }
 
 
+def record_stage(connection, stage, status, detail=None, now=None):
+    """Persist one worker stage. A stage cannot record a paid wager."""
+    current = now or datetime.now(timezone.utc)
+    payload = dict(detail or {})
+    if payload.get('places_wager'):
+        raise ValueError('Automatic paid wagering is disabled')
+    payload['places_wager'] = False
+    connection.execute(
+        """INSERT INTO sports_ai_autonomous_cycles
+           (id,stage,status,detail_json,places_wager,created_at) VALUES(?,?,?,?,0,?)""",
+        (str(uuid.uuid4()), stage, status or 'complete', json.dumps(payload, default=str)[:4000], current.isoformat()),
+    )
+    cutoff = (current - timedelta(days=14)).isoformat()
+    connection.execute('DELETE FROM sports_ai_autonomous_cycles WHERE created_at<?', (cutoff,))
+    return {'stage': stage, 'status': status or 'complete', 'places_wager': False}
+
+
+def production_readiness(connection, now=None):
+    """Report evidence. A missing control stays unresolved rather than being marked ready."""
+    now = now or datetime.now(timezone.utc)
+    heartbeat = connection.execute("SELECT heartbeat_at FROM sports_ai_worker_leases WHERE id='scheduler-leader'").fetchone()
+    fresh = _fresh(heartbeat['heartbeat_at'], now) if heartbeat else False
+    migration = connection.execute("SELECT name FROM sports_ai_schema_migrations WHERE name LIKE '026_%'").fetchone()
+    backfill = connection.execute("SELECT value_json FROM sports_ai_settings WHERE key='catalog_backfill'").fetchone()
+    try:
+        per_day = json.loads(backfill['value_json']).get('per_day', 0) if backfill else 0
+    except (TypeError, json.JSONDecodeError):
+        per_day = None
+    active_models = connection.execute("SELECT COUNT(*) FROM sports_ai_model_registry WHERE active=1").fetchone()[0]
+    verified = connection.execute("SELECT COUNT(*) FROM sports_ai_booking_codes WHERE status='verified' AND verification_method='displayed'").fetchone()[0]
+    prospective = connection.execute(
+        """SELECT COUNT(*) FROM sports_ai_engine_predictions p
+           JOIN sports_ai_fixtures f ON f.id=p.fixture_id
+           JOIN sports_ai_results r ON r.fixture_id=f.id AND r.status='final'
+           WHERE p.created_at<f.starts_at""",
+    ).fetchone()[0]
+    failures = connection.execute("SELECT COUNT(*) FROM sports_ai_jobs WHERE status IN ('failed','dead_letter')").fetchone()[0]
+    checks = [
+        {'name': 'Paid wagering', 'ok': True, 'blocking': True, 'detail': 'Automatic paid wagering is disabled. Booking preparation retrieves a displayed code only.'},
+        {'name': 'Worker heartbeat', 'ok': fresh, 'blocking': True, 'detail': 'Fresh' if fresh else 'The scheduler heartbeat is older than two minutes or is not stored.'},
+        {'name': 'Schema migration 026', 'ok': bool(migration), 'blocking': True, 'detail': migration['name'] if migration else '026_sports_ai_autonomous_cycles.sql has not been applied.'},
+        {'name': 'Catalog backfill', 'ok': per_day == 0, 'blocking': True, 'detail': f'Historical backfill is {per_day} leagues per day.'},
+        {'name': 'Active validated models', 'ok': active_models > 0, 'blocking': False, 'detail': f'{active_models} active model(s). Activation still requires an administrator and the holdout gate.'},
+        {'name': 'Displayed booking codes', 'ok': True, 'blocking': False, 'detail': f'{verified} verified displayed code(s). Zero is valid when nothing qualifies.'},
+        {'name': 'Prospective evaluation', 'ok': prospective > 0, 'blocking': False, 'detail': f'{prospective} predictions were stored before kickoff and have a final result.'},
+        {'name': 'Open job failures', 'ok': failures == 0, 'blocking': False, 'detail': f'{failures} failed or dead-letter job(s).'},
+        {'name': 'Administrator key', 'ok': bool(os.environ.get('SPORTS_ADMIN_API_KEY')), 'blocking': True, 'detail': 'SPORTS_ADMIN_API_KEY is configured.' if os.environ.get('SPORTS_ADMIN_API_KEY') else 'SPORTS_ADMIN_API_KEY is not set. Model activation and policy writes stay closed.'},
+        {'name': 'Production session', 'ok': os.environ.get('SPORTS_LOCAL_PREVIEW') != '1', 'blocking': True, 'detail': 'Loopback preview authentication is off.' if os.environ.get('SPORTS_LOCAL_PREVIEW') != '1' else 'SPORTS_LOCAL_PREVIEW=1 accepts loopback requests. Replace it with the CACSMS ONE session before production.'},
+        {'name': 'Alert delivery', 'ok': bool(os.environ.get('SPORTS_SMTP_HOST') and os.environ.get('SPORTS_ALERT_EMAIL')) or bool(os.environ.get('SPORTS_TELEGRAM_BOT_TOKEN') and os.environ.get('SPORTS_TELEGRAM_CHAT_ID')), 'blocking': False, 'detail': 'SMTP or Telegram credentials are stored in the environment.' if (os.environ.get('SPORTS_SMTP_HOST') or os.environ.get('SPORTS_TELEGRAM_BOT_TOKEN')) else 'Dashboard alerts work. Email and Telegram are not configured.'},
+        {'name': 'Application rate limit', 'ok': True, 'blocking': True, 'detail': 'Each client is limited to 240 API requests per minute. Health checks are exempt. SPORTS_PRODUCTION=1 also refuses loopback preview authentication.'},
+    ]
+    return {
+        'ready': all(item['ok'] for item in checks if item['blocking']),
+        'places_wager': False,
+        'checks': checks,
+        'rollback': [
+            'Stop the worker, then start one API process so initialize() copies the database before a pending migration.',
+            'Restore that backup over the SQLite file and restart the API and worker.',
+            'Roll a model back with the administrator key. Training does not activate a replacement.',
+        ],
+        'procedures': [
+            'The worker loop runs discovery, odds refresh, qualification, autonomous tickets, draws, rollover simulation, learning and booking-code retrieval. It does not place a paid wager. A ticket is stored only from current QUALIFIED selections.',
+            'Pause or Stop on the Autonomous Engine disables stored schedules and remembers them for Resume.',
+            'A booking code is stored only when SportyBet displays it inside a publication window.',
+        ],
+    }
+
+
+def _latest_cycles(connection):
+    rows = connection.execute(
+        """SELECT c.stage,c.status,c.detail_json,c.created_at
+           FROM sports_ai_autonomous_cycles c
+           JOIN (
+             SELECT stage, MAX(created_at) AS created_at FROM sports_ai_autonomous_cycles GROUP BY stage
+           ) latest ON latest.stage=c.stage AND latest.created_at=c.created_at""",
+    ).fetchall()
+    return {row['stage']: dict(row) for row in rows}
+
+
 def _stages(connection, schedules, jobs, now):
     by_kind = {}
     for row in schedules:
         by_kind.setdefault(row['job_kind'], row)
+    cycles = _latest_cycles(connection)
     issues = connection.execute(
         "SELECT COUNT(*) FROM sports_ai_data_quality_issues WHERE resolved_at IS NULL AND severity IN ('high','critical')",
     ).fetchone()[0]
@@ -189,31 +285,48 @@ def _stages(connection, schedules, jobs, now):
         "SELECT MAX(observed_at) FROM sports_ai_odds_snapshots WHERE bookmaker='SportyBet'",
     ).fetchone()[0]
     stages = []
-    for name, detail, kind in STAGE_KINDS:
-        if kind is None:
+    for name, detail, kind, cycle_stage in STAGE_KINDS:
+        cycle = cycles.get(cycle_stage or '')
+        if name == 'Validate':
             stages.append({
                 'name': name, 'detail': detail, 'status': 'Clear' if not issues else 'Attention',
                 'ok': issues == 0, 'last_run_at': None, 'next_run_at': None,
                 'result': 'No open high-severity data issue' if not issues else f'{issues} open high-severity issues',
             })
             continue
-        schedule = by_kind.get(kind)
+        schedule = by_kind.get(kind) if kind else None
         job = jobs.get(schedule['id']) if schedule else None
         task = _task(schedule, job, now) if schedule else None
+        status = task['status'] if task else 'Not scheduled'
+        cycle_at = (cycle or {}).get('created_at') or ''
+        job_at = (job or {}).get('finished_at') or (job or {}).get('started_at') or ''
+        cycle_is_current = bool(cycle) and cycle_at >= job_at
+        if cycle_is_current:
+            status = 'Completed' if cycle['status'] not in ('failed', 'error') else 'Error'
         recent_odds = False
         if kind == 'browser_queue' and odds:
             try:
                 recent_odds = (now - _parse(odds)).total_seconds() < 6 * 3600
             except (TypeError, ValueError):
                 recent_odds = False
+        if cycle_is_current:
+            result = cycle['status']
+        elif (job or {}).get('error'):
+            result = job['error']
+        elif cycle:
+            result = cycle['status']
+        elif task:
+            result = task['status']
+        else:
+            result = 'No cycle is stored yet'
         stages.append({
             'name': name,
             'detail': detail,
-            'status': task['status'] if task else 'Not scheduled',
-            'ok': bool(task and task['status'] == 'Completed') or recent_odds,
-            'last_run_at': schedule['last_run_at'] if schedule else odds,
+            'status': status,
+            'ok': status in ('Completed', 'Clear') or recent_odds,
+            'last_run_at': cycle_at or (schedule['last_run_at'] if schedule else odds),
             'next_run_at': schedule['next_run_at'] if schedule else None,
-            'result': (job or {}).get('error') or (task['status'] if task else 'No schedule is stored'),
+            'result': result,
         })
     return stages
 
@@ -262,6 +375,10 @@ def _engines(connection, schedules, jobs, fresh, now):
         {'name': 'Value & Edge Engine', 'status': 'Qualified selections stored' if qualified else _cycle_reason(connection, 'No selection has cleared an active model, a fresh price and the configured edge.'), 'tone': 'good' if qualified else 'warn'},
         {'name': 'Ticket Generator', 'status': 'Qualified selections available' if qualified else 'Waiting for a qualified selection', 'tone': 'good' if qualified else 'neutral'},
         {'name': 'Auto Browser Operator', 'status': 'Collecting displayed prices' if browser['operational'] else browser['reason'], 'tone': 'good' if browser['operational'] else 'warn'},
+        {'name': 'Qualification', 'status': 'Decisions stored' if connection.execute('SELECT COUNT(*) FROM sports_ai_qualification_decisions').fetchone()[0] else 'No qualification decision is stored', 'tone': 'good' if connection.execute("SELECT COUNT(*) FROM sports_ai_qualification_decisions WHERE state='QUALIFIED'").fetchone()[0] else 'neutral'},
+        {'name': 'Weekly Draw', 'status': 'Tickets stored' if connection.execute("SELECT COUNT(*) FROM sports_ai_accumulator_tickets WHERE json_extract(parameters_json,'$.product')='weekly_draw'").fetchone()[0] else 'No weekly draw ticket is stored', 'tone': 'neutral'},
+        {'name': 'Daily Rollover', 'status': 'Simulation only' if connection.execute('SELECT COUNT(*) FROM sports_ai_rollover_campaigns').fetchone()[0] else 'No rollover campaign is stored', 'tone': 'neutral'},
+        {'name': 'Performance & Learning', 'status': 'Evaluation stored' if connection.execute('SELECT COUNT(*) FROM sports_ai_learning_runs').fetchone()[0] else 'No learning run is stored', 'tone': 'neutral'},
         {'name': 'Scheduler (24/7)', 'status': 'Heartbeat fresh' if fresh else 'Heartbeat idle', 'tone': 'good' if fresh else 'warn'},
         {'name': 'Data Sync & Monitor', 'status': 'Provider collection is scheduled' if any(row['enabled'] and row['job_kind'] == 'collection' for row in schedules) else 'Provider schedules run separately', 'tone': 'neutral'},
     ]
@@ -402,9 +519,32 @@ def _models(connection):
     return models
 
 
+_PIPELINE_CACHE = {}
+
+
+def _pipeline(connection, now):
+    try:
+        import time
+        from pipeline_engine import latest_snapshot, measure_pipeline
+        database = connection.execute('PRAGMA database_list').fetchone()
+        key = database['file'] if database else ''
+        cached = _PIPELINE_CACHE.get(key)
+        if cached and time.monotonic() - cached[0] < 20:
+            return cached[1]
+        measured = measure_pipeline(connection, now)
+        measured['stored_snapshot_at'] = (latest_snapshot(connection) or {}).get('created_at')
+        _PIPELINE_CACHE[key] = (time.monotonic(), measured)
+        return measured
+    except Exception as error:
+        return {'stages': [], 'blockers': [{'stage': 'PIPELINE', 'reason': str(error)[:200]}], 'places_wager': False}
+
+
 def _settings(connection):
     row = connection.execute("SELECT value_json FROM sports_ai_settings WHERE key='engine'").fetchone()
-    defaults = {'min_edge': 0.05, 'max_legs': 6, 'odds_tolerance': 0.15, 'odds_max_age_minutes': 15, 'form_half_life_days': 180}
+    defaults = {
+        'min_edge': 0.05, 'max_legs': 6, 'odds_tolerance': 0.15, 'odds_max_age_minutes': 15,
+        'form_half_life_days': 180, 'autonomous_tickets': True,
+    }
     try:
         stored = json.loads(row['value_json']) if row else {}
     except (TypeError, json.JSONDecodeError):
