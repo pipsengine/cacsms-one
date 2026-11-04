@@ -1,4 +1,5 @@
 import {useEffect, useState} from 'react';
+import {useLiveReload} from './live';
 import {get, post} from './api';
 import {ModelManagement} from './Intelligence';
 
@@ -34,6 +35,7 @@ export default function PerformanceLearning({page, tab = 0}) {
     }).catch(requestError => setError(requestError.message));
   }
   useEffect(() => { load(); }, []);
+  useLiveReload(() => load());
   async function refreshEvaluation() {
     setBusy(true);
     setError('');

@@ -60,7 +60,7 @@ export default function AutonomousEngine({nav}) {
 
   useEffect(() => {
     load();
-    const timer = setInterval(load, 30000);
+    const timer = setInterval(load, 10000);
     return () => clearInterval(timer);
   }, []);
 
@@ -179,7 +179,7 @@ export default function AutonomousEngine({nav}) {
           <OpportunityTable rows={data?.opportunities || []} onOpen={setSelected}/>
         </section>
         <section className="ae-panel tickets">
-          <div className="ae-head"><h2><Ticket size={18}/> Generated Tickets (Suggestions)</h2><button className="ae-link" onClick={() => setTab('Generated Tickets')}>View All</button></div>
+          <div className="ae-head"><h2><Ticket size={18}/> Generated Tickets (Suggestions)</h2><span className="ae-pill mint">Checked {clock(data?.tickets_checked_at)}</span><button className="ae-link" onClick={() => setTab('Generated Tickets')}>View All</button></div>
           <TicketGrid tickets={data?.tickets || []}/>
         </section>
       </div>
@@ -239,7 +239,7 @@ export default function AutonomousEngine({nav}) {
     {tab === 'Generated Tickets' && <section className="ae-panel">
       <div className="ae-head"><h2><Ticket size={18}/> Generated Tickets</h2><button className="ae-link" onClick={() => nav('tickets')}>Open ticket builder</button></div>
       <TicketGrid tickets={data?.tickets || []}/>
-      <p className="ae-note">A ticket is stored only after qualified selections produce a legal combination. Nothing on this page submits a wager.</p>
+      <p className="ae-note">Checked {clock(data?.tickets_checked_at)}. These are the tickets that are still qualified. A ticket whose price or qualification has lapsed leaves this list. Nothing on this page submits a wager.</p>
     </section>}
 
     {tab === 'Model Performance' && <section className="ae-panel">
@@ -268,7 +268,7 @@ export default function AutonomousEngine({nav}) {
         <button className="ae-btn primary" disabled={busy}>Save risk controls</button>
         {saved && <span className="ae-saved">{saved}</span>}
       </form>
-      <p className="ae-note">These limits are the stored engine settings. Pause and Stop disable the scheduler rows. They do not activate a model and they do not place a wager.</p>
+      <p className="ae-note">The worker keeps collection, qualification, tickets and booking codes running. A pause is resumed on the next cycle. No wager is placed.</p>
     </section>}
 
     {tab === 'Production Readiness' && <section className="ae-panel">
@@ -285,7 +285,7 @@ export default function AutonomousEngine({nav}) {
 
     <footer className="ae-footer">
       <span><Clock3 size={18}/> Next cycle <b>{clock(data?.next_cycle)}</b></span>
-      <span><RefreshCw size={18}/> Refresh <b>Every 30 seconds</b></span>
+      <span><RefreshCw size={18}/> Refresh <b>Every 10 seconds</b></span>
       <span><Database size={18}/> Sources <b>Stored providers and SportyBet prices</b></span>
       <span><Cpu size={18}/> Models <b>Football and basketball registry</b></span>
       <span><ShieldCheck size={18}/> Wagers <b>Not placed</b></span>
@@ -308,12 +308,12 @@ function TaskTable({tasks, all, filter, onFilter}) {
 
 function OpportunityTable({rows, onOpen}) {
   return <div className="ae-table-wrap"><table><thead><tr><th>#</th><th>Fixture</th><th>Market</th><th>Odds</th><th>AI Probability</th><th>Edge</th><th>Confidence</th></tr></thead><tbody>
-    {rows.map((row, index) => <tr key={`${row.fixture}-${row.market}`} className="click" onClick={() => onOpen(row)}><td>{index + 1}</td><td>{row.fixture}</td><td>{row.market}</td><td>{Number(row.odds).toFixed(2)}</td><td>{row.probability}%</td><td className="ae-positive">+{row.edge}%</td><td><em className="ae-status neutral">Not stored</em></td></tr>)}
+    {rows.map((row, index) => <tr key={row.id || `${row.fixture}-${row.market}-${index}`} className="click" onClick={() => onOpen(row)}><td>{index + 1}</td><td>{row.fixture}</td><td>{row.market}</td><td>{Number(row.odds).toFixed(2)}</td><td>{row.probability}%</td><td className="ae-positive">+{row.edge}%</td><td><em className="ae-status neutral">Not stored</em></td></tr>)}
     {!rows.length && <tr><td className="ae-empty" colSpan="7">No qualified opportunity is stored. A row appears after an active validated model and a current verified price produce a positive edge.</td></tr>}
   </tbody></table></div>;
 }
 
 function TicketGrid({tickets}) {
-  if (!tickets.length) return <p className="ae-empty">No ticket suggestion is stored.</p>;
-  return <div className="ae-ticket-grid">{tickets.map(ticket => <article className="ae-ticket" key={ticket.id}><h3><Ticket size={16}/>{ticket.type}</h3><small>{ticket.id}</small>{ticket.booking_code ? <p className="ae-code">{ticket.booking_code}</p> : <p className="ae-code wait">Awaiting code</p>}{ticket.picks.map(pick => <p key={pick}>{pick}</p>)}<div><strong>{ticket.odds == null ? 'Odds not stored' : `Total odds ${Number(ticket.odds).toFixed(2)}`}</strong><span>{ticket.status}</span></div></article>)}</div>;
+  if (!tickets.length) return <p className="ae-empty">No ticket is currently qualified. The worker checks again on its next cycle.</p>;
+  return <div className="ae-ticket-grid">{tickets.map(ticket => <article className="ae-ticket" key={ticket.id}><h3><Ticket size={16}/>{ticket.type}</h3><small>{clock(ticket.created_at)}</small>{ticket.booking_code ? <p className="ae-code">{ticket.booking_code}</p> : <p className="ae-code wait">{ticket.status === 'qualified' ? 'Awaiting code' : ticket.status}</p>}{ticket.picks.map(pick => <p key={pick}>{pick}</p>)}<div><strong>{ticket.odds == null ? 'Odds not stored' : `Total odds ${Number(ticket.odds).toFixed(2)}`}</strong><span>{ticket.status}</span></div></article>)}</div>;
 }

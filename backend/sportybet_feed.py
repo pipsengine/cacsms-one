@@ -189,7 +189,29 @@ def _due():
         finished = datetime.fromisoformat(str(row['finished_at']).replace('Z', '+00:00'))
     except ValueError:
         return True
-    return datetime.now(timezone.utc) - finished >= timedelta(minutes=REFRESH_MINUTES)
+    now = datetime.now(timezone.utc)
+    age = now - finished
+    if age >= timedelta(minutes=REFRESH_MINUTES):
+        return True
+    if age < timedelta(minutes=3):
+        return False
+    from booking_schedule import phase_at, publication_open
+    if not publication_open(phase_at(now)):
+        return False
+    with connect() as connection:
+        latest = connection.execute(
+            "SELECT MAX(observed_at) FROM sports_ai_odds_snapshots WHERE bookmaker=?",
+            (BOOKMAKER,),
+        ).fetchone()[0]
+    if not latest:
+        return True
+    try:
+        observed = datetime.fromisoformat(str(latest).replace('Z', '+00:00'))
+    except ValueError:
+        return True
+    if observed.tzinfo is None:
+        return False
+    return now - observed >= timedelta(minutes=10)
 
 
 def _authorize():

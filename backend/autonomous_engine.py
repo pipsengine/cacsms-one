@@ -55,7 +55,9 @@ def build_overview(connection, now=None):
         'SELECT COUNT(*) FROM sports_ai_engine_predictions WHERE created_at>=?', (day,),
     ).fetchone()[0]
     qualified = connection.execute(
-        "SELECT COUNT(*) FROM sports_ai_value_opportunities WHERE status='qualified' AND expected_edge>0",
+        """SELECT COUNT(*) FROM sports_ai_qualification_decisions d
+           JOIN sports_ai_value_opportunities o ON o.id=d.opportunity_id
+           WHERE d.state='QUALIFIED' AND o.expected_edge>0""",
     ).fetchone()[0]
     tickets = connection.execute('SELECT COUNT(*) FROM sports_ai_accumulator_tickets').fetchone()[0]
     settled = connection.execute(
@@ -72,7 +74,10 @@ def build_overview(connection, now=None):
     ).fetchone()
     won, total = (settled['won'] or 0), (settled['total'] or 0)
     edge_row = connection.execute(
-        "SELECT AVG(expected_edge) FROM sports_ai_value_opportunities WHERE status='qualified' AND expected_edge>0",
+        """SELECT AVG(o.expected_edge)
+           FROM sports_ai_qualification_decisions d
+           JOIN sports_ai_value_opportunities o ON o.id=d.opportunity_id
+           WHERE d.state='QUALIFIED' AND o.expected_edge>0""",
     ).fetchone()[0]
     health_row = connection.execute(
         """SELECT
@@ -115,6 +120,9 @@ def build_overview(connection, now=None):
         'engines': _engines(connection, schedules, jobs, fresh, now),
         'opportunities': _opportunities(connection, now),
         'tickets': _tickets(connection),
+        'tickets_checked_at': connection.execute(
+            "SELECT MAX(created_at) FROM sports_ai_autonomous_cycles WHERE stage='tickets'",
+        ).fetchone()[0],
         'logs': _logs(connection),
         'models': _models(connection),
         'settings': _settings(connection),
@@ -122,6 +130,16 @@ def build_overview(connection, now=None):
         'jobs': _recent_jobs(connection),
         'next_cycle': min((row['next_run_at'] for row in enabled if row['next_run_at']), default=None),
     }
+
+
+def ensure_running(connection, now=None):
+    """Keep the stored schedules running. The worker does not wait for a start click."""
+    now = now or datetime.now(timezone.utc)
+    enabled = connection.execute('SELECT COUNT(*) FROM sports_ai_schedules WHERE enabled=1').fetchone()[0]
+    if _mode(connection) == 'running' and enabled:
+        return False
+    apply_control(connection, 'resume', lambda *_args: None, 'sports-ai-worker', now)
+    return True
 
 
 def apply_control(connection, action, audit, actor, now=None):
@@ -385,19 +403,31 @@ def _engines(connection, schedules, jobs, fresh, now):
 
 
 def _opportunities(connection, now):
+    """One current row per fixture and market. Repeated analysis runs do not each take a slot."""
     rows = connection.execute(
-        """SELECT f.home,f.away,f.competition,f.starts_at,p.market,p.probability,o.expected_edge,q.decimal_odds,q.bookmaker
-           FROM sports_ai_value_opportunities o
-           JOIN sports_ai_engine_predictions p ON p.id=o.prediction_id
-           JOIN sports_ai_fixtures f ON f.id=p.fixture_id
-           JOIN sports_ai_model_registry m ON m.id=p.model_id
-           JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
-           WHERE o.status='qualified' AND o.expected_edge>0 AND m.active=1 AND m.status='active'
-             AND f.status='scheduled' AND f.starts_at>?
-           ORDER BY o.expected_edge DESC LIMIT 8""",
+        """SELECT id,home,away,competition,starts_at,market,probability,expected_edge,decimal_odds,bookmaker
+           FROM (
+             SELECT o.id,f.home,f.away,f.competition,f.starts_at,p.market,p.probability,
+                    o.expected_edge,q.decimal_odds,q.bookmaker,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY f.id, p.market, COALESCE(p.outcome, '')
+                      ORDER BY o.evaluated_at DESC
+                    ) AS rn
+             FROM sports_ai_value_opportunities o
+             JOIN sports_ai_engine_predictions p ON p.id=o.prediction_id
+             JOIN sports_ai_fixtures f ON f.id=p.fixture_id
+             JOIN sports_ai_model_registry m ON m.id=p.model_id
+             JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
+             JOIN sports_ai_qualification_decisions d ON d.opportunity_id=o.id AND d.state='QUALIFIED'
+             WHERE o.status='qualified' AND o.expected_edge>0 AND m.active=1 AND m.status='active'
+               AND f.status='scheduled' AND f.starts_at>?
+           )
+           WHERE rn=1
+           ORDER BY expected_edge DESC LIMIT 8""",
         (now.isoformat(),),
     )
     return [{
+        'id': row['id'],
         'fixture': f"{row['home']} vs {row['away']}",
         'competition': row['competition'],
         'starts_at': row['starts_at'],
@@ -411,10 +441,24 @@ def _opportunities(connection, now):
 
 
 def _tickets(connection):
+    """Current suggestions only. A review_required ticket has left qualification and is not listed again."""
     tickets = [dict(row) for row in connection.execute(
-        """SELECT id,tier,status,combined_odds,joint_probability,estimated_edge,leg_count,created_at,sport_mode
-           FROM sports_ai_accumulator_tickets ORDER BY created_at DESC LIMIT 12""",
+        """SELECT id,tier,status,combined_odds,joint_probability,estimated_edge,leg_count,created_at,sport_mode,signature
+           FROM sports_ai_accumulator_tickets
+           WHERE status='qualified'
+           ORDER BY created_at DESC LIMIT 24""",
     )]
+    seen = set()
+    unique = []
+    for row in tickets:
+        key = row.get('signature') or row['id']
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(row)
+        if len(unique) == 8:
+            break
+    tickets = unique
     if not tickets:
         return []
     ids = [row['id'] for row in tickets]

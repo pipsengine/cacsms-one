@@ -617,6 +617,40 @@ def _tier_settled_count(connection, tier):
     ).fetchone()[0]
 
 
+LIVE_PROBABILITY = 0.65
+LIVE_LIMIT = 8
+
+
+def _live_ticket(accepted, config):
+    """One ticket from the highest-probability qualified selections.
+
+    65% is the landing page's high-probability band. It does not relax qualification.
+    """
+    ranked = sorted(accepted, key=lambda item: (-float(item['probability']), item['fixture_id'], item['market']))
+    legs = [item for item in ranked if float(item['probability']) >= LIVE_PROBABILITY][:LIVE_LIMIT]
+    while len(legs) >= 2:
+        combined = combine_ticket(legs, config)
+        if not _hard_failure(combined['issues']) and combined['probability_basis'] == 'independent':
+            return {
+                'tier': max(2, round(combined['combined_odds'])),
+                'tier_label': 'Live',
+                'tier_mode': 'standard',
+                'legs': legs,
+                'signature': '|'.join(sorted(leg['opportunity_id'] for leg in legs)),
+                'score': combined.get('joint_probability'),
+                'components': {},
+                **combined,
+                'explanation': (
+                    'This ticket is the live opportunity list: each leg is already qualified, from its own fixture, '
+                    'and at or above 65% model probability. A booking code can be requested. No wager is placed. '
+                    + combined['explanation']
+                ),
+                'status': 'qualified',
+            }
+        legs = legs[:-1]
+    return None
+
+
 def optimize_candidates(candidates, config, now=None):
     """Search each requested target. Never invent a leg to fill a tier."""
     if config.get('ranges'):
@@ -1094,8 +1128,12 @@ def generate_accumulators(connection, actor, audit, sport_mode='mixed', override
     config = load_config(connection)
     config.update(overrides or {})
     config['sport_mode'] = sport_mode
+    live = bool(config.get('live_opportunities'))
     legacy = 'targets' in (overrides or {})
-    if legacy:
+    if live:
+        config['min_legs'] = 2
+        config['max_legs'] = LIVE_LIMIT
+    elif legacy:
         config['targets'] = [int(item) for item in config.get('targets') or [] if int(item) in TARGETS]
         if not config['targets']:
             raise ValueError('Choose at least one configured target odds')
@@ -1125,7 +1163,18 @@ def generate_accumulators(connection, actor, audit, sport_mode='mixed', override
         revalidate(connection, actor, current)
         rows = load_opportunity_rows(connection)
         accepted, decisions = qualify_candidates(rows, config, current, _blocked_fixtures(connection))
-        search = optimize_candidates(accepted, config, current)
+        if live:
+            ticket = _live_ticket(accepted, config)
+            search = {
+                'candidate_count': len(accepted),
+                'evaluations': len(accepted),
+                'truncated': False,
+                'tiers': [{
+                    'target': ticket['tier'], 'status': 'generated', 'tickets': [ticket], 'truncated': False,
+                }] if ticket else [_gap(0, 'Fewer than two qualified selections are at or above 65% model probability', False)],
+            }
+        else:
+            search = optimize_candidates(accepted, config, current)
         open_signatures = {
             row['signature'] for row in connection.execute(
                 """SELECT signature FROM sports_ai_accumulator_tickets

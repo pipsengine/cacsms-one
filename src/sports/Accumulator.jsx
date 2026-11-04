@@ -1,4 +1,5 @@
 import React,{useEffect,useState}from'react';
+import {useLiveReload} from './live';
 import {AlertCircle,CheckCircle2,ClipboardList,History,RefreshCcw,Save,Ticket,X}from'lucide-react';
 import {get,post,put}from'./api';
 
@@ -75,6 +76,7 @@ export default function AccumulatorPage({page,tab=0}){
   }
 
   useEffect(()=>{refresh().catch(e=>setError(e.message))},[]);
+  useLiveReload(()=>refresh());
 
   async function openTicket(id){
     const ticket=await get('/accumulator/tickets/'+encodeURIComponent(id));

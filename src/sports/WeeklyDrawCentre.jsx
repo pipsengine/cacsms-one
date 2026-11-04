@@ -1,4 +1,5 @@
 import {useEffect, useState} from 'react';
+import {useLiveReload} from './live';
 import {get, post} from './api';
 
 function percent(value) {
@@ -55,6 +56,16 @@ function DrawResearch({tab}) {
       .catch(requestError => { if (!cancel) setError(requestError.message); });
     return () => { cancel = true; };
   }, [path, competition, quality, tab, revision]);
+  useLiveReload(() => {
+    const params = new URLSearchParams();
+    if (competition) params.set('competition', competition);
+    if (quality && tab !== 0) params.set('quality', quality);
+    return Promise.all([get('/draw/summary'), get(`${path}?${params.toString()}`)]).then(([stored, list]) => {
+      setSummary(stored);
+      setRows(list.items || []);
+      setLoadedPath(path);
+    });
+  });
 
   async function refresh() {
     setBusy(true);

@@ -67,20 +67,20 @@ export default function FixturesWorkspace({sport}){
   const [auto,setAuto]=useState(true);
   const [busy,setBusy]=useState('');
 
-  const load=()=>{
+  const load=(silent=false)=>{
     const params=new URLSearchParams({sport,view,page:String(page),page_size:String(pageSize),analysis:applied.analysis});
     if(applied.team)params.set('team',applied.team);
     if(applied.competition)params.set('competition',applied.competition);
     if(applied.from)params.set('starts_after',applied.from);
     if(applied.to)params.set('starts_before',applied.to);
-    setLoading(true);
+    if(!silent)setLoading(true);
     get('/fixtures/board?'+params.toString())
       .then(value=>{setBoard(value);setError('')})
       .catch(requestError=>setError(requestError.message))
       .finally(()=>setLoading(false));
   };
   useEffect(()=>{load()},[sport,view,page,pageSize,applied]);
-  useEffect(()=>{if(!auto)return undefined;const timer=setInterval(load,60000);return ()=>clearInterval(timer)},[auto,sport,view,page,pageSize,applied]);
+  useEffect(()=>{if(!auto)return undefined;const timer=setInterval(()=>load(true),10000);return ()=>clearInterval(timer)},[auto,sport,view,page,pageSize,applied]);
 
   const summary=board?.summary||{};
   const engine=board?.engine||{};
@@ -185,7 +185,7 @@ export default function FixturesWorkspace({sport}){
         <div className="fx-card-head">
           <div><h2>{viewTitle} <span className="fx-note">{count(total)}</span></h2><p>{loading?'Loading stored records…':'Records already stored. Prices appear only where SportyBet published them.'}</p></div>
           <div className="fx-tools">
-            <label className="fx-switch"><input type="checkbox" checked={auto} onChange={event=>setAuto(event.target.checked)}/> Auto-refresh (1 min)</label>
+            <label className="fx-switch"><input type="checkbox" checked={auto} onChange={event=>setAuto(event.target.checked)}/> Auto-refresh (10 s)</label>
             <button type="button" onClick={load}><RefreshCw size={14}/> Refresh</button>
             <button type="button" onClick={exportRows} disabled={!items.length}>Export</button>
             <button type="button" onClick={()=>navigate('/sports/settings')}><Settings size={14}/></button>

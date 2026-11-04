@@ -89,6 +89,12 @@ def _observed(stage, result, failed=False):
 
 def tick():
     initialize()
+    try:
+        from autonomous_engine import ensure_running
+        with connect() as connection:
+            ensure_running(connection)
+    except Exception as error:
+        _report('autonomous resume failed', error)
     from operations_engine import orchestrate_once
     result=orchestrate_once(
         _audit, collect=_collect_due_providers, predict=_process_prediction_queue,

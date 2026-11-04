@@ -1,4 +1,5 @@
 import {useEffect, useState} from 'react';
+import {useLiveReload} from './live';
 import {get, post} from './api';
 
 const WARNING = 'This is an illustrative simulation. A 30-day rollover cannot guarantee 30 consecutive wins or a zero-loss result. One loss can end a full-rollover campaign. A day with no qualified selection is skipped. No real-money wager is placed.';
@@ -29,6 +30,7 @@ export default function DailyRolloverCentre({tab = 0}) {
       setSelected(current => current || value.items?.[0]?.id || '');
     }).catch(() => setCampaigns([]));
   }, [revision]);
+  useLiveReload(() => setRevision(value => value + 1));
   const current = campaigns.find(item => item.id === selected) || campaigns[0];
   return <div className="sp-ops-stack">
     <p className="sp-ops-error" role="note">{warning}</p>

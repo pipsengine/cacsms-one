@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 
 import db
-from sportybet_booking import create_job, prepare_slip, process_booking_queue, qualified_selections
+from sportybet_booking import create_job, prepare_slip, process_booking_queue, qualified_selections, select_booking
 
 PAGE = """<!doctype html><html><body>
 <article><span>Pistons</span><span>76ers</span>
@@ -161,6 +161,42 @@ class BookingTests(unittest.TestCase):
         self.assertIsNone(result['code'])
         self.assertEqual(booked, 'no')
         self.assertEqual(placed, 'no')
+
+    def test_a_failed_job_does_not_take_the_current_ticket_slot(self):
+        from datetime import datetime, timezone
+        evening = datetime(2026, 11, 4, 16, 10, tzinfo=timezone.utc)
+        with db.connect() as connection:
+            connection.execute('DELETE FROM sports_ai_booking_jobs')
+            connection.execute('DELETE FROM sports_ai_accumulator_tickets')
+            connection.execute(
+                """INSERT INTO sports_ai_booking_jobs
+                   (id,created_at,updated_at,status,sport,selections_json,signature,places_wager,attempt,max_attempts,error)
+                   VALUES('old-job',?,?, 'ODDS_CHANGED','football',?,'old-ticket|stale',0,1,3,'The displayed price no longer matches the qualified quote')""",
+                (evening.isoformat(), evening.isoformat(), '[{"ticket_id":"old-ticket","home":"Old","away":"Side","market":"HOME","selection":"Old","decimal_odds":1.4}]'),
+            )
+            blocked = select_booking(connection, evening)
+            connection.execute(
+                """INSERT INTO sports_ai_accumulator_runs
+                   (id,config_id,sport_mode,status,trigger,idempotency_key,parameters_json,actor,started_at)
+                   VALUES('run','accumulator-default','football','complete','test','run','{}','test',?)""",
+                (evening.isoformat(),),
+            )
+            connection.execute(
+                """INSERT INTO sports_ai_accumulator_tickets
+                   (id,run_id,family_id,version,signature,tier,sport_mode,status,leg_count,probability_basis,
+                    explanation,parameters_json,created_at)
+                   VALUES('current-ticket','run','family',1,'current-ticket',2,'football','qualified',1,'independent','test','{}',?)""",
+                (evening.isoformat(),),
+            )
+            chosen = select_booking(connection, evening)
+            status = connection.execute("SELECT status FROM sports_ai_booking_jobs WHERE id='old-job'").fetchone()['status']
+            connection.execute("DELETE FROM sports_ai_accumulator_tickets WHERE id='current-ticket'")
+            connection.execute("DELETE FROM sports_ai_accumulator_runs WHERE id='run'")
+            connection.execute("DELETE FROM sports_ai_booking_jobs WHERE id='old-job'")
+        self.assertEqual(blocked['action'], 'waiting')
+        self.assertEqual(chosen['action'], 'ticket')
+        self.assertEqual(chosen['ticket_id'], 'current-ticket')
+        self.assertEqual(status, 'ODDS_CHANGED')
 
 
 if __name__ == '__main__':

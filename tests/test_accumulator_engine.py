@@ -17,6 +17,7 @@ from accumulator_engine import (
     default_tier_policy,
     generate_accumulators,
     monitor_accumulators,
+    _live_ticket,
     optimize_candidates,
     payout_multiple,
     qualify_candidates,
@@ -93,6 +94,19 @@ class AccumulatorMathTests(unittest.TestCase):
         self.assertAlmostEqual(ticket['estimated_edge'], 0.525 * 2.1 - 1)
         self.assertEqual(ticket['status'], 'qualified')
         self.assertEqual(ticket['probability_basis'], 'independent')
+
+    def test_a_live_ticket_keeps_high_probability_selections(self):
+        accepted, _decisions = qualify_candidates([
+            _row(probability=0.91, decimal_odds=1.64, expected_edge=0.49, settlement_json=_binary(0.91)),
+            _row(opportunity_id='low', fixture_id='fixture-2', home='Home B', away='Away B', probability=0.20, decimal_odds=6, expected_edge=0.20, settlement_json=_binary(0.20)),
+            _row(opportunity_id='high-2', fixture_id='fixture-3', home='Home C', away='Away C', probability=0.86, decimal_odds=1.59, expected_edge=0.37, settlement_json=_binary(0.86)),
+        ], _config(max_legs=8, min_legs=2), self.now)
+        ticket = _live_ticket(accepted, _config())
+        self.assertIsNotNone(ticket)
+        self.assertEqual(ticket['tier_label'], 'Live')
+        self.assertEqual(ticket['status'], 'qualified')
+        self.assertEqual({leg['opportunity_id'] for leg in ticket['legs']}, {'opp-1', 'high-2'})
+        self.assertGreaterEqual(min(leg['probability'] for leg in ticket['legs']), 0.65)
 
     def test_stale_started_and_unqualified_are_excluded(self):
         stale = _row(opportunity_id='stale', observed_at=(self.now - timedelta(hours=2)).isoformat())

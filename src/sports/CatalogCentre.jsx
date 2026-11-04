@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useLiveReload } from './live';
 import { get, post, put } from './api';
 
 const formatDate = (value) => value ? new Date(value).toLocaleString() : 'Not yet';
@@ -40,6 +41,7 @@ function Sports() {
     get('/acquisition/catalog/sports').then(setRows).catch((requestError) => setError(requestError.message)).finally(() => setLoading(false));
   }
   useEffect(() => { refresh(); }, []);
+  useLiveReload(() => get('/acquisition/catalog/sports').then(setRows).catch((requestError) => setError(requestError.message)));
 
   async function submit(event) {
     event.preventDefault();
@@ -101,6 +103,14 @@ function Leagues() {
     get('/acquisition/catalog/leagues?' + params.toString()).then((value) => { if (!cancel) setPayload(value); }).catch((requestError) => { if (!cancel) setError(requestError.message); }).finally(() => { if (!cancel) setLoading(false); });
     return () => { cancel = true; };
   }, [filters, page, message]);
+  useLiveReload(() => {
+    const params = new URLSearchParams({ page: String(page), page_size: '50' });
+    if (filters.q) params.set('q', filters.q);
+    if (filters.sport) params.set('sport', filters.sport);
+    if (filters.country) params.set('country', filters.country);
+    if (filters.freshness) params.set('freshness', filters.freshness);
+    return get('/acquisition/catalog/leagues?' + params.toString()).then(setPayload).catch((requestError) => setError(requestError.message));
+  });
 
   async function queue(sourceId) {
     setError('');
@@ -179,6 +189,7 @@ function Coverage() {
     get('/acquisition/catalog/overview').then((value) => { setData(value); setPerDay(String(value.backfill?.per_day ?? 0)); }).catch((requestError) => setError(requestError.message)).finally(() => setLoading(false));
   }
   useEffect(() => { refresh(); }, []);
+  useLiveReload(() => get('/acquisition/catalog/overview').then((value) => { setData(value); setPerDay(String(value.backfill?.per_day ?? 0)); }).catch((requestError) => setError(requestError.message)));
 
   async function discover() {
     setBusy(true);

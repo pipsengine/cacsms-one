@@ -219,11 +219,6 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
   const [copied, setCopied] = React.useState('');
   const [now, setNow] = React.useState(lagosClock);
   React.useEffect(() => {
-    if (!refresh) return undefined;
-    const timer = setInterval(() => { refresh(); }, 60000);
-    return () => clearInterval(timer);
-  }, [refresh]);
-  React.useEffect(() => {
     const timer = setInterval(() => setNow(lagosClock()), 30000);
     return () => clearInterval(timer);
   }, []);
@@ -258,7 +253,7 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
         <span className="ccx-clock"><Clock3 size={15}/>{now}</span>
         <span className="ccx-env">{view.environment || 'Development'}</span>
         <button className="ccx-refresh" onClick={refresh}><RefreshCw size={15}/>Refresh</button>
-        <button className="ccx-run" onClick={run} disabled={loading}><Play size={15}/>{loading ? 'Running…' : 'Run Analysis'}</button>
+        <span className="ccx-env">Live · worker</span>
       </div>
     </header>
     <section className="ccx-kpis">

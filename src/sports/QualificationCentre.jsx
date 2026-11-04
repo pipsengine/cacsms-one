@@ -58,7 +58,7 @@ export default function QualificationCentre({product = 'booking', tab = 0}) {
       }
     }
     load();
-    const timer = setInterval(load, 20000);
+    const timer = setInterval(load, 10000);
     return () => { cancel = true; clearInterval(timer); };
   }, [product, state, sport, market, competition, page, revision]);
 

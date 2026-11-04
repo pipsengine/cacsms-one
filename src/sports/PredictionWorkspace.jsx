@@ -1,4 +1,5 @@
 import React, {useEffect, useState} from 'react';
+import {useLiveReload} from './live';
 import {useNavigate} from 'react-router-dom';
 import {BarChart3, BrainCircuit, CalendarDays, CheckCircle2, Clock3, Database, Download, Eye, Play, RefreshCw, ShieldCheck, Target, Ticket, TrendingUp, Trophy} from 'lucide-react';
 import {get} from './api';
@@ -122,6 +123,7 @@ export default function PredictionWorkspace({sport, run, loading}) {
   const [error, setError] = useState('');
   const [clock, setClock] = useState(Date.now());
   const [revision, setRevision] = useState(0);
+  useLiveReload(() => setRevision(value => value + 1));
   const group = tabs[tab][1];
   useEffect(() => { const timer = setTimeout(() => setAppliedTeam(team), 300); return () => clearTimeout(timer); }, [team]);
   useEffect(() => { const timer = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(timer); }, []);

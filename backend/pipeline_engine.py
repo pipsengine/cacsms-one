@@ -324,9 +324,19 @@ def build_autonomous_tickets(connection, actor, audit, now=None):
         ],
         'places_wager': False,
     }
+    live = generate_accumulators(
+        connection, actor, audit,
+        overrides={'live_opportunities': True, 'max_legs': 8},
+        idempotency_key=key + ':live', now=current, trigger='autonomous',
+    )
+    result['live_opportunities'] = {
+        'status': live.get('status'),
+        'ticket_count': 0 if live.get('idempotent') else live.get('ticket_count', 0),
+        'places_wager': False,
+    }
     result['places_wager'] = False
     range_created = 0 if result.get('idempotent') else result.get('ticket_count', 0)
-    result['tickets_created'] = range_created + result['product_targets']['ticket_count']
+    result['tickets_created'] = range_created + result['product_targets']['ticket_count'] + result['live_opportunities']['ticket_count']
     return result
 
 
