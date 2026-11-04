@@ -68,7 +68,7 @@ def assign_status(sample_size, calibration_error, quote_fixtures, *, blocked=Fal
     if unsupported:
         return 'unsupported'
     if blocked:
-        return 'blocked'
+        return 'data_pending'
     if not parent_active:
         return 'suspended'
     sample = int(sample_size or 0)
@@ -127,11 +127,16 @@ def list_registry(connection):
         except json.JSONDecodeError:
             row['evidence'] = {}
     counts = {}
+    coverage = {}
     for row in rows:
         counts[row['status']] = counts.get(row['status'], 0) + 1
+        cell = coverage.setdefault(row['sport'], {'sport': row['sport'], 'quote_fixtures': 0})
+        cell[row['status']] = cell.get(row['status'], 0) + 1
+        cell['quote_fixtures'] += int((row.get('evidence') or {}).get('quote_fixtures') or 0)
     return {
         'items': rows,
         'counts': counts,
+        'coverage': sorted(coverage.values(), key=lambda item: (-int(item.get('active') or 0), item['sport'])),
         'min_sample': MIN_SAMPLE,
         'max_calibration_error': MAX_CALIBRATION_ERROR,
         'min_quote_fixtures': MIN_QUOTE_FIXTURES,
@@ -145,7 +150,7 @@ def refresh_market_registry(connection, now=None):
     current = now or utc_now()
     quote_counts = _quote_counts(connection)
     records = []
-    for sport in ('football', 'basketball'):
+    for sport in ('football', 'basketball', 'frauenfussball', 'ice_hockey'):
         model = connection.execute(
             """SELECT id, version, active, metrics_json, training_run_id, parameters_json
                FROM sports_ai_model_registry
@@ -162,11 +167,12 @@ def refresh_market_registry(connection, now=None):
                 rho = 0.0
         parent_active = bool(model and model['active'])
         version = None if not model else model['version']
-        if sport == 'football':
+        if sport in ('football', 'frauenfussball', 'ice_hockey'):
             records.extend(_result_rows(sport, model, quote_counts, 'HOME', 'Home win', 'DRAW', 'Draw', 'AWAY', 'Away win'))
-            for key, selection, line, rule in FOOTBALL_DERIVED:
-                records.append(_derived_row(sport, key, selection, 'ft', line, rule, holdout, rho, quote_counts, parent_active, version))
-            records.append(_correct_score_row(holdout, rho, version))
+            if sport == 'football':
+                for key, selection, line, rule in FOOTBALL_DERIVED:
+                    records.append(_derived_row(sport, key, selection, 'ft', line, rule, holdout, rho, quote_counts, parent_active, version))
+                records.append(_correct_score_row(holdout, rho, version))
         else:
             records.extend(_result_rows(
                 sport, model, quote_counts, 'MONEYLINE_HOME', 'Home moneyline', 'MONEYLINE_AWAY', 'Away moneyline',
@@ -191,12 +197,20 @@ def refresh_market_registry(connection, now=None):
                 'normal_points', version, 'research',
                 {'holdout_rows_with_half': half_ready, 'reason': 'Half rates exist on the holdout, and no half-time result is stored to settle them.'},
             ))
+        if holdout:
+            known_keys = {item['market_key'] for item in records if item['sport'] == sport}
+            for key in _extra_keys(sport, quote_counts, known_keys):
+                records.append(_derived_row(
+                    sport, key, key.replace('_', ' ').title(), 'ft', _line_value(key),
+                    'Line discovered from a stored SportyBet quote and settled from the same score or point model.',
+                    holdout, rho, quote_counts, parent_active, version,
+                ))
     for sport, key, selection, period, requirement in BLOCKED:
         if any(item['market_key'] == key and item['sport'] == sport for item in records):
             continue
         records.append(_static(
             sport, key, selection, period, None, 'Cannot be settled from stored data.',
-            requirement, 'none', None, 'blocked', {'quote_fixtures': quote_counts.get((sport, key), 0)},
+            requirement, 'none', None, 'data_pending', {'quote_fixtures': quote_counts.get((sport, key), 0)},
         ))
     for sport, markets in UNSUPPORTED.items():
         for key in markets:
@@ -207,6 +221,7 @@ def refresh_market_registry(connection, now=None):
                 'none', None, 'unsupported',
                 {'adapter': 'sport_adapters.probability', 'probability': unsupported_market_probability(sport, key)},
             ))
+    _discover_quotes(records, quote_counts, _raw_families(connection))
     connection.execute('DELETE FROM sports_ai_market_registry')
     for record in records:
         connection.execute(
@@ -417,6 +432,61 @@ def _holdout(connection, model):
         except (TypeError, ValueError, KeyError, json.JSONDecodeError):
             continue
     return parsed
+
+
+def _line_value(key):
+    try:
+        return float(str(key).rsplit('_', 1)[-1])
+    except (TypeError, ValueError):
+        return None
+
+
+def _book_key(market):
+    cleaned = ''.join(character if character.isalnum() else '_' for character in str(market).upper()).strip('_')
+    return 'BOOK_' + (cleaned or 'UNKNOWN')[:40]
+
+
+def _extra_keys(sport, quote_counts, existing, limit=8):
+    from accumulator_engine import supported_market
+    ranked = []
+    for (row_sport, key), count in quote_counts.items():
+        if row_sport != sport or key in existing or not supported_market(sport, key):
+            continue
+        ranked.append((int(count), key))
+    ranked.sort(reverse=True)
+    return [key for _count, key in ranked[:limit]]
+
+
+def _raw_families(connection):
+    rows = connection.execute(
+        """SELECT f.sport, lower(q.market) AS market, COUNT(DISTINCT q.fixture_id) AS fixtures
+           FROM sports_ai_odds_snapshots q
+           JOIN sports_ai_fixtures f ON f.id=q.fixture_id
+           WHERE q.bookmaker='SportyBet' AND lower(q.market) NOT IN ('h2h','totals','spreads')
+           GROUP BY f.sport, lower(q.market)""",
+    ).fetchall()
+    return [(row['sport'], row['market'], int(row['fixtures'])) for row in rows]
+
+
+def _discover_quotes(records, quote_counts, raw_families, limit=40):
+    """Register bookmaker families that have no validated model. A quote does not activate them."""
+    known = {(item['sport'], item['market_key']) for item in records}
+    added = {}
+    families = [(sport, key, count) for (sport, key), count in quote_counts.items()]
+    families.extend((sport, _book_key(market), count) for sport, market, count in raw_families)
+    families.sort(key=lambda item: -item[2])
+    for sport, key, count in families:
+        if not key or (sport, key) in known or added.get(sport, 0) >= limit:
+            continue
+        records.append(_static(
+            sport, key, key.replace('_', ' ').title(), 'ft', _line_value(key),
+            'Seen on a stored SportyBet quote. No validated model settles this selection.',
+            'A sport-specific model, historical settlement, and the existing calibration ceilings.',
+            'none', None, 'discovered',
+            {'quote_fixtures': count, 'probability': None, 'activated': False},
+        ))
+        known.add((sport, key))
+        added[sport] = added.get(sport, 0) + 1
 
 
 def _quote_counts(connection):

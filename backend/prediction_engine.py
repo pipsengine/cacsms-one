@@ -279,7 +279,13 @@ def domestic_team_rows(connection, sport, team, cutoff):
     return copied
 
 
-MODEL_NAMES = {'football': 'sports-ai-football-ensemble', 'basketball': 'sports-ai-basketball-ensemble'}
+GOAL_SPORTS = ('football', 'frauenfussball', 'ice_hockey')
+MODEL_NAMES = {
+    'football': 'sports-ai-football-ensemble',
+    'basketball': 'sports-ai-basketball-ensemble',
+    'frauenfussball': 'sports-ai-frauenfussball-ensemble',
+    'ice_hockey': 'sports-ai-ice-hockey-ensemble',
+}
 VERSION = '2'
 MIN_TEAM_GAMES = 3
 MIN_VALIDATION_FIXTURES = 30
@@ -463,7 +469,7 @@ def build_features(connection, fixture):
     home_all, away_all = team_games(home_names), team_games(away_names)
     home_games = [row for row in home_all if row['venue'] == 'home']
     away_games = [row for row in away_all if row['venue'] == 'away']
-    if fixture['sport'] == 'football':
+    if fixture['sport'] in GOAL_SPORTS:
         notes = []
 
         def side_rates(team, games, all_games, venue):
@@ -590,7 +596,7 @@ def build_features(connection, fixture):
         for row in games:
             age = max(0, (cutoff - row['_kickoff']).total_seconds() / 86400)
             weight = math.exp(-age / half_life)
-            if fixture['sport'] == 'football':
+            if fixture['sport'] in GOAL_SPORTS:
                 value = 3.0 if row['for'] > row['against'] else 1.0 if row['for'] == row['against'] else 0.0
             else:
                 value = 1.0 if row['for'] > row['against'] else 0.0
@@ -880,7 +886,7 @@ def basketball_market(features, market):
 
 
 def market_probability(sport, market, features, rho=0.0):
-    if sport == 'football':
+    if sport in GOAL_SPORTS:
         return football_market(features, market, rho)
     if sport == 'basketball':
         return basketball_market(features, market)
@@ -960,18 +966,18 @@ def _fit_dixon_coles_rho(rows):
 
 def _with_rates(features, home_rate, away_rate, sport):
     adjusted = dict(features)
-    floor, ceiling = (GOAL_FLOOR, GOAL_CEILING) if sport == 'football' else (POINT_FLOOR, POINT_CEILING)
-    home_key = 'expected_home_goals' if sport == 'football' else 'expected_home_points'
-    away_key = 'expected_away_goals' if sport == 'football' else 'expected_away_points'
+    floor, ceiling = (GOAL_FLOOR, GOAL_CEILING) if sport in GOAL_SPORTS else (POINT_FLOOR, POINT_CEILING)
+    home_key = 'expected_home_goals' if sport in GOAL_SPORTS else 'expected_home_points'
+    away_key = 'expected_away_goals' if sport in GOAL_SPORTS else 'expected_away_points'
     adjusted[home_key] = min(ceiling, max(floor, home_rate))
     adjusted[away_key] = min(ceiling, max(floor, away_rate))
     return adjusted
 
 
 def _family_rates(features, sport, family, ridge, booster):
-    home_key = 'expected_home_goals' if sport == 'football' else 'expected_home_points'
-    away_key = 'expected_away_goals' if sport == 'football' else 'expected_away_points'
-    floor, ceiling = (GOAL_FLOOR, GOAL_CEILING) if sport == 'football' else (POINT_FLOOR, POINT_CEILING)
+    home_key = 'expected_home_goals' if sport in GOAL_SPORTS else 'expected_home_points'
+    away_key = 'expected_away_goals' if sport in GOAL_SPORTS else 'expected_away_points'
+    floor, ceiling = (GOAL_FLOOR, GOAL_CEILING) if sport in GOAL_SPORTS else (POINT_FLOOR, POINT_CEILING)
     if family == 'ridge' and ridge:
         home, away = predict_ridge(ridge.get('home'), features), predict_ridge(ridge.get('away'), features)
         if home is None or away is None:
@@ -983,8 +989,8 @@ def _family_rates(features, sport, family, ridge, booster):
 
 
 def _score_seed(features, sport):
-    home_key = 'expected_home_goals' if sport == 'football' else 'expected_home_points'
-    away_key = 'expected_away_goals' if sport == 'football' else 'expected_away_points'
+    home_key = 'expected_home_goals' if sport in GOAL_SPORTS else 'expected_home_points'
+    away_key = 'expected_away_goals' if sport in GOAL_SPORTS else 'expected_away_points'
     key = f"{sport}:{features.get(home_key)}:{features.get(away_key)}:{features.get('home_score_sd')}"
     return int(hashlib.sha256(key.encode()).hexdigest()[:8], 16)
 
@@ -1033,9 +1039,9 @@ def _outcome_probabilities(sport, features, home_score, away_score, rho, family,
     if not rates or rates[0] is None:
         return None, None
     adjusted = _with_rates(features, rates[0], rates[1], sport)
-    if sport == 'football':
+    if sport in GOAL_SPORTS:
         probabilities = [
-            market_probability('football', name, adjusted, rho)['p_win']
+            market_probability(sport, name, adjusted, rho)['p_win']
             for name in ('HOME', 'DRAW', 'AWAY')
         ]
         actual = 0 if home_score > away_score else 2 if home_score < away_score else 1
@@ -1070,8 +1076,8 @@ def _mean_logloss(sport, rows, rho, family, ridge, booster):
 
 def _fit_structural_models(sport, train_rows):
     tuples = [(row['features'], row['home_score'], row['away_score']) for row in train_rows]
-    rho = _fit_dixon_coles_rho(tuples) if sport == 'football' else 0.0
-    columns = FOOTBALL_RIDGE_COLUMNS if sport == 'football' else BASKETBALL_RIDGE_COLUMNS
+    rho = _fit_dixon_coles_rho(tuples) if sport in GOAL_SPORTS else 0.0
+    columns = FOOTBALL_RIDGE_COLUMNS if sport in GOAL_SPORTS else BASKETBALL_RIDGE_COLUMNS
     home_target = 'home_score'
     ridge = None
     home_model = fit_ridge([(row['features'], row['home_score']) for row in train_rows], columns, home_target)
@@ -1080,7 +1086,7 @@ def _fit_structural_models(sport, train_rows):
         ridge = {'home': home_model, 'away': away_model}
     booster = None
     names = [column for column in columns if column != 'intercept']
-    if sport == 'football':
+    if sport in GOAL_SPORTS:
         booster = fit_gradient_boosting(
             tuples, names, 'home', 'away', 'expected_home_goals', 'expected_away_goals',
         )
@@ -1299,24 +1305,49 @@ def train_model(connection, sport):
     }
 
 
+def ensure_goal_sport_models(connection):
+    """Train women's football and ice hockey once their own finals reach the sample floor.
+
+    Handball, tennis, volleyball, baseball, cricket and table tennis stay untrained
+    until that sport has at least 30 stored final scores. Training does not activate a model.
+    """
+    trained = []
+    for sport in ('frauenfussball', 'ice_hockey'):
+        existing = connection.execute(
+            'SELECT id FROM sports_ai_model_registry WHERE sport=? LIMIT 1', (sport,),
+        ).fetchone()
+        if existing:
+            continue
+        finals = connection.execute(
+            """SELECT COUNT(*) FROM sports_ai_fixtures f
+               JOIN sports_ai_results r ON r.fixture_id=f.id
+               WHERE f.sport=? AND r.status='final'""",
+            (sport,),
+        ).fetchone()[0]
+        if finals < MIN_VALIDATION_FIXTURES:
+            continue
+        trained.append(train_model(connection, sport))
+    return trained
+
+
 def normalize_quote_market(sport, fixture, quote):
     key, outcome, line = quote['market'].lower(), str(quote['outcome']), quote.get('line')
     home, away = fixture['home'].casefold(), fixture['away'].casefold()
     pick = outcome.casefold()
     if key in ('h2h', 'moneyline'):
         if pick in ('draw', 'tie'):
-            return 'DRAW' if sport == 'football' else None
+            return 'DRAW' if sport in GOAL_SPORTS else None
         if pick in ('home', 'moneyline_home') or pick == home:
-            return 'HOME' if sport == 'football' else 'MONEYLINE_HOME'
+            return 'HOME' if sport in GOAL_SPORTS else 'MONEYLINE_HOME'
         if pick in ('away', 'moneyline_away') or pick == away:
-            return 'AWAY' if sport == 'football' else 'MONEYLINE_AWAY'
+            return 'AWAY' if sport in GOAL_SPORTS else 'MONEYLINE_AWAY'
     if key in ('totals', 'total'):
         match = re.fullmatch(r'(OVER|UNDER)_(-?\d+(?:\.\d+)?)', outcome.upper())
         if match:
             return f'{match.group(1)}_{float(match.group(2)):g}'
         if pick.upper() in ('OVER', 'UNDER') and line is not None:
             return f'{pick.upper()}_{float(line):g}'
-    if key in ('btts', 'both_teams_to_score') and sport == 'football' and pick in ('yes', 'no'):
+    if key in ('btts', 'both_teams_to_score') and sport in GOAL_SPORTS and pick in ('yes', 'no'):
         return 'BTTS_' + pick.upper()
     if key in ('spreads', 'spread') and line is not None:
         normalized = re.fullmatch(r'(HOME|AWAY)_SPREAD_(-?\d+(?:\.\d+)?)', outcome.upper())
@@ -1329,7 +1360,7 @@ def normalize_quote_market(sport, fixture, quote):
 
 
 def _outcomes(sport, features=None):
-    if sport == 'football':
+    if sport in GOAL_SPORTS:
         markets = list(FOOTBALL_MARKETS)
         for line in ('-1.5', '-1', '-0.75', '-0.5', '-0.25', '0', '0.25', '0.5', '0.75', '1', '1.5'):
             markets.append(f'HOME_HANDICAP_{line}')
@@ -1401,7 +1432,7 @@ def settle_market(sport, market, features, parameters):
 
 
 def _scorelines(sport, features, rho):
-    if sport == 'football':
+    if sport in GOAL_SPORTS:
         ranked = sorted(_football_score_grid(features, rho), key=lambda item: item[2], reverse=True)[:8]
         return [{'home_goals': home, 'away_goals': away, 'probability': probability} for home, away, probability in ranked]
     mean = features['expected_home_points'] + features['expected_away_points']
@@ -1415,7 +1446,7 @@ def _scorelines(sport, features, rho):
 
 
 def _explain(sport, market, features, settlement, missing):
-    if sport == 'football':
+    if sport in GOAL_SPORTS:
         summary = (
             f"{market} probability {settlement['p_win']:.3f} uses opponent-adjusted expected goals "
             f"{features['expected_home_goals']:.2f}-{features['expected_away_goals']:.2f}. "
@@ -1501,20 +1532,20 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None):
                 LIMIT 40"""
         )]
     models = {}
-    for sport in ('football', 'basketball'):
+    for sport in ('football', 'basketball', 'frauenfussball', 'ice_hockey'):
         model = connection.execute(
             'SELECT * FROM sports_ai_model_registry WHERE sport=? AND active=1', (sport,),
         ).fetchone()
-        if not model:
+        if not model and sport in ('football', 'basketball'):
             model = connection.execute(
                 'SELECT * FROM sports_ai_model_registry WHERE sport=? ORDER BY created_at DESC LIMIT 1', (sport,),
             ).fetchone()
-        if not model:
+        if not model and sport in ('football', 'basketball'):
             train_model(connection, sport)
             model = connection.execute(
                 'SELECT * FROM sports_ai_model_registry WHERE sport=? ORDER BY created_at DESC LIMIT 1', (sport,),
             ).fetchone()
-        if model:
+        if model and (sport in ('football', 'basketball') or model['active']):
             models[sport] = dict(model)
     settings_row = connection.execute(
         "SELECT value_json FROM sports_ai_settings WHERE key='engine'",
@@ -1538,7 +1569,7 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None):
     for fixture in fixtures:
         if deadline and datetime.now(timezone.utc) > deadline:
             raise TimeoutError('Prediction job exceeded its timeout')
-        if fixture['sport'] not in ('football', 'basketball'):
+        if fixture['sport'] not in models:
             stats['skipped']['sport_not_modelled'] = stats['skipped'].get('sport_not_modelled', 0) + 1
             continue
         model = models.get(fixture['sport'])
@@ -1998,7 +2029,7 @@ def rollback_model(connection, model_id):
     return {'rolled_back': True, 'restored_model_id': restored}
 
 
-PRODUCTION_TARGETS = (('football', '2'), ('basketball', '1'))
+PRODUCTION_TARGETS = (('football', '2'), ('basketball', '1'), ('frauenfussball', '1'), ('ice_hockey', '1'))
 MAX_CALIBRATION_ERROR = 0.20
 DEGRADED_CALIBRATION_ERROR = 0.25
 
@@ -2042,7 +2073,7 @@ def _decision_reasons(model):
         reasons.append(f'Holdout calibration error is above {MAX_CALIBRATION_ERROR:.2f}.')
     if baseline is None or selected_loss is None:
         reasons.append('The holdout does not contain both a baseline and a selected-family log loss.')
-    elif selected_loss >= baseline:
+    elif selected != 'baseline' and selected_loss >= baseline:
         reasons.append(
             f'{selected} holdout log loss {selected_loss:.4f} does not beat the baseline {baseline:.4f}.'
         )
@@ -2096,6 +2127,10 @@ def govern_models(connection, actor, audit, now=None):
         connection.execute(
             """UPDATE sports_ai_model_registry SET active=1,status='active',activated_at=? WHERE id=?""",
             (current.isoformat(), model['id']),
+        )
+        connection.execute(
+            "UPDATE sports_ai_sports SET prediction_status='modelled' WHERE code=?",
+            (sport,),
         )
         decisions.append({
             'sport': sport, 'version': version, 'model_id': model['id'], 'action': 'activated',
@@ -2199,7 +2234,7 @@ def reprice_active_batch(connection, actor, audit, limit=20, now=None):
             continue
         features = json.loads(snapshot['features_json'])
         parameters = json.loads(fixture['parameters_json'] or '{}')
-        markets = ('HOME', 'DRAW', 'AWAY') if fixture['sport'] == 'football' else ('MONEYLINE_HOME', 'MONEYLINE_AWAY')
+        markets = ('HOME', 'DRAW', 'AWAY') if fixture['sport'] in GOAL_SPORTS else ('MONEYLINE_HOME', 'MONEYLINE_AWAY')
         quotes = [dict(row) for row in connection.execute(
             """SELECT * FROM sports_ai_odds_snapshots
                WHERE fixture_id=? AND bookmaker='SportyBet' AND source_url<>'' AND observed_at>=?
@@ -2227,8 +2262,8 @@ def reprice_active_batch(connection, actor, audit, limit=20, now=None):
             adjusted, settlement = settle_market(fixture['sport'], market, features, parameters)
             if not settlement:
                 continue
-            if fixture['sport'] == 'football':
-                base = [market_probability('football', name, adjusted, rho)['p_win'] for name in markets]
+            if fixture['sport'] in GOAL_SPORTS:
+                base = [market_probability(fixture['sport'], name, adjusted, rho)['p_win'] for name in markets]
                 calibrated = _temperature(base, temperature)
                 probability = min(1 - 1e-6, max(1e-6, calibrated[markets.index(market)]))
                 settlement = {'p_win': probability, 'p_half_win': 0.0, 'p_push': 0.0, 'p_half_loss': 0.0, 'p_loss': 1 - probability}

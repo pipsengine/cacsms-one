@@ -69,7 +69,7 @@ def map_market(sport, market_label, selection_label, line=None):
     if parsed_line is None and line_in_text and any(word in combined for word in ('over', 'under', 'handicap', 'spread', 'total')):
         parsed_line = _quarter_line(line_in_text.group(1))
     pick = selection.casefold()
-    if sport == 'football':
+    if sport in ('football', 'frauenfussball', 'ice_hockey'):
         if 'handicap' not in combined and (
             any(name in market.casefold() for name in ('1x2', 'match result', 'full time', 'fulltime'))
             or market.casefold() in {'1x2', 'result'}

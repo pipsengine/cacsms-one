@@ -14,7 +14,8 @@ from datetime import datetime, timezone
 
 from prediction_engine import _line_settlement
 
-TARGETS = (2, 5, 10, 25, 100, 1000, 5000, 25000)
+TARGETS = (2, 5, 10, 20, 25, 50, 100, 500, 800, 1000, 5000, 10000, 20000, 25000, 50000)
+PREVIOUS_TARGETS = (2, 5, 10, 25, 100, 1000, 5000, 25000)
 RANGE_TIERS = (
     {'id': '1.50-1.99', 'label': '1.50–1.99', 'low': 1.50, 'high': 1.99, 'tier': 150, 'extreme': False},
     {'id': '2.00-2.99', 'label': '2.00–2.99', 'low': 2.00, 'high': 2.99, 'tier': 200, 'extreme': False},
@@ -79,7 +80,7 @@ def supported_market(sport, market):
     market = (market or '').upper()
     if not market or market.startswith('FIRST_HALF_'):
         return False
-    if sport == 'football':
+    if sport in ('football', 'frauenfussball', 'ice_hockey'):
         if market in _BINARY_FOOTBALL:
             return True
         return bool(
@@ -123,7 +124,7 @@ def default_config():
         'targets': list(TARGETS),
         'tolerance': 0.15,
         'min_legs': 2,
-        'max_legs': 8,
+        'max_legs': 25,
         'max_per_competition': 3,
         'max_per_team': 1,
         'min_probability': 0.02,
@@ -144,6 +145,8 @@ def config_from_row(row):
         return default_config()
     data = dict(row)
     data['targets'] = [int(item) for item in _loads(data.pop('targets_json', None), list(TARGETS))]
+    if tuple(data['targets']) == PREVIOUS_TARGETS:
+        data['targets'] = list(TARGETS)
     data['allow_same_fixture'] = int(data.get('allow_same_fixture') or 0)
     return data
 
@@ -160,9 +163,9 @@ def save_config(connection, updates):
     merged = {**current, **updates}
     targets = [int(item) for item in merged['targets']]
     if not targets or any(item not in TARGETS for item in targets):
-        raise ValueError('Targets must be chosen from the eight configured odds categories')
-    if not 2 <= int(merged['min_legs']) <= int(merged['max_legs']) <= 12:
-        raise ValueError('Leg limits must run from 2 through 12, with the maximum at least the minimum')
+        raise ValueError('Targets must be chosen from the configured odds categories')
+    if not 2 <= int(merged['min_legs']) <= int(merged['max_legs']) <= 25:
+        raise ValueError('Leg limits must run from 2 through 25, with the maximum at least the minimum')
     if not 0 < float(merged['tolerance']) < 1:
         raise ValueError('Odds tolerance must be between 0 and 1')
     merged['targets'] = targets
@@ -263,8 +266,8 @@ def _reject_reason(row, config, current, blocked, markets, competitions, bookmak
         return 'Selection sport is outside the football-only request'
     if mode == 'basketball' and sport != 'basketball':
         return 'Selection sport is outside the basketball-only request'
-    if sport not in ('football', 'basketball'):
-        return 'Fixture sport is not football or basketball'
+    if mode not in ('mixed', 'football', 'basketball', '', None) and sport != mode:
+        return 'Selection sport is outside the requested sport'
     if not row.get('fixture_id') or not row.get('home') or not row.get('away'):
         return 'Fixture identity is incomplete'
     if row.get('fixture_id') in blocked:
@@ -631,10 +634,13 @@ def optimize_candidates(candidates, config, now=None):
             truncated = True
             results.append(_gap(target, 'The configured search timeout elapsed before this tier was searched', True))
             continue
-        found, evaluations, tier_truncated = _search_target(
+        found, reached, evaluations, tier_truncated = _search_target(
             ordered, target, config, deadline, evaluations,
         )
         truncated = truncated or tier_truncated
+        if not found and reached:
+            reached.sort(key=lambda indexes: sum(math.log(ordered[index]['decimal_odds']) for index in indexes))
+            found = reached[:int(config['max_tickets_per_tier'])]
         if not found:
             if len(ordered) < int(config['min_legs']):
                 reason = 'Fewer qualified selections than the minimum leg count'
@@ -656,14 +662,25 @@ def optimize_candidates(candidates, config, now=None):
                 continue
             score, components = _ticket_score(target, float(config['tolerance']), legs, combined)
             signature = '|'.join(sorted(leg['opportunity_id'] for leg in legs))
+            mode = 'standard'
+            status = 'qualified' if combined['probability_basis'] == 'independent' else 'unverified_probability'
+            explanation = combined['explanation']
+            if int(target) >= 20:
+                explanation = (
+                    f'{int(target)}× uses only selections that already qualified on their own. '
+                    'A booking code can be requested for this ticket. No wager is placed. ' + explanation
+                )
             ranked.append({
                 'tier': target,
+                'tier_label': f'{int(target)}×',
+                'tier_mode': mode,
                 'legs': legs,
                 'signature': signature,
                 'score': score,
                 'components': components,
                 **combined,
-                'status': 'qualified' if combined['probability_basis'] == 'independent' else 'unverified_probability',
+                'explanation': explanation,
+                'status': status,
             })
         ranked.sort(key=lambda item: (
             item['probability_basis'] != 'independent',
@@ -828,7 +845,7 @@ def _search_band(candidates, band, config, deadline, evaluations):
                     nxt.append(trial)
             if truncated:
                 break
-        if not nxt or truncated:
+        if not nxt:
             break
         nxt.sort(key=lambda item: _partial_key(item, candidates, float(band['low'])))
         if len(nxt) > beam_width:
@@ -855,7 +872,9 @@ def _search_target(candidates, target, config, deadline, evaluations):
     limit = int(config['search_limit'])
     beam = [()]
     found = []
+    reached = []
     truncated = False
+    target_log = math.log(target)
     for _depth in range(max_legs):
         if time.monotonic() >= deadline or evaluations >= limit:
             truncated = True
@@ -874,6 +893,8 @@ def _search_target(candidates, target, config, deadline, evaluations):
                     continue
                 log_odds = sum(math.log(leg['decimal_odds']) for leg in legs)
                 if log_odds > high:
+                    if len(trial) >= min_legs and log_odds >= target_log and len(reached) < 48:
+                        reached.append(trial)
                     continue
                 if len(trial) >= min_legs and log_odds >= low:
                     found.append(trial)
@@ -881,7 +902,7 @@ def _search_target(candidates, target, config, deadline, evaluations):
                     nxt.append(trial)
             if truncated:
                 break
-        if not nxt or truncated:
+        if not nxt:
             break
         nxt.sort(key=lambda item: _partial_key(item, candidates, target))
         if len(nxt) > beam_width:
@@ -895,7 +916,14 @@ def _search_target(candidates, target, config, deadline, evaluations):
         if key not in seen:
             seen.add(key)
             unique.append(indexes)
-    return unique, evaluations, truncated
+    reached_unique = []
+    reached_seen = set()
+    for indexes in reached:
+        key = tuple(sorted(indexes))
+        if key not in reached_seen:
+            reached_seen.add(key)
+            reached_unique.append(indexes)
+    return unique, reached_unique, evaluations, truncated
 
 
 def _partial_key(indexes, candidates, target):
@@ -911,7 +939,7 @@ def settle_result(sport, market, home_score, away_score):
     if market.startswith('FIRST_HALF_') or not supported_market(sport, market):
         return None
     home, away = int(home_score), int(away_score)
-    if sport == 'football':
+    if sport in ('football', 'frauenfussball', 'ice_hockey'):
         value = _football_result(market, home, away)
     elif sport == 'basketball':
         value = _basketball_result(market, home, away)
@@ -1070,7 +1098,7 @@ def generate_accumulators(connection, actor, audit, sport_mode='mixed', override
     if legacy:
         config['targets'] = [int(item) for item in config.get('targets') or [] if int(item) in TARGETS]
         if not config['targets']:
-            raise ValueError('Choose at least one of the eight target odds')
+            raise ValueError('Choose at least one configured target odds')
     else:
         policy = load_tier_policy(connection)
         selected = set(config.pop('range_ids', None) or [])

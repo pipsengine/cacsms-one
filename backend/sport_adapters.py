@@ -10,6 +10,8 @@ UNSUPPORTED = {
     'ice_hockey': ('MONEYLINE', 'PUCK_LINE', 'TOTAL_GOALS'),
     'cricket': ('MATCH_WINNER', 'TOTAL_RUNS'),
     'handball': ('MATCH_WINNER', 'HANDICAP', 'TOTAL_GOALS'),
+    'table_tennis': ('MATCH_WINNER', 'GAME_HANDICAP', 'TOTAL_POINTS'),
+    'tischtennis': ('MATCH_WINNER', 'GAME_HANDICAP', 'TOTAL_POINTS'),
 }
 
 

@@ -78,7 +78,7 @@ class AccumulatorMathTests(unittest.TestCase):
         self.now = datetime(2026, 11, 3, 12, tzinfo=timezone.utc)
 
     def test_eight_targets_and_product_math(self):
-        self.assertEqual(TARGETS, (2, 5, 10, 25, 100, 1000, 5000, 25000))
+        self.assertEqual(TARGETS, (2, 5, 10, 20, 25, 50, 100, 500, 800, 1000, 5000, 10000, 20000, 25000, 50000))
         self.assertEqual(default_config()['targets'], list(TARGETS))
         self.assertEqual(default_config()['tolerance'], 0.15)
         accepted, _decisions = qualify_candidates([
@@ -175,9 +175,44 @@ class AccumulatorMathTests(unittest.TestCase):
     def test_no_combination_is_reported_instead_of_forced(self):
         accepted, _decisions = qualify_candidates([_row()], _config(targets=list(TARGETS)), self.now)
         result = optimize_candidates(accepted, _config(targets=list(TARGETS), max_legs=6), self.now)
-        self.assertEqual(len(result['tiers']), 8)
+        self.assertEqual(len(result['tiers']), len(TARGETS))
         self.assertTrue(all(item['status'] == 'no_qualifying_ticket' and item['tickets'] == [] for item in result['tiers']))
         self.assertIn('minimum leg', result['tiers'][0]['reason'])
+
+    def test_a_ticket_accepts_25_legs_and_keeps_an_unsettled_sport_out(self):
+        self.assertEqual(default_config()['max_legs'], 25)
+        rows = [
+            _row(opportunity_id=f'opp-{index}', fixture_id=f'fixture-{index}',
+                 home=f'Home {index}', away=f'Away {index}', competition=f'League {index}',
+                 decimal_odds=1.2, probability=0.9, expected_edge=0.08,
+                 settlement_json=_binary(0.9))
+            for index in range(25)
+        ]
+        rows.append(_row(opportunity_id='handball', fixture_id='handball-1', sport='handball',
+                         market='MATCH_WINNER', competition='Handball League'))
+        accepted, decisions = qualify_candidates(rows, _config(max_legs=25, max_per_competition=1), self.now)
+        self.assertEqual(len(accepted), 25)
+        self.assertTrue(all(row['sport'] == 'football' for row in accepted))
+        handball = next(item for item in decisions if item['opportunity_id'] == 'handball')
+        self.assertIn('settlement', handball['reason'])
+        result = optimize_candidates(
+            accepted, _config(targets=[2], max_legs=25, max_per_competition=1, timeout_seconds=5), self.now,
+        )
+        self.assertGreaterEqual(len(result['tiers'][0]['tickets'][0]['legs']), 2)
+        self.assertLessEqual(len(result['tiers'][0]['tickets'][0]['legs']), 25)
+
+    def test_a_product_that_jumps_over_the_band_still_reaches_the_target(self):
+        left = _row(decimal_odds=8, probability=0.2, expected_edge=0.6, settlement_json=_binary(0.2))
+        right = _row(
+            opportunity_id='opp-2', fixture_id='fixture-2', home='Home B', away='Away B',
+            decimal_odds=8, probability=0.2, expected_edge=0.6, settlement_json=_binary(0.2),
+        )
+        accepted, _decisions = qualify_candidates([left, right], _config(targets=[50], max_legs=2), self.now)
+        result = optimize_candidates(accepted, _config(targets=[50], max_legs=2, tolerance=0.15), self.now)
+        ticket = result['tiers'][0]['tickets'][0]
+        self.assertGreaterEqual(ticket['combined_odds'], 50)
+        self.assertEqual(ticket['tier_mode'], 'standard')
+        self.assertLessEqual(len(ticket['legs']), 25)
 
     def test_shared_team_and_partial_settlement_are_not_multiplied(self):
         left = _row(home='Shared FC', away='Away A')

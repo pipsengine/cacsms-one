@@ -37,13 +37,15 @@ class MarketStatusTests(unittest.TestCase):
         self.assertEqual(assign_status(101, 0.04, 0), 'validated')
         self.assertEqual(assign_status(12, 0.04, 40), 'research')
         self.assertEqual(assign_status(101, 0.27, 40), 'research')
-        self.assertEqual(assign_status(0, None, 0, blocked=True), 'blocked')
+        self.assertEqual(assign_status(0, None, 0, blocked=True), 'data_pending')
         self.assertEqual(assign_status(0, None, 0, unsupported=True), 'unsupported')
         self.assertEqual(assign_status(101, 0.04, 40, parent_active=False), 'suspended')
 
     def test_unsupported_adapter_returns_no_probability(self):
         self.assertIsNone(probability('tennis', 'MATCH_WINNER', {'anything': 1}))
         self.assertIsNone(probability('ice_hockey', 'TOTAL_GOALS'))
+        self.assertIsNone(probability('table_tennis', 'MATCH_WINNER'))
+        self.assertIsNone(probability('tischtennis', 'TOTAL_POINTS'))
 
     def test_best_market_follows_expected_edge(self):
         chosen = choose_best([
@@ -86,11 +88,39 @@ class RegistryRefreshTests(unittest.TestCase):
         with db.connect() as connection:
             report = refresh_market_registry(connection)
         by_key = {(item['sport'], item['market_key']): item['status'] for item in report['items']}
-        self.assertEqual(by_key[('football', 'CORNERS')], 'blocked')
-        self.assertEqual(by_key[('football', 'CARDS')], 'blocked')
+        self.assertEqual(by_key[('football', 'CORNERS')], 'data_pending')
+        self.assertEqual(by_key[('football', 'CARDS')], 'data_pending')
         self.assertEqual(by_key[('football', 'CORRECT_SCORE')], 'research')
         self.assertEqual(by_key[('tennis', 'MATCH_WINNER')], 'unsupported')
         self.assertEqual(by_key[('cricket', 'MATCH_WINNER')], 'unsupported')
+        self.assertEqual(by_key[('table_tennis', 'MATCH_WINNER')], 'unsupported')
         self.assertNotIn('active', set(by_key.values()))
         self.assertFalse(report['places_wager'])
         self.assertFalse(report['thresholds_changed'])
+        self.assertTrue(any(item['sport'] == 'tennis' and item.get('unsupported', 0) for item in report['coverage']))
+
+    def test_a_stored_quote_does_not_activate_an_unmodelled_sport(self):
+        with db.connect() as connection:
+            connection.execute(
+                """INSERT INTO sports_ai_fixtures
+                   (id,external_id,source,sport,competition,home,away,starts_at,status,statistics_json,odds_json,observed_at)
+                   VALUES('fx-tennis','ext-tennis','test','tennis','ATP','Player A','Player B',?, 'scheduled','{}','{}',?)""",
+                (NOW.isoformat(), NOW.isoformat()),
+            )
+            connection.execute(
+                """INSERT INTO sports_ai_provider_registry
+                   (id,provider_key,display_name,sport,adapter,enabled,terms_reviewed,status)
+                   VALUES('provider-test','sportybet-test','SportyBet','both','authorized_json',1,1,'operational')""",
+            )
+            connection.execute(
+                """INSERT INTO sports_ai_odds_snapshots
+                   (id,fixture_id,provider_id,bookmaker,market,outcome,decimal_odds,source_url,observed_at)
+                   VALUES('odds-tennis','fx-tennis','provider-test','SportyBet','h2h','home',1.8,'https://www.sportybet.com/ng/',?)""",
+                (NOW.isoformat(),),
+            )
+            report = refresh_market_registry(connection)
+        tennis = [item for item in report['items'] if item['sport'] == 'tennis' and item['market_key'] == 'MONEYLINE_HOME']
+        self.assertEqual(len(tennis), 1)
+        self.assertEqual(tennis[0]['status'], 'discovered')
+        self.assertIsNone(tennis[0]['evidence'].get('probability'))
+        self.assertNotIn('active', {item['status'] for item in report['items'] if item['sport'] == 'tennis'})

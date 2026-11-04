@@ -1707,7 +1707,7 @@ class AlertRuleIn(BaseModel):
     enabled:bool=False
 class SettingsIn(BaseModel):
     min_edge:float=Field(ge=0,le=1)
-    max_legs:int=Field(ge=1,le=8)
+    max_legs:int=Field(ge=1,le=25)
     odds_tolerance:float=Field(ge=0.01,le=0.5)
     odds_max_age_minutes:int=Field(default=15,ge=1,le=1440)
     form_half_life_days:float=Field(default=180,gt=0,le=3650)

@@ -332,9 +332,10 @@ def _pipeline_snapshot_tick():
 
 def _govern_cycle():
     try:
-        from prediction_engine import govern_models, reprice_active_batch, review_degradation
+        from prediction_engine import ensure_goal_sport_models, govern_models, reprice_active_batch, review_degradation
         with connect() as connection:
             connection.execute("UPDATE sports_ai_schedules SET enabled=1 WHERE id='schedule-discovery' AND enabled=0")
+            ensure_goal_sport_models(connection)
             review = review_degradation(connection, 'sports-ai-worker', _audit)
             governed = govern_models(connection, 'sports-ai-worker', _audit)
             priced = reprice_active_batch(connection, 'sports-ai-worker', _audit, limit=20)

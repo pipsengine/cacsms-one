@@ -23,6 +23,7 @@ from sportybet_research import (
 SECTIONS = (
     ('basketball', 'https://www.sportybet.com/ng/sport/basketball'),
     ('football', 'https://www.sportybet.com/ng/sport/football'),
+    ('ice_hockey', 'https://www.sportybet.com/ng/sport/iceHockey'),
 )
 MAX_PAGES = 3
 REFRESH_MINUTES = 15

@@ -51,7 +51,7 @@ export default function AccumulatorPage({page,tab=0}){
   const [adminKey,setAdminKey]=useState('');
   const [confirm,setConfirm]=useState(null);
   const [backtest,setBacktest]=useState(null);
-  const [form,setForm]=useState({sport_mode:'mixed',tier:'',min_edge:'0.05',max_legs:'6',market:'',competition:'',bookmaker:''});
+  const [form,setForm]=useState({sport_mode:'mixed',tier:'',min_edge:'0.05',max_legs:'25',market:'',competition:'',bookmaker:''});
   const [codeForm,setCodeForm]=useState({ticket_id:'',code:'',evidence:''});
 
   async function refresh(){
@@ -164,9 +164,9 @@ export default function AccumulatorPage({page,tab=0}){
     {notice&&<div className="sp-panel"><p className="sp-intel-explanation">{notice}</p></div>}
     {page==='tickets'&&<CommandCentre command={command}/>}
     {(page==='tickets'||page==='tiers')&&<section className="sp-panel">
-      <div className="sp-panel-head"><div><h3>{page==='tiers'?`${tierFilter.label} combined odds`:'Ticket builder'}</h3><p>Singles and accumulators are built only from selections that are already qualified on their own. A range with no legal combination stays empty. Ranges from 20.00 upward stay in simulation.</p></div><button className="sp-secondary" onClick={()=>refresh().catch(e=>setError(e.message))}><RefreshCcw size={16}/>Refresh</button></div>
+      <div className="sp-panel-head"><div><h3>{page==='tiers'?`${tierFilter.label} combined odds`:'Ticket builder'}</h3><p>A ticket can combine up to 25 qualified selections. Football and basketball are combined whenever both are qualified, and any other sport joins once its own market has a validated settlement rule. Product targets of 5, 10, 20, 25, 50, 100, 500, 800, 1,000, 5,000, 10,000, 20,000, 25,000 and 50,000 are searched from those selections. A qualified ticket of up to 25 selections can be sent for a booking code when its combined price reaches the target, including 50,000. No wager is placed. A target with no legal combination stays empty.</p></div><button className="sp-secondary" onClick={()=>refresh().catch(e=>setError(e.message))}><RefreshCcw size={16}/>Refresh</button></div>
       <div className="sp-intel-filters">
-        <label>Sport<select value={form.sport_mode} onChange={e=>setForm({...form,sport_mode:e.target.value})}><option value="mixed">Football and basketball</option><option value="football">Football only</option><option value="basketball">Basketball only</option></select></label>
+        <label>Sport<select value={form.sport_mode} onChange={e=>setForm({...form,sport_mode:e.target.value})}><option value="mixed">All qualified sports</option><option value="football">Football only</option><option value="basketball">Basketball only</option></select></label>
         <label>Odds range<select value={form.tier} onChange={e=>setForm({...form,tier:e.target.value})}><option value="">All ten ranges</option>{RANGES.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
         <label>Minimum edge<input value={form.min_edge} onChange={e=>setForm({...form,min_edge:e.target.value})}/></label>
         <label>Maximum legs<input value={form.max_legs} onChange={e=>setForm({...form,max_legs:e.target.value})}/></label>

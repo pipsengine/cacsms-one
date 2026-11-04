@@ -140,11 +140,11 @@ def qualified_selections(connection, now=None):
 def create_job(connection, selections):
     from qualification_engine import require_bookable
     require_bookable(connection, selections)
-    if not selections or len(selections) > 6:
-        raise ValueError('A booking needs 1 to 6 qualified selections')
+    if not selections or len(selections) > 25:
+        raise ValueError('A booking needs 1 to 25 qualified selections')
     sports = {item['sport'] for item in selections}
-    if not sports or len(sports) > 2:
-        raise ValueError('A booking uses football, basketball, or both')
+    if not sports:
+        raise ValueError('A booking needs a sport on every selection')
     signature = _signature(selections)
     existing = connection.execute(
         """SELECT id,status FROM sports_ai_booking_jobs
@@ -718,7 +718,7 @@ def process_booking_queue(now=None):
             if not ticket_id:
                 return {'status': 'waiting', 'phase': phase, 'qualified': len(qualified), 'expired': expired, 'examined': examined, 'places_wager': False}
             selections = ticket_selections(connection, ticket_id)
-            if not selections or len(selections) > 6:
+            if not selections or len(selections) > 25:
                 return {'status': 'waiting', 'phase': phase, 'qualified': len(qualified), 'expired': expired, 'examined': examined, 'places_wager': False}
             created = create_job(connection, selections)
             if created.get('duplicate'):
@@ -749,7 +749,7 @@ def confirm_missed_publication(now=None):
                 'places_wager': False, 'opens_browser': False,
             }
         selections = ticket_selections(connection, ticket_id)
-        if not selections or len(selections) > 6:
+        if not selections or len(selections) > 25:
             return {
                 'status': 'waiting', 'confirmation': True, 'examined': examined,
                 'places_wager': False, 'opens_browser': False,
@@ -788,7 +788,7 @@ def book_prepared_tickets(limit=1, now=None):
             if not ticket_id:
                 break
             selections = ticket_selections(connection, ticket_id)
-            if not selections or len(selections) > 6:
+            if not selections or len(selections) > 25:
                 break
             created = create_job(connection, selections)
             if created.get('duplicate'):

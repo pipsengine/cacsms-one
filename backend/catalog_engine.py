@@ -928,6 +928,17 @@ def run_queued_backfill():
         with connect() as connection:
             seen, saved = _persist(connection, provider, batch)
             connection.execute(
+                """UPDATE sports_ai_leagues SET
+                   fixture_count=(
+                     SELECT COUNT(*) FROM sports_ai_fixtures f
+                     WHERE f.sport=sports_ai_leagues.sport_code
+                       AND lower(f.competition)=lower(sports_ai_leagues.name)
+                   ),
+                   freshness='collected', updated_at=?
+                   WHERE id=(SELECT league_id FROM sports_ai_league_sources WHERE id=?)""",
+                (utc_now(), task['league_source_id']),
+            )
+            connection.execute(
                 """UPDATE sports_ai_backfill_tasks SET status='complete', records_saved=?,
                    last_error=NULL, updated_at=? WHERE id=?""",
                 (saved, utc_now(), task['id']),
@@ -944,8 +955,49 @@ def run_queued_backfill():
         return {'status': status, 'task_id': task['id'], 'error': str(error)[:300]}
 
 
+def queue_current_league_collection(connection):
+    """Release one current-season league for a catalogued sport.
+
+    Historical seasons and the daily backfill cap stay untouched. A sport
+    stays not modelled until it has its own passing holdout.
+    """
+    sports = (
+        'handball', 'ice_hockey', 'tischtennis', 'frauenfussball',
+        'cricket', 'volleyball', 'tennis', 'baseball',
+    )
+    placeholders = ','.join('?' for _ in sports)
+    active = connection.execute(
+        f"""SELECT COUNT(*) FROM sports_ai_backfill_tasks t
+            JOIN sports_ai_league_sources s ON s.id=t.league_source_id
+            JOIN sports_ai_leagues l ON l.id=s.league_id
+            WHERE t.status IN ('queued','running')
+              AND l.sport_code IN ({placeholders}) AND l.season>='2025'""",
+        sports,
+    ).fetchone()[0]
+    if active:
+        return 0
+    row = connection.execute(
+        f"""SELECT t.id FROM sports_ai_backfill_tasks t
+            JOIN sports_ai_league_sources s ON s.id=t.league_source_id
+            JOIN sports_ai_leagues l ON l.id=s.league_id
+            JOIN sports_ai_provider_registry p ON p.id=t.provider_id
+            WHERE t.status='held' AND p.adapter='openligadb' AND p.enabled=1 AND p.terms_reviewed=1
+              AND l.sport_code IN ({placeholders}) AND l.season>='2025'
+            ORDER BY l.sport_code, l.name LIMIT 1""",
+        sports,
+    ).fetchone()
+    if not row:
+        return 0
+    connection.execute(
+        "UPDATE sports_ai_backfill_tasks SET status='queued', updated_at=? WHERE id=? AND status='held'",
+        (utc_now(), row['id']),
+    )
+    return 1
+
+
 def release_and_run_backfill():
     with connect() as connection:
+        queue_current_league_collection(connection)
         per_day = _policy(connection)['per_day']
         today = datetime.now(timezone.utc).date().isoformat()
         used = connection.execute(

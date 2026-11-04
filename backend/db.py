@@ -50,12 +50,18 @@ def initialize():
    if statement.strip():
     raise ValueError(f'Incomplete SQL statement in migration {migration.name}')
    with connect() as c:
+    if migration.name.startswith('035_'):
+     c.execute('PRAGMA foreign_keys=OFF')
     c.execute('BEGIN IMMEDIATE')
     try:
      for sql_statement in statements:c.execute(sql_statement)
      c.execute('INSERT INTO sports_ai_schema_migrations(name,applied_at) VALUES(?,?)',
       (migration.name,datetime.now(timezone.utc).isoformat()))
      c.commit()
+     if migration.name.startswith('035_'):
+      c.execute('PRAGMA foreign_keys=ON')
     except BaseException:
      c.rollback()
+     if migration.name.startswith('035_'):
+      c.execute('PRAGMA foreign_keys=ON')
      raise

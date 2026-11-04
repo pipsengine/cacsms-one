@@ -309,8 +309,24 @@ def build_autonomous_tickets(connection, actor, audit, now=None):
     result = generate_accumulators(
         connection, actor, audit, idempotency_key=key, now=current, trigger='autonomous',
     )
+    from accumulator_engine import TARGETS
+    products = generate_accumulators(
+        connection, actor, audit,
+        overrides={'targets': list(TARGETS), 'max_legs': 25, 'search_limit': 20000, 'timeout_seconds': 20},
+        idempotency_key=key + ':products', now=current, trigger='autonomous',
+    )
+    result['product_targets'] = {
+        'status': products.get('status'),
+        'ticket_count': 0 if products.get('idempotent') else products.get('ticket_count', 0),
+        'tiers': [
+            {'target': item.get('target'), 'status': item.get('status'), 'reason': item.get('reason')}
+            for item in products.get('tiers') or []
+        ],
+        'places_wager': False,
+    }
     result['places_wager'] = False
-    result['tickets_created'] = 0 if result.get('idempotent') else result.get('ticket_count', 0)
+    range_created = 0 if result.get('idempotent') else result.get('ticket_count', 0)
+    result['tickets_created'] = range_created + result['product_targets']['ticket_count']
     return result
 
 
