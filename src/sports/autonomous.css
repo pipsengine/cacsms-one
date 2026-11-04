@@ -102,5 +102,5 @@
 .ae-overlay{position:fixed;inset:0;background:#0c1c3b66;display:grid;place-items:center;padding:20px;z-index:30}
 .ae-modal{background:#fff;border-radius:14px;padding:22px;max-width:460px;width:100%;position:relative}
 .ae-close{position:absolute;right:12px;top:8px;border:0;background:none;font-size:24px}
-@media(max-width:1400px){.ae-metrics{grid-template-columns:repeat(4,1fr)}.ae-grid{grid-template-columns:1fr 1fr}.ae-panel.logs,.ae-panel.opportunities,.ae-panel.tickets{grid-column:auto}}
-@media(max-width:800px){.ae-top,.ae-headline{flex-direction:column;align-items:flex-start}.ae-metrics,.ae-settings,.ae-ticket-grid,.ae-grid{grid-template-columns:1fr}}
+@media(max-width:1400px){.ae-metrics{grid-template-columns:repeat(4,1fr)}.ae-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.ae-panel.operations,.ae-panel.engines,.ae-panel.logs,.ae-panel.opportunities,.ae-panel.tickets{grid-column:auto;grid-row:auto}.ae-panel.logs{grid-column:1/-1}}
+@media(max-width:800px){.ae-top,.ae-headline{flex-direction:column;align-items:flex-start}.ae-metrics,.ae-settings,.ae-ticket-grid,.ae-grid{grid-template-columns:1fr}.ae-panel.operations,.ae-panel.engines,.ae-panel.logs,.ae-panel.opportunities,.ae-panel.tickets{grid-column:auto;grid-row:auto}}

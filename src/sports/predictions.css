@@ -91,4 +91,4 @@
 .pw-note{color:#6d7e9f;font-size:12px}
 @media(max-width:1250px){.pw-kpis{grid-template-columns:repeat(3,1fr)}.pw-lower{grid-template-columns:1fr 1fr}.pw-lower .pw-panel:last-child{grid-column:1/-1}}
 @media(max-width:800px){.pw-kpis,.pw-lower{grid-template-columns:1fr 1fr}.pw-lower .pw-panel:last-child{grid-column:auto}.pw-head{align-items:flex-start;flex-direction:column}}
-@media(max-width:550px){.pw-kpis{grid-template-columns:1fr}.pw-kpi strong{font-size:18px}}
+@media(max-width:550px){.pw-kpis,.pw-lower{grid-template-columns:1fr}.pw-lower .pw-panel:last-child{grid-column:auto}.pw-tools{flex-wrap:wrap;justify-content:flex-start}.pw-kpi strong{font-size:18px}}
