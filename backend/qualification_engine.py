@@ -407,10 +407,13 @@ def qualified_decision_rows(connection, now):
     ).fetchall()
 
 
-def candidate_rows(connection, now, limit=400):
+def candidate_rows(connection, now, limit=100):
+    """Each modelled sport gets its own share, so football kickoffs do not crowd the others out."""
     moment = now.isoformat()
+    per_sport = max(1, min(int(limit), 100))
     return connection.execute(
-        """SELECT p.id AS prediction_id, p.market, p.probability, p.explanation_json,
+        """SELECT * FROM (
+           SELECT p.id AS prediction_id, p.market, p.probability, p.explanation_json,
                   f.id AS fixture_id, f.sport, f.competition, f.home, f.away, f.starts_at, f.status AS fixture_status,
                   m.id AS model_id, m.lifecycle, m.active AS model_active, m.version AS model_version,
                   m.metrics_json, m.calibration_status,
@@ -428,7 +431,14 @@ def candidate_rows(connection, now, limit=400):
                   EXISTS (
                     SELECT 1 FROM sports_ai_market_registry r
                     WHERE r.sport=f.sport AND r.market_key=p.market AND r.status='active'
-                  ) AS market_registry_active
+                  ) AS market_registry_active,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY f.sport
+                    ORDER BY CASE WHEN EXISTS (
+                      SELECT 1 FROM sports_ai_qualification_decisions d
+                      WHERE d.prediction_id=p.id AND d.market=p.market AND d.state='QUALIFIED'
+                    ) THEN 0 ELSE 1 END, f.starts_at
+                  ) AS sport_rank
            FROM sports_ai_engine_predictions p
            JOIN sports_ai_fixtures f ON f.id=p.fixture_id
            JOIN sports_ai_model_registry m ON m.id=p.model_id
@@ -455,12 +465,10 @@ def candidate_rows(connection, now, limit=400):
                SELECT MAX(p2.created_at) FROM sports_ai_engine_predictions p2
                WHERE p2.fixture_id=p.fixture_id AND p2.market=p.market
              )
-           ORDER BY CASE WHEN EXISTS (
-             SELECT 1 FROM sports_ai_qualification_decisions d
-             WHERE d.prediction_id=p.id AND d.market=p.market AND d.state='QUALIFIED'
-           ) THEN 0 ELSE 1 END, f.starts_at
-           LIMIT ?""",
-        (moment, limit),
+           ) ranked
+           WHERE ranked.sport_rank<=?
+           ORDER BY ranked.sport_rank, ranked.starts_at""",
+        (moment, per_sport),
     ).fetchall()
 
 

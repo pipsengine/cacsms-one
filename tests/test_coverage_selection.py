@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 
-from accumulator_engine import pack_league_tickets
+from accumulator_engine import pack_diverse_tickets, pack_league_tickets
 from prediction_engine import rotate_by_league
 
 
@@ -29,6 +29,34 @@ class CoverageSelectionTests(unittest.TestCase):
         tickets = pack_league_tickets(legs, 2)
         self.assertEqual([leg['fixture_id'] for leg in tickets[0]], ['a1', 'b1'])
         self.assertEqual([leg['fixture_id'] for leg in tickets[1]], ['c1', 'a2'])
+
+    def test_a_ticket_spreads_across_sports_leagues_and_markets(self):
+        legs = [
+            {'fixture_id': 'f1', 'sport': 'football', 'competition': 'Premier League', 'market': 'UNDER_3.5', 'probability': 0.91},
+            {'fixture_id': 'f2', 'sport': 'football', 'competition': 'Premier League', 'market': 'UNDER_4.5', 'probability': 0.90},
+            {'fixture_id': 'b1', 'sport': 'basketball', 'competition': 'NBA', 'market': 'HOME_SPREAD_-4.5', 'probability': 0.82},
+            {'fixture_id': 'h1', 'sport': 'ice_hockey', 'competition': 'DEL', 'market': 'HOME', 'probability': 0.80},
+            {'fixture_id': 'f3', 'sport': 'football', 'competition': 'Bundesliga', 'market': 'OVER_2.5', 'probability': 0.78},
+        ]
+        tickets = pack_diverse_tickets(legs, size=4, minimum=3, limit=2)
+        self.assertEqual(len(tickets), 1)
+        ticket = tickets[0]
+        self.assertGreaterEqual(len({leg['sport'] for leg in ticket}), 2)
+        self.assertGreaterEqual(len({leg['competition'] for leg in ticket}), 2)
+        self.assertGreaterEqual(len({leg['market'].split('_')[0] for leg in ticket}), 2)
+        self.assertEqual(len({leg['fixture_id'] for leg in ticket}), len(ticket))
+
+    def test_coverage_tickets_hold_more_than_two_selections(self):
+        legs = [
+            {'competition': f'League {index}', 'probability': 0.90 - index / 100, 'fixture_id': f'f{index}'}
+            for index in range(10)
+        ]
+        tickets = pack_league_tickets(legs, 8, minimum=3)
+        self.assertEqual(len(tickets), 1)
+        self.assertEqual(len(tickets[0]), 8)
+        self.assertGreater(len(tickets[0]), 2)
+        short = pack_league_tickets(legs[:2], 8, minimum=3)
+        self.assertEqual(short, [])
 
 
 if __name__ == '__main__':

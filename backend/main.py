@@ -399,7 +399,10 @@ def dashboard(user=Depends(auth)):
         }
         counts['prediction_sports']=[dict(item) for item in c.execute("SELECT f.sport AS name, COUNT(*) AS total FROM sports_ai_engine_predictions p JOIN sports_ai_fixtures f ON f.id=p.fixture_id GROUP BY f.sport")]
         counts['tier_counts']=[dict(item) for item in c.execute("SELECT tier, COUNT(*) AS total FROM sports_ai_accumulator_tickets GROUP BY tier")]
-        filled={int(item['tier']) for item in counts['tier_counts'] if item['total']}
+        def tier_key(value):
+            number=float(value)
+            return int(number) if number.is_integer() else number
+        filled={tier_key(item['tier']) for item in counts['tier_counts'] if item['total']}
         gaps={}
         for run in c.execute("SELECT summary_json FROM sports_ai_accumulator_runs WHERE summary_json IS NOT NULL ORDER BY finished_at DESC LIMIT 6"):
             try:
@@ -409,14 +412,15 @@ def dashboard(user=Depends(auth)):
             for tier in summary.get('tiers') or []:
                 target=tier.get('target')
                 reason=tier.get('reason')
-                if target is None or not reason or int(target) in filled:
+                if target is None or not reason or tier_key(target) in filled:
                     continue
-                previous=gaps.get(int(target))
+                key=tier_key(target)
+                previous=gaps.get(key)
                 if previous and 'search stopped' not in previous.lower():
                     continue
                 if previous and 'search stopped' in reason.lower():
                     continue
-                gaps[int(target)]=reason
+                gaps[key]=reason
         counts['tier_gaps']=[{'tier':tier,'reason':reason} for tier,reason in sorted(gaps.items())]
         counts['highlights']=allrows(c,
             f"""WITH chosen AS (

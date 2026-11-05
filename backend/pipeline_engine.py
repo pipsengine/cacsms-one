@@ -305,28 +305,33 @@ def build_autonomous_tickets(connection, actor, audit, now=None):
             'reason': 'No current QUALIFIED selection has a linked qualified price.',
         }
     identity = '|'.join(sorted(f"{row['opportunity_id']}:{row.get('decimal_odds')}" for row in rows))
-    key = 'autonomous-tickets:v2:' + hashlib.sha256(identity.encode()).hexdigest()
-    result = generate_accumulators(
-        connection, actor, audit, idempotency_key=key, now=current, trigger='autonomous',
-    )
+    key = 'autonomous-tickets:v5:' + hashlib.sha256(identity.encode()).hexdigest()
     from accumulator_engine import TARGETS
-    products = generate_accumulators(
+    result = generate_accumulators(
         connection, actor, audit,
-        overrides={'targets': list(TARGETS), 'max_legs': 25, 'search_limit': 20000, 'timeout_seconds': 20},
-        idempotency_key=key + ':products', now=current, trigger='autonomous',
+        overrides={
+            'targets': list(TARGETS),
+            'min_legs': 1,
+            'max_legs': 25,
+            'max_per_competition': 25,
+            'max_tickets_per_tier': 3,
+            'search_limit': 20000,
+            'timeout_seconds': 20,
+        },
+        idempotency_key=key + ':ladder', now=current, trigger='autonomous',
     )
     result['product_targets'] = {
-        'status': products.get('status'),
-        'ticket_count': 0 if products.get('idempotent') else products.get('ticket_count', 0),
+        'status': result.get('status'),
+        'ticket_count': 0 if result.get('idempotent') else result.get('ticket_count', 0),
         'tiers': [
             {'target': item.get('target'), 'status': item.get('status'), 'reason': item.get('reason')}
-            for item in products.get('tiers') or []
+            for item in result.get('tiers') or []
         ],
         'places_wager': False,
     }
     live = generate_accumulators(
         connection, actor, audit,
-        overrides={'live_opportunities': True, 'max_legs': 8},
+        overrides={'live_opportunities': True, 'min_legs': 3, 'max_legs': 8},
         idempotency_key=key + ':live', now=current, trigger='autonomous',
     )
     result['live_opportunities'] = {
@@ -334,9 +339,22 @@ def build_autonomous_tickets(connection, actor, audit, now=None):
         'ticket_count': 0 if live.get('idempotent') else live.get('ticket_count', 0),
         'places_wager': False,
     }
+    days = generate_accumulators(
+        connection, actor, audit,
+        overrides={'calendar_days': True, 'min_legs': 1, 'max_legs': 25, 'max_per_competition': 25, 'timeout_seconds': 20},
+        idempotency_key=key + ':days', now=current, trigger='autonomous',
+    )
+    result['day_tickets'] = {
+        'status': days.get('status'),
+        'ticket_count': 0 if days.get('idempotent') else days.get('ticket_count', 0),
+        'places_wager': False,
+    }
     result['places_wager'] = False
-    range_created = 0 if result.get('idempotent') else result.get('ticket_count', 0)
-    result['tickets_created'] = range_created + result['product_targets']['ticket_count'] + result['live_opportunities']['ticket_count']
+    result['tickets_created'] = (
+        result['product_targets']['ticket_count']
+        + result['live_opportunities']['ticket_count']
+        + result['day_tickets']['ticket_count']
+    )
     return result
 
 

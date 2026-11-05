@@ -2249,6 +2249,163 @@ def review_degradation(connection, actor, audit, now=None):
     return {'rolled_back': rolled}
 
 
+def price_quoted_board(connection, now=None, limit=40):
+    """Store a probability for each fresh SportyBet line when features already exist.
+
+    This does not invent a price, a result, or a booking code. Fixtures without a
+    stored feature snapshot are left untouched.
+    """
+    current = now or datetime.now(timezone.utc)
+    fresh = (current - timedelta(minutes=15)).isoformat()
+    from accumulator_engine import supported_market
+    from market_registry import active_keys
+    from qualification_engine import CALIBRATED
+    active = active_keys(connection)
+    settings_row = connection.execute(
+        "SELECT value_json FROM sports_ai_settings WHERE key='engine'",
+    ).fetchone()
+    settings = json.loads(settings_row['value_json']) if settings_row and settings_row['value_json'] else {}
+    min_edge = float(settings.get('min_edge', 0.05))
+    fixtures = [dict(row) for row in connection.execute(
+        f"""SELECT f.id, f.sport, f.competition, f.home, f.away, f.starts_at,
+                  m.id AS model_id, m.parameters_json
+           FROM sports_ai_fixtures f
+           JOIN sports_ai_model_registry m ON m.sport=f.sport AND m.active=1 AND m.status='active'
+           WHERE {upcoming_fixture_sql('f')}
+             AND f.sport IN ('football','basketball','ice_hockey','frauenfussball')
+             AND EXISTS (
+               SELECT 1 FROM sports_ai_odds_snapshots q
+               WHERE q.fixture_id=f.id AND q.bookmaker='SportyBet' AND q.observed_at>=?
+             )
+             AND EXISTS (
+               SELECT 1 FROM sports_ai_feature_snapshots s
+               WHERE s.fixture_id=f.id AND s.completeness>=0.5
+             )""",
+        (fresh,),
+    )]
+    chosen = []
+    for fixture in rotate_by_league(fixtures, max(1, int(limit))):
+        text = str(fixture.get('competition') or '').casefold()
+        if 'simulated' in text or 'srl' in text.split():
+            continue
+        chosen.append(fixture)
+    summary = {'fixtures': 0, 'predictions': 0, 'opportunities': 0, 'fixture_ids': [], 'sports': sorted({row['sport'] for row in chosen})}
+    if not chosen:
+        return summary
+    run_id = str(uuid.uuid4())
+    connection.execute(
+        """INSERT INTO sports_ai_analysis_runs
+           (id,fixture_count,selection_count,ticket_count,status,details_json)
+           VALUES(?,?,?,?,?,?)""",
+        (run_id, len(chosen), 0, 0, 'running', json.dumps({'pipeline': 'quoted_board'})),
+    )
+    for fixture in chosen:
+        snapshot = connection.execute(
+            """SELECT id, features_json, completeness FROM sports_ai_feature_snapshots
+               WHERE fixture_id=? AND completeness>=0.5 ORDER BY generated_at DESC LIMIT 1""",
+            (fixture['id'],),
+        ).fetchone()
+        if not snapshot:
+            continue
+        features = json.loads(snapshot['features_json'])
+        parameters = json.loads(fixture['parameters_json'] or '{}')
+        quotes = [dict(row) for row in connection.execute(
+            """SELECT * FROM sports_ai_odds_snapshots
+               WHERE fixture_id=? AND bookmaker='SportyBet' AND observed_at>=?
+               ORDER BY observed_at DESC""",
+            (fixture['id'], fresh),
+        )]
+        seen = set()
+        summary['fixtures'] += 1
+        priced_here = 0
+        for quote in quotes:
+            market = normalize_quote_market(fixture['sport'], fixture, quote)
+            if priced_here >= 8 or not market or market in seen or not supported_market(fixture['sport'], market):
+                continue
+            try:
+                odds = float(quote['decimal_odds'])
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(odds) or odds < 1.3:
+                continue
+            seen.add(market)
+            priced_here += 1
+            existing = connection.execute(
+                """SELECT id, probability, settlement_json FROM sports_ai_engine_predictions
+                   WHERE fixture_id=? AND market=? ORDER BY created_at DESC LIMIT 1""",
+                (fixture['id'], market),
+            ).fetchone()
+            if existing:
+                prediction_id = existing['id']
+                probability = float(existing['probability'])
+                settlement = json.loads(existing['settlement_json'] or '{}')
+                if not isinstance(settlement, dict):
+                    settlement = {}
+            else:
+                adjusted, settlement = settle_market(fixture['sport'], market, features, parameters)
+                if not settlement:
+                    continue
+                temperature = float(parameters.get('temperature', 1.0))
+                rho = float(parameters.get('dixon_coles_rho') or 0.0)
+                if fixture['sport'] in GOAL_SPORTS and market in ('HOME', 'DRAW', 'AWAY'):
+                    names = ('HOME', 'DRAW', 'AWAY')
+                    base = [market_probability(fixture['sport'], name, adjusted, rho)['p_win'] for name in names]
+                    probability = min(1 - 1e-6, max(1e-6, _temperature(base, temperature)[names.index(market)]))
+                    settlement = {'p_win': probability, 'p_half_win': 0.0, 'p_push': 0.0, 'p_half_loss': 0.0, 'p_loss': 1 - probability}
+                elif fixture['sport'] == 'basketball' and market in ('MONEYLINE_HOME', 'MONEYLINE_AWAY'):
+                    raw = market_probability('basketball', 'MONEYLINE_HOME', adjusted)['p_win']
+                    calibrated = _temperature([raw, 1 - raw], temperature)
+                    probability = calibrated[0 if market == 'MONEYLINE_HOME' else 1]
+                    settlement = {'p_win': probability, 'p_half_win': 0.0, 'p_push': 0.0, 'p_half_loss': 0.0, 'p_loss': 1 - probability}
+                else:
+                    probability = float(settlement['p_win'])
+                probability = min(1 - 1e-6, max(1e-6, probability))
+                settlement['p_win'] = probability
+                settlement['p_loss'] = max(0.0, 1 - probability - float(settlement.get('p_push') or 0) - float(settlement.get('p_half_win') or 0) - float(settlement.get('p_half_loss') or 0))
+                prediction_id = str(uuid.uuid4())
+                connection.execute(
+                    """INSERT INTO sports_ai_engine_predictions
+                       (id,run_id,fixture_id,model_id,feature_id,market,outcome,probability,settlement_json,explanation_json,created_at,cohort)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,'prospective')""",
+                    (prediction_id, run_id, fixture['id'], fixture['model_id'], snapshot['id'], market, market,
+                     probability, json.dumps(settlement), json.dumps({'source': 'quoted_board'}), current.isoformat()),
+                )
+                summary['predictions'] += 1
+            latest = connection.execute(
+                """SELECT odds_id FROM sports_ai_value_opportunities
+                   WHERE prediction_id=? ORDER BY evaluated_at DESC LIMIT 1""",
+                (prediction_id,),
+            ).fetchone()
+            if latest and latest['odds_id'] == quote['id']:
+                continue
+            edge = expected_value(settlement, odds)
+            if edge is None:
+                edge = probability * odds - 1
+            registrable = market in CALIBRATED.get(fixture['sport'], set()) or (fixture['sport'], market) in active
+            status = 'qualified' if registrable and edge is not None and edge >= min_edge else 'rejected'
+            reason = (
+                'A fresh SportyBet price matches this stored model line.'
+                if status == 'qualified'
+                else 'The quoted line is stored for ticket coverage. It is not a qualified booking selection.'
+            )
+            connection.execute(
+                """INSERT INTO sports_ai_value_opportunities
+                   (id,prediction_id,odds_id,implied_probability,expected_edge,status,reason,evaluated_at,data_completeness)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (str(uuid.uuid4()), prediction_id, quote['id'], 1 / odds, edge, status, reason,
+                 current.isoformat(), snapshot['completeness']),
+            )
+            summary['opportunities'] += 1
+            if fixture['id'] not in summary['fixture_ids']:
+                summary['fixture_ids'].append(fixture['id'])
+    connection.execute(
+        """UPDATE sports_ai_analysis_runs
+           SET selection_count=?, ticket_count=0, status='complete', details_json=? WHERE id=?""",
+        (summary['predictions'], json.dumps({key: value for key, value in summary.items() if key != 'fixture_ids'}), run_id),
+    )
+    return summary
+
+
 def reprice_active_batch(connection, actor, audit, limit=20, now=None):
     """Re-infer headline markets with the active model and qualify only a fresh displayed SportyBet price."""
     current = now or datetime.now(timezone.utc)

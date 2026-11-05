@@ -1,6 +1,6 @@
 import React from 'react';
 import {useNavigate} from 'react-router-dom';
-import {BarChart3,ChevronDown,Clock3,Copy,Dribbble,Eye,Goal,Hash,Layers3,Link2,Play,RefreshCw,Target,TriangleAlert,Trophy} from 'lucide-react';
+import {BadgeCheck,BarChart3,ChevronDown,Clock3,Copy,Dribbble,Eye,Goal,Hash,Layers3,Link2,Play,RefreshCw,Target,TriangleAlert,Trophy,X} from 'lucide-react';
 import {get} from './api';
 import './command.css';
 
@@ -198,15 +198,32 @@ function lagosClock() {
   const text = new Date().toLocaleString('en-GB', {weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Africa/Lagos'});
   return `${text.replace(',', '')} WAT (Africa/Lagos)`;
 }
+function wat(value) {
+  if (!value) return '—';
+  const parsed = new Date(String(value).includes('T') ? value : String(value).replace(' ', 'T') + 'Z');
+  if (Number.isNaN(parsed.getTime())) return '—';
+  return new Intl.DateTimeFormat('en-GB', {
+    day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Africa/Lagos',
+  }).format(parsed);
+}
 function ProbBar({value}) {
   const width = value == null ? 0 : Math.max(0, Math.min(100, Number(value)));
   const tone = value == null ? 'empty' : width >= 65 ? 'high' : width >= 30 ? 'mid' : 'low';
   return <span className={`ccx-prob ${tone}`}><i style={{width: `${width}%`}}/><b>{value == null ? '—' : `${Number(value).toFixed(1)}%`}</b></span>;
 }
+function stillToPlay(row) {
+  const legs = row.legs || [];
+  const pending = legs.length ? legs : [{starts_at: row.starts_at, result: 'pending'}];
+  return pending.every(leg => {
+    const kickoff = Date.parse(leg.starts_at);
+    const open = !leg.result || leg.result === 'pending';
+    return open && Number.isFinite(kickoff) && kickoff > Date.now();
+  });
+}
 function pillClass(status) {
-  if (status === 'Qualified' || status === 'Active' || status === 'Ready') return 'qualified';
-  if (status === 'Risk Review') return 'risk';
-  if (status === 'Monitoring' || status === 'Research') return 'monitoring';
+  if (['Qualified', 'Active', 'Ready', 'Open', 'Won'].includes(status)) return 'qualified';
+  if (status === 'Risk Review' || status === 'Lost') return 'risk';
+  if (['Monitoring', 'Research', 'In progress', 'Expired'].includes(status)) return 'monitoring';
   return 'unsupported';
 }
 
@@ -217,6 +234,7 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
   const [sport, setSport] = React.useState('All');
   const [codeTab, setCodeTab] = React.useState('codes');
   const [copied, setCopied] = React.useState('');
+  const [openTicket, setOpenTicket] = React.useState(null);
   const [now, setNow] = React.useState(lagosClock);
   React.useEffect(() => {
     const timer = setInterval(() => setNow(lagosClock()), 30000);
@@ -241,8 +259,10 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
   const rows = (view.opportunities || []).filter(row => sport === 'All' || row.sport_label === sport);
   const pipelineMax = Math.max(1, ...(view.pipeline || []).map(item => Number(item.count) || 0));
   const performance = view.performance || {};
-  const featured = (view.codes || [])[0];
   const windowLabel = view.publication_open ? 'Open now' : clock(view.next_window);
+  const counts = view.booking_counts || {};
+  const centreRows = (codeTab === 'slips' ? (view.slips || []) : codeTab === 'history' ? (view.history || []) : (view.codes || []))
+    .filter(row => codeTab === 'history' || stillToPlay(row));
   return <div className="ccx">
     <header className="ccx-top">
       <div>
@@ -274,13 +294,32 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
       </section>
       <section className="ccx-card ccx-codes">
         <header><strong><Hash size={16}/>Booking Code Centre</strong><button className="ccx-link" onClick={() => nav('codes')}>View Centre</button></header>
-        <div className="ccx-tabs"><button className={codeTab === 'codes' ? 'on' : ''} onClick={() => setCodeTab('codes')}>Active Codes ({fmt((view.codes || []).length)})</button><button className={codeTab === 'slips' ? 'on' : ''} onClick={() => setCodeTab('slips')}>Bet Slips Ready ({fmt((view.slips || []).length)})</button><button className={codeTab === 'history' ? 'on' : ''} onClick={() => setCodeTab('history')}>History</button></div>
-        {codeTab === 'codes' && (featured ? <article className="ccx-code">
-          <div><span>Verified Code</span><strong>{featured.code}</strong><small>{featured.selection_count == null ? 'Selections not stored' : `${featured.selection_count} selections`}{featured.combined_odds == null ? '' : ` · Combined odds ${Number(featured.combined_odds).toFixed(2)}`}</small><small>Created {when(featured.created_at)} · {featured.bookmaker}{featured.historical ? ' · Not on a current qualified ticket' : ''}</small></div>
-          <div className="ccx-code-actions"><span className="ccx-pill qualified">Verified</span><button onClick={() => copy(featured.code)}><Copy size={13}/>{copied === featured.code ? 'Copied' : 'Copy'}</button><button onClick={() => nav('codes')}><Eye size={13}/>View</button></div>
-        </article> : <p className="ccx-empty">No verified booking codes available.</p>)}
-        {codeTab === 'slips' && <div className="ccx-slips">{(view.slips || []).map((slip, index) => <div key={slip.id}><b>Slip #{index + 1}</b><span>{slip.matchup || 'Selections stored'}</span><small>{slip.selections} selections{slip.probability == null ? '' : ` · Prob. ${Number(slip.probability).toFixed(0)}%`}{slip.odds == null ? '' : ` · Odds ${Number(slip.odds).toFixed(2)}`}</small><em>Ready</em></div>)}{!(view.slips || []).length && <p className="ccx-empty">No ticket is ready for the next window.</p>}</div>}
-        {codeTab === 'history' && <div className="ccx-slips">{(view.codes || []).slice(1).map(code => <div key={code.code}><b>{code.code}</b><small>{when(code.created_at)} · {code.bookmaker}</small></div>)}{(view.codes || []).length < 2 && <p className="ccx-empty">No earlier displayed code is stored.</p>}</div>}
+        <div className="ccx-tabs">
+          <button className={codeTab === 'codes' ? 'on' : ''} onClick={() => setCodeTab('codes')}>Active Codes ({fmt(counts.active ?? (view.codes || []).length)})</button>
+          <button className={codeTab === 'slips' ? 'on' : ''} onClick={() => setCodeTab('slips')}>Bet Slips Ready ({fmt(counts.slips ?? (view.slips || []).length)})</button>
+          <button className={codeTab === 'history' ? 'on' : ''} onClick={() => setCodeTab('history')}>History ({fmt(counts.history ?? (view.history || []).length)})</button>
+        </div>
+        <div className="ccx-table-scroll ccx-book-scroll">
+          <table className="ccx-table ccx-book">
+            <thead><tr><th>Ticket No</th><th>Booking Code</th><th>Odds</th><th>Start Date/Time</th><th>AI Probability / Confidence</th></tr></thead>
+            <tbody>
+              {centreRows.map(row => <tr key={`${row.id}-${row.code || 'slip'}`} onClick={() => setOpenTicket(row)}>
+                <td><b className="ccx-ticket-no">{row.ticket_no || '—'}</b><span className={`ccx-pill ${pillClass(row.settlement)}`}>{row.settlement || '—'}</span></td>
+                <td>
+                  <div className="ccx-code-cell">
+                    <strong>{row.code || '—'}</strong>
+                    {row.code && <button type="button" onClick={event => { event.stopPropagation(); copy(row.code); }} aria-label={`Copy ${row.code}`}><Copy size={12}/>{copied === row.code ? 'Copied' : 'Copy'}</button>}
+                  </div>
+                  <span className={`ccx-verify ${row.verified ? 'on' : ''}`}>{row.verified && <BadgeCheck size={12}/>}{row.verification || 'Unverified'}</span>
+                </td>
+                <td className="ccx-odds">{row.odds == null ? '—' : Number(row.odds).toFixed(2)}</td>
+                <td>{wat(row.starts_at)}{row.starts_at ? <small className="ccx-wat">WAT</small> : null}</td>
+                <td><ProbBar value={row.probability}/><small className="ccx-confidence">{row.confidence == null ? 'Confidence not stored' : `Confidence ${Number(row.confidence).toFixed(1)}%`}</small></td>
+              </tr>)}
+              {!centreRows.length && <tr><td className="ccx-empty" colSpan="5">{codeTab === 'slips' ? 'No ticket is ready for the next window.' : codeTab === 'history' ? 'No earlier booking code is stored.' : 'No verified booking code is stored.'}</td></tr>}
+            </tbody>
+          </table>
+        </div>
       </section>
     </div>
     <div className="ccx-secondary">
@@ -322,6 +361,12 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
       </section>
     </div>
     <footer className="ccx-engine"><span className={view.engine_online ? 'on' : 'off'}/>{view.engine_online ? 'Engine Online' : 'Engine idle'}<small>Last sync {when(view.updated_at)}</small><small>Next window {windowLabel} WAT</small></footer>
+    {openTicket && <div className="ccx-modal-back" onClick={() => setOpenTicket(null)}><section className="ccx-modal" onClick={event => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Ticket detail">
+      <header><div><span>Ticket {openTicket.ticket_no || '—'}</span><h2>{openTicket.code || 'No booking code'}</h2></div><button type="button" onClick={() => setOpenTicket(null)} aria-label="Close"><X size={16}/></button></header>
+      <p>{openTicket.selection_count == null ? 'Selections not stored' : `${openTicket.selection_count} selection${openTicket.selection_count === 1 ? '' : 's'}`} · {openTicket.bookmaker} · {openTicket.verification} · {openTicket.settlement}</p>
+      <p>{openTicket.probability == null ? 'Joint win probability was not calculated. The stored model does not treat these selections as independent.' : `Calibrated win probability ${Number(openTicket.probability).toFixed(1)}%.`} {openTicket.confidence == null ? 'Model confidence is not stored on every selection.' : `Model confidence ${Number(openTicket.confidence).toFixed(1)}%, from the weakest stored calibration figure.`}</p>
+      <div className="ccx-modal-legs">{(openTicket.legs || []).map((leg, index) => <p key={`${leg.home}-${leg.market}-${index}`}><b>{index + 1}. {leg.home} vs {leg.away}</b><span>{leg.market} · {leg.odds == null ? '—' : Number(leg.odds).toFixed(2)} · {leg.probability == null ? 'Selection probability not stored' : `${Number(leg.probability).toFixed(1)}%`} · {leg.result || 'pending'} · {wat(leg.starts_at)} WAT</span></p>)}{!(openTicket.legs || []).length && <p>No selections are stored on this ticket.</p>}</div>
+    </section></div>}
   </div>;
 }
 

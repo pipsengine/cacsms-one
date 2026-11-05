@@ -195,9 +195,9 @@ def _due():
         return True
     if age < timedelta(minutes=3):
         return False
-    from booking_schedule import phase_at, publication_open
-    if not publication_open(phase_at(now)):
-        return False
+    # A closed booking window does not stop price collection. Tickets need a
+    # displayed price from the last 15 minutes. A booking code is still requested
+    # only while the publication window is open.
     with connect() as connection:
         latest = connection.execute(
             "SELECT MAX(observed_at) FROM sports_ai_odds_snapshots WHERE bookmaker=?",

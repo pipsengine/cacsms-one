@@ -18,6 +18,7 @@ from accumulator_engine import (
     generate_accumulators,
     monitor_accumulators,
     _live_ticket,
+    _optimize_days,
     _span_ticket,
     optimize_candidates,
     payout_multiple,
@@ -80,7 +81,7 @@ class AccumulatorMathTests(unittest.TestCase):
         self.now = datetime(2026, 11, 3, 12, tzinfo=timezone.utc)
 
     def test_eight_targets_and_product_math(self):
-        self.assertEqual(TARGETS, (2, 5, 10, 20, 25, 50, 100, 500, 800, 1000, 5000, 10000, 20000, 25000, 50000))
+        self.assertEqual(TARGETS, (1.5, 2, 3, 5, 8, 10, 15, 25, 50, 100, 400, 500, 800, 1000, 5000, 10000, 20000, 25000, 50000))
         self.assertEqual(default_config()['targets'], list(TARGETS))
         self.assertEqual(default_config()['tolerance'], 0.15)
         accepted, _decisions = qualify_candidates([
@@ -246,6 +247,80 @@ class AccumulatorMathTests(unittest.TestCase):
         )
         self.assertGreaterEqual(len(result['tiers'][0]['tickets'][0]['legs']), 2)
         self.assertLessEqual(len(result['tiers'][0]['tickets'][0]['legs']), 25)
+
+    def test_higher_targets_add_sports_and_leagues_instead_of_stopping_at_two(self):
+        rows = []
+        for index, sport in enumerate(('football', 'basketball', 'ice_hockey')):
+            for league in range(4):
+                number = index * 4 + league
+                market = 'MONEYLINE_HOME' if sport == 'basketball' else 'HOME'
+                rows.append(_row(
+                    opportunity_id=f'{sport}-{league}', fixture_id=f'{sport}-{league}',
+                    sport=sport, competition=f'{sport} league {league}',
+                    home=f'Home {number}', away=f'Away {number}',
+                    market=market, outcome=market, decimal_odds=1.35,
+                    probability=0.7, expected_edge=0.08, settlement_json=_binary(0.7),
+                ))
+        accepted, _decisions = qualify_candidates(rows, _config(max_legs=25, max_per_competition=4, min_legs=1), self.now)
+        self.assertEqual(len(accepted), 12)
+        result = optimize_candidates(
+            accepted, _config(targets=[1.5, 8], max_legs=25, max_per_competition=4, min_legs=1, tolerance=0.15), self.now,
+        )
+        short = result['tiers'][0]['tickets'][0]
+        long = result['tiers'][1]['tickets'][0]
+        self.assertLessEqual(len(short['legs']), 2)
+        self.assertGreaterEqual(len(long['legs']), 6)
+        self.assertGreater(len({leg['competition'] for leg in long['legs']}), 2)
+        self.assertGreater(len({leg['sport'] for leg in long['legs']}), 1)
+        self.assertGreater(long['combined_odds'], short['combined_odds'])
+
+    def test_a_ticket_stays_inside_one_monday_to_sunday_week(self):
+        wednesday = _row(starts_at='2026-11-04T15:00:00+00:00')
+        sunday = _row(
+            opportunity_id='sun', fixture_id='sun', home='Home S', away='Away S',
+            starts_at='2026-11-08T18:00:00+00:00', decimal_odds=1.4,
+        )
+        next_monday = _row(
+            opportunity_id='next', fixture_id='next', home='Home N', away='Away N',
+            starts_at='2026-11-09T15:00:00+00:00', decimal_odds=1.4,
+        )
+        same, _decisions = qualify_candidates([wednesday, sunday], _config(), self.now)
+        self.assertEqual(len(same), 2)
+        passed = combine_ticket(same, _config())['issues']
+        self.assertTrue(any(check == 'kickoff_week' and result == 'pass' for check, result, _detail in passed))
+        split, _decisions = qualify_candidates([sunday, next_monday], _config(), self.now)
+        failed = combine_ticket(split, _config())['issues']
+        self.assertTrue(any(check == 'kickoff_week' and result == 'fail' for check, result, _detail in failed))
+
+    def test_each_day_gets_tickets_and_weekends_fill_the_2_to_5_range(self):
+        rows = []
+        for day, stamp, count in (
+            ('wed', '2026-11-04T15:00:00+00:00', 4),
+            ('sat', '2026-11-07T15:00:00+00:00', 8),
+            ('sun', '2026-11-08T15:00:00+00:00', 8),
+        ):
+            for index in range(count):
+                rows.append(_row(
+                    opportunity_id=f'{day}-{index}', fixture_id=f'{day}-{index}',
+                    home=f'{day} home {index}', away=f'{day} away {index}',
+                    competition=f'{day} league {index % 3}', starts_at=stamp,
+                    decimal_odds=1.45, probability=0.62, expected_edge=0.08, settlement_json=_binary(0.62),
+                ))
+        config = _config(max_per_competition=8, min_legs=1, max_legs=8)
+        accepted, _decisions = qualify_candidates(rows, config, self.now)
+        result = _optimize_days(accepted, config, self.now)
+        tickets = [ticket for tier in result['tiers'] for ticket in tier['tickets']]
+        saturday = [ticket for ticket in tickets if ticket['tier_label'].startswith('Saturday')]
+        sunday = [ticket for ticket in tickets if ticket['tier_label'].startswith('Sunday')]
+        wednesday = [ticket for ticket in tickets if ticket['tier_label'].startswith('Wednesday')]
+        self.assertGreaterEqual(len(saturday), 2)
+        self.assertGreaterEqual(len(sunday), 2)
+        self.assertGreaterEqual(len(wednesday), 1)
+        self.assertLessEqual(len(wednesday), 6)
+        for ticket in saturday + sunday + wednesday:
+            self.assertGreaterEqual(ticket['combined_odds'], 2)
+            self.assertLessEqual(ticket['combined_odds'], 5)
+            self.assertEqual(len({leg['starts_at'][:10] for leg in ticket['legs']}), 1)
 
     def test_a_product_that_jumps_over_the_band_still_reaches_the_target(self):
         left = _row(decimal_odds=8, probability=0.2, expected_edge=0.6, settlement_json=_binary(0.2))

@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from accumulator_engine import (
     RANGE_TIERS,
     TARGETS,
+    canonical_target,
     accept_ticket,
     command_centre,
     export_ticket,
@@ -38,7 +39,7 @@ from sportybet_adapter import (
 
 
 class ConfigIn(BaseModel):
-    targets: list[int] = Field(default_factory=lambda: list(TARGETS))
+    targets: list[float] = Field(default_factory=lambda: list(TARGETS))
     tolerance: float = 0.15
     min_legs: int = Field(default=2, ge=2, le=12)
     max_legs: int = Field(default=8, ge=2, le=12)
@@ -69,7 +70,7 @@ class TierPolicyIn(BaseModel):
 
 class GenerateIn(BaseModel):
     sport_mode: str = 'mixed'
-    tiers: list[int] | None = None
+    tiers: list[float] | None = None
     range_ids: list[str] | None = None
     min_edge: float | None = None
     min_legs: int | None = Field(default=None, ge=1, le=12)
@@ -163,13 +164,14 @@ def build_accumulator_router(auth, require_admin):
         known_ranges = {item['id'] for item in RANGE_TIERS}
         if payload.tiers and payload.range_ids:
             raise HTTPException(422, 'Send either legacy point targets or odds ranges')
-        if payload.tiers and any(item not in TARGETS for item in payload.tiers):
-            raise HTTPException(422, 'Each tier must be one of the eight target odds')
+        chosen_targets = [canonical_target(item) for item in payload.tiers or []]
+        if payload.tiers and any(item not in TARGETS for item in chosen_targets):
+            raise HTTPException(422, 'Each tier must be one of the configured target odds')
         if payload.range_ids and any(item not in known_ranges for item in payload.range_ids):
             raise HTTPException(422, 'Each range must be one of the ten configured odds tiers')
         overrides = {}
         if payload.tiers:
-            overrides['targets'] = payload.tiers
+            overrides['targets'] = chosen_targets
         elif payload.range_ids is not None:
             overrides['range_ids'] = payload.range_ids
         if payload.min_edge is not None:

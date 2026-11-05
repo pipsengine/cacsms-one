@@ -1,5 +1,6 @@
 """Command-centre view model. Every figure is read from stored rows."""
 
+import math
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -58,12 +59,10 @@ def command_view(connection, now=None):
         (week_start.astimezone(timezone.utc).isoformat(), week_end.astimezone(timezone.utc).isoformat()),
     ).fetchone()[0]
     sports = _sports(connection, current)
-    codes = _codes(connection)
-    slips = _slips(connection)
-    slip_count = connection.execute(
-        """SELECT COUNT(*) FROM sports_ai_accumulator_tickets
-           WHERE status='qualified' AND publication_state='READY_FOR_WINDOW'""",
-    ).fetchone()[0]
+    centre = _booking_centre(connection, current)
+    codes = centre['active']
+    slips = centre['slips']
+    slip_count = centre['counts']['slips']
     heartbeat = connection.execute(
         "SELECT heartbeat_at FROM sports_ai_worker_leases WHERE id='scheduler-leader'",
     ).fetchone()
@@ -122,8 +121,8 @@ def command_view(connection, now=None):
             'qualified': stages.get('QUALIFIED', 0),
             'qualified_new': qualified_new,
             'slips': slip_count,
-            'codes': stages.get('CODE_VERIFIED', 0),
-            'codes_on_qualified_ticket': stages.get('DISPLAYED', 0),
+            'codes': centre['counts']['active'],
+            'codes_on_qualified_ticket': centre['counts']['active_qualified'],
             'settled': won + lost,
             'draws': draw_count,
             'active_sports': len(active_names),
@@ -134,6 +133,8 @@ def command_view(connection, now=None):
         'sports': sports,
         'codes': codes,
         'slips': slips,
+        'history': centre['history'],
+        'booking_counts': centre['counts'],
         'pipeline': [
             {'name': 'Fixtures discovered', 'count': stages.get('DISCOVERED', 0)},
             {'name': 'Predictions generated', 'count': stages.get('PREDICTED', 0)},
@@ -254,47 +255,256 @@ def _sports(connection, now):
     return [item for item in rows if item['fixtures'] or item['status'] == 'Active'][:8]
 
 
-def _codes(connection):
+def ticket_probability(basis, joint):
+    """Win probability only when the stored joint model treated the legs as independent.
+
+    A correlated or partial-settlement ticket keeps a null probability. Nothing is multiplied here.
+    """
+    if basis != 'independent' or joint is None:
+        return None
+    try:
+        value = float(joint)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or value < 0 or value > 1:
+        return None
+    return round(value * 100, 1)
+
+
+def ticket_confidence(reliabilities, leg_count):
+    """Lowest stored model-reliability on the ticket.
+
+    Reliability is the calibration figure already saved on each leg. It is not a win probability.
+    A missing leg leaves the ticket without a confidence figure.
+    """
+    if not leg_count or reliabilities is None or len(reliabilities) != int(leg_count):
+        return None
+    values = []
+    for item in reliabilities:
+        if item is None:
+            return None
+        try:
+            value = float(item)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(value) or value < 0 or value > 1:
+            return None
+        values.append(value)
+    return round(min(values) * 100, 1)
+
+
+def _verification_label(row, now, coded, verified):
+    if verified:
+        return 'Verified'
+    if not coded or not str(row['code'] or '').strip():
+        return 'Awaiting code'
+    expired = row['code_status'] == 'expired' or (row['expires_at'] and str(row['expires_at']) <= now.isoformat())
+    if expired:
+        return 'Expired'
+    return 'Unverified'
+
+
+def _displayed_code(row, now):
+    """A code is verified only when SportyBet displayed it and the evidence is still in date."""
+    code = str(row['code'] or '').strip()
+    evidence = str(row['evidence'] or '').strip()
+    method = str(row['verification_method'] or '').strip()
+    if not code or not evidence or not row['verified_at'] or row['code_status'] != 'verified':
+        return False
+    if method not in ('displayed', 'sportybet_page', 'page'):
+        return False
+    expires = row['expires_at']
+    if not expires:
+        return True
+    return str(expires) > now.isoformat()
+
+
+def _settlement(status, won, lost, pending, total):
+    won, lost, pending, total = (int(won or 0), int(lost or 0), int(pending or 0), int(total or 0))
+    if status == 'settled':
+        if total and lost == 0 and won == total:
+            return 'Won'
+        if lost:
+            return 'Lost'
+        return 'Settled'
+    if status == 'void':
+        return 'Void'
+    if status == 'expired':
+        return 'Expired'
+    if pending and (won or lost):
+        return 'In progress'
+    if status == 'qualified':
+        return 'Open'
+    return str(status or 'Stored').replace('_', ' ').title()
+
+
+# A ticket stays on the live tabs only while every selection is still pending and has not kicked off.
+# One started or settled match removes the whole ticket. History keeps the booking code.
+_UPCOMING_TICKET = """
+    t.id IS NOT NULL
+    AND EXISTS (SELECT 1 FROM sports_ai_accumulator_legs l WHERE l.ticket_id=t.id)
+    AND NOT EXISTS (
+        SELECT 1 FROM sports_ai_accumulator_legs l
+        WHERE l.ticket_id=t.id AND (
+            l.starts_at IS NULL OR l.starts_at<=?
+            OR COALESCE(l.result, 'pending') NOT IN ('pending', '')
+        )
+    )
+"""
+_PLAYED_TICKET = """
+    (
+        t.id IS NULL
+        OR NOT EXISTS (SELECT 1 FROM sports_ai_accumulator_legs l WHERE l.ticket_id=t.id)
+        OR EXISTS (
+            SELECT 1 FROM sports_ai_accumulator_legs l
+            WHERE l.ticket_id=t.id AND (
+                l.starts_at IS NULL OR l.starts_at<=?
+                OR COALESCE(l.result, 'pending') NOT IN ('pending', '')
+            )
+        )
+    )
+"""
+
+
+def _booking_centre(connection, now):
+    moment = now.isoformat()
+    active_filter = f"""
+        b.status='verified' AND b.verification_method IN ('displayed','sportybet_page','page')
+        AND b.verified_at IS NOT NULL AND TRIM(COALESCE(b.evidence,''))<>''
+        AND TRIM(COALESCE(b.code,''))<>''
+        AND (b.expires_at IS NULL OR b.expires_at>?)
+        AND COALESCE(t.status,'') NOT IN ('settled','void','expired')
+        AND {_UPCOMING_TICKET}
+    """
+    history_filter = f"""
+        TRIM(COALESCE(b.code,''))<>''
+        AND (
+            b.status='expired' OR (b.expires_at IS NOT NULL AND b.expires_at<=?)
+            OR t.status IN ('settled','void','expired')
+            OR {_PLAYED_TICKET}
+        )
+    """
+    slip_filter = f"""
+        t.status='qualified' AND t.publication_state='READY_FOR_WINDOW'
+        AND {_UPCOMING_TICKET}
+        AND NOT EXISTS (
+            SELECT 1 FROM sports_ai_booking_codes b
+            WHERE b.accumulator_ticket_id=t.id AND b.status='verified'
+              AND b.verification_method IN ('displayed','sportybet_page','page')
+              AND b.verified_at IS NOT NULL AND TRIM(COALESCE(b.evidence,''))<>''
+              AND TRIM(COALESCE(b.code,''))<>''
+              AND (b.expires_at IS NULL OR b.expires_at>?)
+        )
+    """
+    code_args = (moment, moment)
+    slip_args = (moment, moment)
+    counts = {
+        'active': connection.execute(f'SELECT COUNT(*) FROM sports_ai_booking_codes b LEFT JOIN sports_ai_accumulator_tickets t ON t.id=b.accumulator_ticket_id WHERE {active_filter}', code_args).fetchone()[0],
+        'active_qualified': connection.execute(f"SELECT COUNT(*) FROM sports_ai_booking_codes b LEFT JOIN sports_ai_accumulator_tickets t ON t.id=b.accumulator_ticket_id WHERE {active_filter} AND t.status='qualified'", code_args).fetchone()[0],
+        'slips': connection.execute(f'SELECT COUNT(*) FROM sports_ai_accumulator_tickets t WHERE {slip_filter}', slip_args).fetchone()[0],
+        'history': connection.execute(f'SELECT COUNT(*) FROM sports_ai_booking_codes b LEFT JOIN sports_ai_accumulator_tickets t ON t.id=b.accumulator_ticket_id WHERE {history_filter}', code_args).fetchone()[0],
+    }
+    active = _code_rows(connection, now, active_filter, code_args, 'starts_at ASC')
+    history = _code_rows(connection, now, history_filter, code_args, 'COALESCE(b.verified_at, b.created_at) DESC')
+    slips = _slip_rows(connection, now, slip_filter, slip_args)
+    return {'active': active, 'history': history, 'slips': slips, 'counts': counts}
+
+
+_CODE_SELECT = """
+    SELECT t.id AS ticket_id, t.status AS ticket_status, t.leg_count, t.combined_odds,
+           t.joint_probability, t.probability_basis,
+           b.code, b.status AS code_status, b.verification_method, b.evidence, b.expires_at,
+           b.verified_at, b.created_at AS code_created_at, b.bookmaker,
+           (SELECT MIN(starts_at) FROM sports_ai_accumulator_legs WHERE ticket_id=t.id) AS starts_at,
+           (SELECT COUNT(*) FROM sports_ai_accumulator_legs WHERE ticket_id=t.id AND reliability IS NOT NULL) AS reliability_count,
+           (SELECT MIN(reliability) FROM sports_ai_accumulator_legs WHERE ticket_id=t.id) AS reliability_min,
+           (SELECT SUM(CASE WHEN result='won' THEN 1 ELSE 0 END) FROM sports_ai_accumulator_legs WHERE ticket_id=t.id) AS won,
+           (SELECT SUM(CASE WHEN result='lost' THEN 1 ELSE 0 END) FROM sports_ai_accumulator_legs WHERE ticket_id=t.id) AS lost,
+           (SELECT SUM(CASE WHEN result='pending' THEN 1 ELSE 0 END) FROM sports_ai_accumulator_legs WHERE ticket_id=t.id) AS pending
+    FROM sports_ai_booking_codes b
+    LEFT JOIN sports_ai_accumulator_tickets t ON t.id=b.accumulator_ticket_id
+"""
+
+
+def _code_rows(connection, now, where, args, order):
     rows = connection.execute(
-        """SELECT b.code, b.verified_at, b.created_at, t.leg_count, t.combined_odds, t.status AS ticket_status
-           FROM sports_ai_booking_codes b
-           LEFT JOIN sports_ai_accumulator_tickets t ON t.id=b.accumulator_ticket_id
-           WHERE b.status='verified' AND b.verification_method='displayed' AND TRIM(COALESCE(b.code,''))<>''
-           ORDER BY COALESCE(b.verified_at, b.created_at) DESC
-           LIMIT 5""",
+        f'{_CODE_SELECT} WHERE {where} ORDER BY {order} LIMIT 12',
+        args,
     ).fetchall()
-    return [
-        {
-            'code': row['code'],
-            'verified': True,
-            'historical': row['ticket_status'] != 'qualified',
-            'selection_count': row['leg_count'],
-            'combined_odds': None if row['combined_odds'] is None else round(float(row['combined_odds']), 2),
-            'created_at': row['verified_at'] or row['created_at'],
-            'bookmaker': 'SportyBet',
-        }
-        for row in rows
-    ]
+    return _attach_legs(connection, [_public_ticket(row, now, coded=True) for row in rows])
 
 
-def _slips(connection):
+def _slip_rows(connection, now, where, args):
     rows = connection.execute(
-        """SELECT t.id, t.leg_count, t.combined_odds, t.joint_probability,
-                  (SELECT group_concat(l.home || ' vs ' || l.away, ' · ')
-                   FROM sports_ai_accumulator_legs l WHERE l.ticket_id=t.id) AS matchup
+        f"""SELECT t.id AS ticket_id, t.status AS ticket_status, t.leg_count, t.combined_odds,
+                  t.joint_probability, t.probability_basis, t.created_at AS code_created_at,
+                  NULL AS code, NULL AS code_status, NULL AS verification_method, NULL AS evidence, NULL AS expires_at,
+                  NULL AS verified_at, 'SportyBet' AS bookmaker,
+                  (SELECT MIN(starts_at) FROM sports_ai_accumulator_legs WHERE ticket_id=t.id) AS starts_at,
+                  (SELECT COUNT(*) FROM sports_ai_accumulator_legs WHERE ticket_id=t.id AND reliability IS NOT NULL) AS reliability_count,
+                  (SELECT MIN(reliability) FROM sports_ai_accumulator_legs WHERE ticket_id=t.id) AS reliability_min,
+                  (SELECT SUM(CASE WHEN result='won' THEN 1 ELSE 0 END) FROM sports_ai_accumulator_legs WHERE ticket_id=t.id) AS won,
+                  (SELECT SUM(CASE WHEN result='lost' THEN 1 ELSE 0 END) FROM sports_ai_accumulator_legs WHERE ticket_id=t.id) AS lost,
+                  (SELECT SUM(CASE WHEN result='pending' THEN 1 ELSE 0 END) FROM sports_ai_accumulator_legs WHERE ticket_id=t.id) AS pending
            FROM sports_ai_accumulator_tickets t
-           WHERE t.status='qualified' AND t.publication_state='READY_FOR_WINDOW'
-           ORDER BY t.created_at DESC
-           LIMIT 6""",
+           WHERE {where}
+           ORDER BY starts_at ASC
+           LIMIT 12""",
+        args,
     ).fetchall()
-    return [
-        {
-            'id': row['id'],
-            'matchup': row['matchup'],
-            'selections': row['leg_count'],
-            'probability': None if row['joint_probability'] is None else round(float(row['joint_probability']) * 100, 1),
-            'odds': None if row['combined_odds'] is None else round(float(row['combined_odds']), 2),
-            'status': 'Ready',
-        }
-        for row in rows
-    ]
+    return _attach_legs(connection, [_public_ticket(row, now, coded=False) for row in rows])
+
+
+def _public_ticket(row, now, coded):
+    verified = coded and _displayed_code(row, now)
+    leg_count = int(row['leg_count'] or 0)
+    reliabilities = None
+    if row['ticket_id'] and leg_count and int(row['reliability_count'] or 0) == leg_count and row['reliability_min'] is not None:
+        reliabilities = [row['reliability_min']] * leg_count
+    ticket_id = row['ticket_id']
+    return {
+        'id': ticket_id or row['code'],
+        'ticket_id': ticket_id,
+        'ticket_no': None if not ticket_id else str(ticket_id).replace('-', '')[:8].upper(),
+        'code': str(row['code']).strip() if row['code'] else None,
+        'verified': verified,
+        'verification': _verification_label(row, now, coded, verified),
+        'settlement': _settlement(row['ticket_status'], row['won'], row['lost'], row['pending'], leg_count),
+        'selection_count': leg_count or None,
+        'odds': None if row['combined_odds'] is None else round(float(row['combined_odds']), 2),
+        'combined_odds': None if row['combined_odds'] is None else round(float(row['combined_odds']), 2),
+        'starts_at': row['starts_at'],
+        'probability': ticket_probability(row['probability_basis'], row['joint_probability']),
+        'confidence': None if reliabilities is None else ticket_confidence(reliabilities, leg_count),
+        'probability_basis': row['probability_basis'],
+        'bookmaker': row['bookmaker'] or 'SportyBet',
+        'created_at': row['verified_at'] or row['code_created_at'],
+        'historical': row['ticket_status'] not in (None, 'qualified'),
+        'status': 'Ready' if not coded else row['ticket_status'],
+    }
+
+
+def _attach_legs(connection, rows):
+    ids = [row['ticket_id'] for row in rows if row.get('ticket_id')]
+    grouped = {}
+    if ids:
+        marks = ','.join('?' for _ in ids)
+        for leg in connection.execute(
+            f"""SELECT ticket_id, home, away, competition, market, selection, decimal_odds, probability, starts_at, result
+                FROM sports_ai_accumulator_legs WHERE ticket_id IN ({marks}) ORDER BY starts_at""",
+            ids,
+        ):
+            grouped.setdefault(leg['ticket_id'], []).append({
+                'home': leg['home'],
+                'away': leg['away'],
+                'competition': leg['competition'],
+                'market': leg['market'],
+                'selection': leg['selection'],
+                'odds': None if leg['decimal_odds'] is None else round(float(leg['decimal_odds']), 2),
+                'probability': None if leg['probability'] is None else round(float(leg['probability']) * 100, 1),
+                'starts_at': leg['starts_at'],
+                'result': leg['result'],
+            })
+    for row in rows:
+        row['legs'] = grouped.get(row['ticket_id'], [])
+    return rows

@@ -264,16 +264,24 @@ def _odds_refresh_tick():
 
 def _ticket_tick():
     try:
-        from accumulator_engine import build_high_probability_tickets
+        from accumulator_engine import build_bookable_cross_tickets, build_high_probability_tickets
         from pipeline_engine import build_autonomous_tickets
+        from prediction_engine import price_quoted_board
+        from datetime import datetime, timezone
+        current = datetime.now(timezone.utc)
         with connect() as connection:
-            result = build_autonomous_tickets(connection, 'sports-ai-worker', _audit)
-            coverage = build_high_probability_tickets(connection, 'sports-ai-worker', _audit)
+            priced = price_quoted_board(connection, now=current, limit=24)
+            result = build_autonomous_tickets(connection, 'sports-ai-worker', _audit, now=current)
+            cross = build_bookable_cross_tickets(connection, 'sports-ai-worker', _audit, now=current)
+            coverage = build_high_probability_tickets(connection, 'sports-ai-worker', _audit, now=current)
         print(
             'tickets', result.get('status'),
             'created', result.get('tickets_created', result.get('ticket_count', 0)),
+            'cross_market', cross.get('created', 0),
             'high_probability', coverage.get('created', 0),
             'leagues', coverage.get('leagues', 0),
+            'sports', coverage.get('sports', 0),
+            'quoted_board', priced.get('fixtures', 0),
             'places_wager', False,
         )
         _observed('tickets', result)

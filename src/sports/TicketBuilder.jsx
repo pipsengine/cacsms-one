@@ -75,7 +75,7 @@ function sportLabelFor(ticket) {
   return 'Mixed';
 }
 function statusFor(ticket, code) {
-  if (ticket.parameters?.coverage === 'high_probability') return 'High probability';
+  if (ticket.parameters?.coverage === 'high_probability' && ticket.status === 'unverified_probability') return 'High probability';
   if (code) {
     if (code.status === 'verified' && code.verification_method === 'displayed') return 'Verified';
     if (code.status === 'expired') return 'Expired';
@@ -356,7 +356,7 @@ export default function TicketBuilder() {
     </div>
     <div className="tb-filters">
       <label>Date Range<select value={range} onChange={(event) => setRange(event.target.value)}>{['Today', 'Last 7 days', 'Last 30 days', 'All time'].map((item) => <option key={item}>{item}</option>)}</select></label>
-      <label>Sport<select value={sport} onChange={(event) => setSport(event.target.value)}>{['All Sports', 'Football', 'Basketball', 'Mixed'].map((item) => <option key={item}>{item}</option>)}</select></label>
+      <label>Sport<select value={sport} onChange={(event) => setSport(event.target.value)}>{['All Sports', 'Football', 'Basketball', 'Ice hockey', 'Mixed'].map((item) => <option key={item}>{item}</option>)}</select></label>
       <label>Odds Tier<select value={tier} onChange={(event) => setTier(event.target.value)}><option>All Tiers</option>{BANDS.map(([name]) => <option key={name}>{name}</option>)}</select></label>
       <label>Status<select value={status} onChange={(event) => setStatus(event.target.value)}>{['All Status', 'Combined', 'High probability', 'Verified', 'Awaiting code', 'Unverified', 'Expired', 'Risk Review', 'Awaiting odds', 'Settled', 'Void'].map((item) => <option key={item}>{item}</option>)}</select></label>
       <label>Code<select value={automation} onChange={(event) => setAutomation(event.target.value)}>{['All', 'Has code', 'Awaiting code'].map((item) => <option key={item}>{item}</option>)}</select></label>
@@ -367,7 +367,7 @@ export default function TicketBuilder() {
         <div className="tb-table-wrap"><table><thead><tr><th>#</th><th>Ticket / Code</th><th>Sport</th><th>Selections</th><th>Combined Odds</th><th>AI Probability</th><th>Status</th><th>Registered</th><th>Action</th></tr></thead><tbody>
           {tableRows.map((row, index) => {
             const individualIndex = row.combined ? index : (currentPage - 1) * pageSize + (index - (currentPage === 1 ? visibleCombined.length : 0)) + 1;
-            return <tr key={row.id} className={`${selected?.id === row.id ? 'selected' : ''} ${row.combined ? 'combined' : ''}`.trim()}><td>{row.combined ? `C${row.combinedPart}` : individualIndex}</td><td><strong>{row.shownCode || 'No code'}</strong>{row.combined && <div className="tb-sub">From {row.memberCount} tickets at 75%+</div>}{memberIds.has(row.id) && <span className="tb-mark">Combined</span>}{row.shownCode && !row.combined && <button className="tb-icon" title="Copy code" onClick={() => copy(row.shownCode, row.shownCode)}><Copy size={13} /></button>}</td><td title={row.sportLabel}>{row.sportLabel === 'Basketball' ? '🏀' : row.sportLabel === 'Football' ? '⚽' : '🌐'}</td><td>{row.leg_count}</td><td><strong>{oddsText(row.combined_odds)}</strong></td><td><Prob value={row.probability} /></td><td><Badge status={row.label} /></td><td>{lagosStamp(row.code?.created_at || row.created_at)}</td><td><button className="tb-view" onClick={() => { setSelectedId(row.id); setTab('Ticket Details'); }}><Eye size={14} /> View</button></td></tr>;
+            return <tr key={row.id} className={`${selected?.id === row.id ? 'selected' : ''} ${row.combined ? 'combined' : ''}`.trim()}><td>{row.combined ? `C${row.combinedPart}` : individualIndex}</td><td><strong>{row.shownCode || 'No code'}</strong>{row.combined && <div className="tb-sub">From {row.memberCount} tickets at 75%+</div>}{memberIds.has(row.id) && <span className="tb-mark">Combined</span>}{row.shownCode && !row.combined && <button className="tb-icon" title="Copy code" onClick={() => copy(row.shownCode, row.shownCode)}><Copy size={13} /></button>}</td><td title={row.sportLabel}>{row.sportLabel === 'Basketball' ? '🏀' : row.sportLabel === 'Football' ? '⚽' : row.sportLabel === 'Ice hockey' ? '🏒' : '🌐'}</td><td>{row.leg_count}</td><td><strong>{oddsText(row.combined_odds)}</strong></td><td><Prob value={row.probability} /></td><td><Badge status={row.label} /></td><td>{lagosStamp(row.code?.created_at || row.created_at)}</td><td><button className="tb-view" onClick={() => { setSelectedId(row.id); setTab('Ticket Details'); }}><Eye size={14} /> View</button></td></tr>;
           })}
         </tbody></table>{!tableRows.length && <div className="tb-empty">{loading ? 'Loading stored tickets…' : 'No stored ticket matches these filters.'}</div>}
           {ranked.length > pageSize && <div className="tb-pager"><button type="button" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)}>Previous</button><span>{currentPage} / {pageCount}</span><button type="button" disabled={currentPage >= pageCount} onClick={() => setPage(currentPage + 1)}>Next</button></div>}
