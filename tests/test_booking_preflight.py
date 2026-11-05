@@ -41,6 +41,28 @@ class BookingPreflightTests(unittest.TestCase):
         self.assertEqual(status['publication_state'], 'READY_FOR_WINDOW')
         self.assertEqual(reason, 'WINDOW_CLOSED')
 
+    def test_a_review_ticket_returns_when_the_price_and_decision_are_current(self):
+        with db.connect() as connection:
+            self._ticket(connection, OUTSIDE - timedelta(minutes=2))
+            connection.execute("UPDATE sports_ai_accumulator_tickets SET status='review_required', publication_state=NULL")
+            result = examine_ready_tickets(connection, OUTSIDE)
+            status = connection.execute('SELECT status, publication_state FROM sports_ai_accumulator_tickets').fetchone()
+        self.assertEqual(result['restored'], 1)
+        self.assertEqual(result['demoted'], 0)
+        self.assertFalse(result['opens_browser'])
+        self.assertFalse(result['places_wager'])
+        self.assertEqual(status['status'], 'qualified')
+        self.assertEqual(status['publication_state'], 'READY_FOR_WINDOW')
+
+    def test_a_review_ticket_with_a_stale_price_stays_out(self):
+        with db.connect() as connection:
+            self._ticket(connection, OUTSIDE - timedelta(minutes=40))
+            connection.execute("UPDATE sports_ai_accumulator_tickets SET status='review_required', publication_state=NULL")
+            result = examine_ready_tickets(connection, OUTSIDE)
+            status = connection.execute('SELECT status FROM sports_ai_accumulator_tickets').fetchone()
+        self.assertEqual(result['restored'], 0)
+        self.assertEqual(status['status'], 'review_required')
+
     def test_a_stale_price_is_removed_before_the_window(self):
         with db.connect() as connection:
             self._ticket(connection, OUTSIDE - timedelta(minutes=40))

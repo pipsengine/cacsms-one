@@ -9,6 +9,8 @@ from datetime import datetime, timedelta, timezone
 STATES = ('QUALIFIED', 'MONITORING', 'REJECTED', 'AWAITING_DATA', 'EXPIRED', 'SUSPENDED')
 CALIBRATED = {
     'football': {'HOME', 'DRAW', 'AWAY'},
+    'frauenfussball': {'HOME', 'DRAW', 'AWAY'},
+    'ice_hockey': {'HOME', 'DRAW', 'AWAY'},
     'basketball': {'MONEYLINE_HOME', 'MONEYLINE_AWAY'},
 }
 OPEN_STATES = ('QUALIFIED', 'MONITORING', 'AWAITING_DATA')
@@ -442,7 +444,7 @@ def candidate_rows(connection, now, limit=400):
                WHERE s.code=f.sport AND s.prediction_status='modelled'
              )
              AND (
-               (f.sport='football' AND p.market IN ('HOME','DRAW','AWAY'))
+               (f.sport IN ('football','frauenfussball','ice_hockey') AND p.market IN ('HOME','DRAW','AWAY'))
                OR (f.sport='basketball' AND p.market IN ('MONEYLINE_HOME','MONEYLINE_AWAY'))
                OR EXISTS (
                  SELECT 1 FROM sports_ai_market_registry r
@@ -678,11 +680,18 @@ def ticket_is_bookable(connection, ticket_id, table='sports_ai_accumulator_legs'
     if table not in ('sports_ai_accumulator_legs', 'sports_ai_ticket_legs'):
         raise ValueError('Unknown ticket leg table')
     legs = connection.execute(
-        f'SELECT fixture_id, market FROM {table} WHERE ticket_id=?',
+        f'SELECT fixture_id, market, decimal_odds FROM {table} WHERE ticket_id=?',
         (ticket_id,),
     ).fetchall()
     if not legs:
         return False
+    for leg in legs:
+        try:
+            odds = float(leg['decimal_odds'])
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(odds) or odds < 1.3:
+            return False
     return all(selection_is_qualified(connection, leg['fixture_id'], leg['market']) for leg in legs)
 
 

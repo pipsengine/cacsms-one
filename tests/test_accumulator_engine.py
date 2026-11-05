@@ -18,6 +18,7 @@ from accumulator_engine import (
     generate_accumulators,
     monitor_accumulators,
     _live_ticket,
+    _span_ticket,
     optimize_candidates,
     payout_multiple,
     qualify_candidates,
@@ -108,6 +109,30 @@ class AccumulatorMathTests(unittest.TestCase):
         self.assertEqual({leg['opportunity_id'] for leg in ticket['legs']}, {'opp-1', 'high-2'})
         self.assertGreaterEqual(min(leg['probability'] for leg in ticket['legs']), 0.65)
 
+    def test_a_span_ticket_mixes_sports_up_to_the_requested_count(self):
+        rows = []
+        for index in range(6):
+            rows.append(_row(
+                opportunity_id=f'fb-{index}', fixture_id=f'fb-{index}',
+                home=f'Home {index}', away=f'Away {index}', competition='League A',
+            ))
+        for index in range(4):
+            rows.append(_row(
+                opportunity_id=f'bb-{index}', fixture_id=f'bb-{index}', sport='basketball',
+                home=f'Ball {index}', away=f'Guest {index}', competition='NBA',
+                market='MONEYLINE_HOME', outcome='MONEYLINE_HOME', decimal_odds=1.6,
+                probability=0.66, expected_edge=0.08, settlement_json=_binary(0.66),
+            ))
+        config = _config(max_per_competition=8, max_legs=20, min_legs=2)
+        accepted, _decisions = qualify_candidates(rows, config, self.now)
+        ticket = _span_ticket(accepted, config, 8)
+        self.assertIsNotNone(ticket)
+        self.assertEqual(len(ticket['legs']), 8)
+        self.assertEqual(ticket['status'], 'qualified')
+        self.assertEqual({leg['sport'] for leg in ticket['legs']}, {'football', 'basketball'})
+        blocked = _span_ticket(accepted, _config(max_per_competition=3), 8)
+        self.assertIsNone(blocked)
+
     def test_stale_started_and_unqualified_are_excluded(self):
         stale = _row(opportunity_id='stale', observed_at=(self.now - timedelta(hours=2)).isoformat())
         started = _row(opportunity_id='started', fixture_id='past', starts_at=(self.now - timedelta(hours=1)).isoformat())
@@ -193,12 +218,19 @@ class AccumulatorMathTests(unittest.TestCase):
         self.assertTrue(all(item['status'] == 'no_qualifying_ticket' and item['tickets'] == [] for item in result['tiers']))
         self.assertIn('minimum leg', result['tiers'][0]['reason'])
 
+    def test_a_price_below_1_30_is_not_placed_on_a_ticket(self):
+        accepted, decisions = qualify_candidates([
+            _row(decimal_odds=1.29, probability=0.80, expected_edge=0.03, settlement_json=_binary(0.80)),
+        ], _config(), self.now)
+        self.assertEqual(accepted, [])
+        self.assertIn('1.30', decisions[0]['reason'])
+
     def test_a_ticket_accepts_25_legs_and_keeps_an_unsettled_sport_out(self):
         self.assertEqual(default_config()['max_legs'], 25)
         rows = [
             _row(opportunity_id=f'opp-{index}', fixture_id=f'fixture-{index}',
                  home=f'Home {index}', away=f'Away {index}', competition=f'League {index}',
-                 decimal_odds=1.2, probability=0.9, expected_edge=0.08,
+                 decimal_odds=1.3, probability=0.9, expected_edge=0.17,
                  settlement_json=_binary(0.9))
             for index in range(25)
         ]

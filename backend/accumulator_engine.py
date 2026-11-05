@@ -10,7 +10,7 @@ import math
 import re
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from prediction_engine import _line_settlement
 
@@ -295,6 +295,8 @@ def _reject_reason(row, config, current, blocked, markets, competitions, bookmak
         return 'Stored decimal odds are missing'
     if not math.isfinite(odds) or odds <= 1:
         return 'Stored decimal odds are not a genuine price above 1'
+    if odds < 1.3:
+        return 'Stored decimal odds are below the 1.30 minimum for a ticket'
     observed = _parse_time(row.get('observed_at') or row.get('odds_observed_at'))
     if not observed:
         return 'Odds collection timestamp is missing'
@@ -508,6 +510,31 @@ def _sport_mode(legs):
     return 'mixed'
 
 
+def pack_league_tickets(legs, size=2):
+    """Pair the strongest selection from each league with the next league."""
+    by_league = {}
+    for leg in sorted(legs, key=lambda item: (-float(item['probability']), item['fixture_id'])):
+        by_league.setdefault(leg['competition'], []).append(leg)
+    order = sorted(by_league, key=lambda name: (-float(by_league[name][0]['probability']), name))
+    flat = []
+    index = 0
+    while True:
+        progressed = False
+        for name in order:
+            pool = by_league[name]
+            if index < len(pool):
+                flat.append(pool[index])
+                progressed = True
+        if not progressed:
+            break
+        index += 1
+    tickets = []
+    while len(flat) >= size:
+        tickets.append(flat[:size])
+        flat = flat[size:]
+    return tickets
+
+
 def _ticket_score(target, tolerance, legs, combined):
     center = math.log(target)
     span = abs(math.log(1 + tolerance))
@@ -649,6 +676,61 @@ def _live_ticket(accepted, config):
             }
         legs = legs[:-1]
     return None
+
+
+def _span_ticket(accepted, config, size):
+    """One ticket of exactly `size` qualified selections, rotated across sports.
+
+    The competition cap in `config` still applies. Nothing is added to fill the count.
+    """
+    size = int(size)
+    by_sport = {}
+    for item in sorted(accepted, key=lambda row: (-_quality(row), row['fixture_id'], row['market'])):
+        by_sport.setdefault(item['sport'], []).append(item)
+    sports = sorted(by_sport, key=lambda sport: (-len(by_sport[sport]), sport))
+    indexes = {sport: 0 for sport in sports}
+    legs = []
+    while len(legs) < size:
+        progressed = False
+        for sport in sports:
+            pool = by_sport[sport]
+            index = indexes[sport]
+            while index < len(pool):
+                item = pool[index]
+                index += 1
+                trial = legs + [item]
+                combined = combine_ticket(trial, config)
+                if _hard_failure(combined['issues']) or combined['probability_basis'] != 'independent':
+                    continue
+                legs = trial
+                progressed = True
+                break
+            indexes[sport] = index
+            if len(legs) >= size:
+                break
+        if not progressed:
+            break
+    if len(legs) < size:
+        return None
+    combined = combine_ticket(legs, config)
+    sports_used = sorted({leg['sport'] for leg in legs})
+    leagues = sorted({leg['competition'] for leg in legs if leg.get('competition')})
+    return {
+        'tier': max(2, round(combined['combined_odds'])),
+        'tier_label': f'{size}-selection',
+        'tier_mode': 'standard',
+        'legs': legs,
+        'signature': '|'.join(sorted(leg['opportunity_id'] for leg in legs)),
+        'score': combined.get('joint_probability'),
+        'components': {},
+        **combined,
+        'explanation': (
+            f'This ticket has {size} selections that were already qualified, from {len(sports_used)} sports'
+            f' and {len(leagues)} leagues. A booking code can be requested when the publication window is open. '
+            'No wager is placed. ' + combined['explanation']
+        ),
+        'status': 'qualified',
+    }
 
 
 def optimize_candidates(candidates, config, now=None):
@@ -1117,6 +1199,183 @@ def load_opportunity_rows(connection):
     return choose_best([dict(row) for row in rows])
 
 
+def _simulated_competition(name):
+    text = str(name or '').casefold()
+    return 'simulated' in text or 'srl' in text.split()
+
+
+def build_high_probability_tickets(connection, actor, audit, now=None, minimum=0.75):
+    """Store 2-leg tickets from leagues that already have a 75% model price. They are not booked."""
+    current = _now(now)
+    fresh = (current - timedelta(minutes=15)).isoformat()
+    short = connection.execute(
+        """SELECT DISTINCT t.id FROM sports_ai_accumulator_tickets t
+           JOIN sports_ai_accumulator_legs l ON l.ticket_id=t.id
+           WHERE json_extract(t.parameters_json, '$.coverage')='high_probability'
+             AND t.status='unverified_probability'
+             AND l.decimal_odds<1.3""",
+    ).fetchall()
+    for row in short:
+        connection.execute(
+            "UPDATE sports_ai_accumulator_tickets SET status='expired' WHERE id=?",
+            (row['id'],),
+        )
+    used = {
+        row['fixture_id'] for row in connection.execute(
+            """SELECT l.fixture_id FROM sports_ai_accumulator_legs l
+               JOIN sports_ai_accumulator_tickets t ON t.id=l.ticket_id
+               WHERE t.status='unverified_probability'
+                 AND json_extract(t.parameters_json, '$.coverage')='high_probability'""",
+        )
+    }
+    open_signatures = {
+        row['signature'] for row in connection.execute(
+            """SELECT signature FROM sports_ai_accumulator_tickets
+               WHERE status IN ('qualified','unverified_probability','review_required','awaiting_odds')""",
+        )
+    }
+    from prediction_engine import normalize_quote_market, upcoming_fixture_sql
+    fixtures = [dict(row) for row in connection.execute(
+        f"""SELECT DISTINCT f.* FROM sports_ai_fixtures f
+            JOIN sports_ai_engine_predictions p ON p.fixture_id=f.id AND p.probability>=?
+            JOIN sports_ai_odds_snapshots q ON q.fixture_id=f.id AND q.bookmaker='SportyBet' AND q.observed_at>=?
+            WHERE {upcoming_fixture_sql('f')}
+              AND f.sport IN ('football','basketball','ice_hockey','frauenfussball')""",
+        (minimum, fresh),
+    )]
+    legs_by_sport = {}
+    for fixture in fixtures:
+        if fixture['id'] in used or _simulated_competition(fixture.get('competition')):
+            continue
+        predictions = [dict(row) for row in connection.execute(
+            """SELECT p.id, p.market, p.outcome, p.probability, p.settlement_json, p.model_id,
+                      m.version AS model_version, m.metrics_json,
+                      s.completeness
+               FROM sports_ai_engine_predictions p
+               JOIN sports_ai_model_registry m ON m.id=p.model_id AND m.active=1
+               LEFT JOIN sports_ai_feature_snapshots s ON s.id=p.feature_id
+               WHERE p.fixture_id=? AND p.probability>=?
+                 AND p.created_at=(
+                   SELECT MAX(p2.created_at) FROM sports_ai_engine_predictions p2
+                   WHERE p2.fixture_id=p.fixture_id AND p2.market=p.market
+                 )""",
+            (fixture['id'], minimum),
+        )]
+        quotes = [dict(row) for row in connection.execute(
+            """SELECT * FROM sports_ai_odds_snapshots
+               WHERE fixture_id=? AND bookmaker='SportyBet' AND observed_at>=?
+               ORDER BY observed_at DESC""",
+            (fixture['id'], fresh),
+        )]
+        best = None
+        for prediction in predictions:
+            match = None
+            for quote in quotes:
+                if normalize_quote_market(fixture['sport'], fixture, quote) == str(prediction['market']).upper():
+                    match = quote
+                    break
+            if not match:
+                continue
+            try:
+                quoted = float(match['decimal_odds'])
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(quoted) or quoted < 1.3:
+                continue
+            if best is None or float(prediction['probability']) > float(best[0]['probability']):
+                best = (prediction, match)
+        if not best:
+            continue
+        prediction, quote = best
+        try:
+            odds = float(quote['decimal_odds'])
+            probability = float(prediction['probability'])
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(odds) or odds < 1.3 or not math.isfinite(probability):
+            continue
+        kind = _settlement_kind(prediction.get('settlement_json'))
+        if kind != 'binary':
+            continue
+        legs_by_sport.setdefault(fixture['sport'], []).append({
+            'opportunity_id': prediction['id'],
+            'fixture_id': fixture['id'],
+            'sport': fixture['sport'],
+            'competition': fixture.get('competition') or '',
+            'home': fixture['home'],
+            'away': fixture['away'],
+            'starts_at': fixture['starts_at'],
+            'market': str(prediction['market']).upper(),
+            'selection': prediction.get('outcome') or prediction['market'],
+            'decimal_odds': odds,
+            'probability': probability,
+            'edge': probability * odds - 1,
+            'bookmaker': 'SportyBet',
+            'odds_observed_at': quote['observed_at'],
+            'quote_market': quote.get('market') or prediction['market'],
+            'quote_outcome': quote.get('outcome') or prediction.get('outcome') or prediction['market'],
+            'quote_line': quote.get('line'),
+            'model_id': prediction.get('model_id') or '',
+            'model_version': prediction.get('model_version') or '',
+            'completeness': prediction.get('completeness'),
+            'reliability': _reliability(prediction.get('metrics_json')),
+            'settlement_kind': kind,
+        })
+    config = default_config()
+    config['max_per_competition'] = 2
+    created = []
+    leagues = set()
+    run_id = None
+    for sport, legs in sorted(legs_by_sport.items()):
+        for chunk in pack_league_tickets(legs, 2)[:12]:
+            signature = '|'.join(sorted(f"{leg['fixture_id']}:{leg['market']}" for leg in chunk))
+            if signature in open_signatures:
+                continue
+            combined = combine_ticket(chunk, config)
+            if combined['probability_basis'] != 'independent' or not combined.get('joint_probability'):
+                continue
+            if run_id is None:
+                run_id = str(uuid.uuid4())
+                connection.execute(
+                    """INSERT INTO sports_ai_accumulator_runs
+                       (id,config_id,sport_mode,status,trigger,idempotency_key,parameters_json,actor,started_at)
+                       VALUES(?,?,'mixed','running','high_probability',?,?,?,?)""",
+                    (run_id, CONFIG_ID, f"high-probability:{current.strftime('%Y%m%dT%H%M%S%f')}", '{}', actor, current.isoformat()),
+                )
+            names = sorted({leg['competition'] for leg in chunk if leg.get('competition')})
+            leagues.update(names)
+            ticket = {
+                'tier': 2,
+                'tier_label': 'High probability',
+                'tier_mode': 'standard',
+                'coverage': 'high_probability',
+                'coverage_sport': sport,
+                'legs': chunk,
+                'signature': signature,
+                'score': combined['joint_probability'],
+                'components': {},
+                **combined,
+                'sport_mode': _sport_mode(chunk),
+                'explanation': (
+                    f"High-probability {sport.replace('_', ' ')} selections from {len(names)} leagues"
+                    f" ({'; '.join(names)}). Each leg is a stored model probability of at least 75% "
+                    'with a SportyBet price from the last 15 minutes. This ticket is for reading those selections. '
+                    + combined['explanation']
+                ),
+                'status': 'unverified_probability',
+            }
+            _insert_ticket(connection, run_id, ticket, config, current, 'created', 'High-probability selections across leagues')
+            open_signatures.add(signature)
+            created.append(signature)
+    if run_id:
+        connection.execute(
+            """UPDATE sports_ai_accumulator_runs SET status='complete', summary_json=?, finished_at=? WHERE id=?""",
+            (json.dumps({'tickets': len(created), 'leagues': sorted(leagues), 'places_wager': False}), current.isoformat(), run_id),
+        )
+        _audit(audit, connection, actor, 'accumulator.high_probability', {'tickets': len(created), 'leagues': len(leagues)})
+    return {'created': len(created), 'leagues': len(leagues), 'places_wager': False}
+
+
 def generate_accumulators(connection, actor, audit, sport_mode='mixed', overrides=None, idempotency_key=None, now=None, trigger='manual'):
     current = _now(now)
     key = idempotency_key or f"accumulator:{sport_mode}:{current.strftime('%Y%m%dT%H%M%S%f')}:{uuid.uuid4()}"
@@ -1128,9 +1387,15 @@ def generate_accumulators(connection, actor, audit, sport_mode='mixed', override
     config = load_config(connection)
     config.update(overrides or {})
     config['sport_mode'] = sport_mode
+    span = int(config.get('span_legs') or 0)
     live = bool(config.get('live_opportunities'))
     legacy = 'targets' in (overrides or {})
-    if live:
+    if span:
+        if not 2 <= span <= 25:
+            raise ValueError('A span ticket must contain between 2 and 25 selections')
+        config['min_legs'] = span
+        config['max_legs'] = span
+    elif live:
         config['min_legs'] = 2
         config['max_legs'] = LIVE_LIMIT
     elif legacy:
@@ -1163,7 +1428,21 @@ def generate_accumulators(connection, actor, audit, sport_mode='mixed', override
         revalidate(connection, actor, current)
         rows = load_opportunity_rows(connection)
         accepted, decisions = qualify_candidates(rows, config, current, _blocked_fixtures(connection))
-        if live:
+        if span:
+            ticket = _span_ticket(accepted, config, span)
+            search = {
+                'candidate_count': len(accepted),
+                'evaluations': len(accepted),
+                'truncated': False,
+                'tiers': [{
+                    'target': ticket['tier'], 'status': 'generated', 'tickets': [ticket], 'truncated': False,
+                }] if ticket else [_gap(
+                    span,
+                    f'Fewer than {span} qualified selections can be combined without sharing a fixture, a team, or exceeding the competition limit',
+                    False,
+                )],
+            }
+        elif live:
             ticket = _live_ticket(accepted, config)
             search = {
                 'candidate_count': len(accepted),
@@ -1276,6 +1555,8 @@ def _insert_ticket(connection, run_id, ticket, config, current, change_type, rea
         'tier_id': ticket.get('tier_id'),
         'tier_label': ticket.get('tier_label'),
         'tier_mode': ticket.get('tier_mode'),
+        'coverage': ticket.get('coverage'),
+        'coverage_sport': ticket.get('coverage_sport'),
         'correlation_exposure': ticket.get('correlation_exposure'),
     }
     connection.execute(

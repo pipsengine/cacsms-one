@@ -107,6 +107,44 @@ class SportyBetFeedTests(unittest.TestCase):
         self.assertEqual(fixture['away'], 'Barcelona')
         self.assertEqual(prices, 3)
 
+    def test_ice_hockey_result_and_total_are_imported(self):
+        kickoff = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=2)
+        payload = {'data': {'tournaments': [{'categoryName': 'Germany', 'name': 'DEL', 'events': [{
+            'homeTeamName': 'Eisbaren Berlin', 'awayTeamName': 'Adler Mannheim',
+            'estimateStartTime': int(kickoff.timestamp() * 1000),
+            'markets': [
+                {'status': 0, 'desc': '1X2', 'outcomes': [
+                    {'isActive': 1, 'desc': 'Home', 'odds': '2.40'},
+                    {'isActive': 1, 'desc': 'Draw', 'odds': '4.10'},
+                    {'isActive': 1, 'desc': 'Away', 'odds': '2.55'},
+                ]},
+                {'status': 0, 'desc': 'Over/Under', 'specifier': 'total=5.5', 'outcomes': [
+                    {'isActive': 1, 'desc': 'Over 5.5', 'odds': '1.87'},
+                    {'isActive': 1, 'desc': 'Under 5.5', 'odds': '1.95'},
+                ]},
+            ],
+        }]}]}}
+        rows = quotes_from_payload(payload, 'ice_hockey', 'https://www.sportybet.com/ng/sport/iceHockey')
+        self.assertEqual(len(rows), 5)
+        with db.connect() as connection:
+            result = publish_quotes(connection, rows, rows[0]['source_url'])
+            fixture = connection.execute(
+                "SELECT id FROM sports_ai_fixtures WHERE source='sportybet-displayed' AND home='Eisbaren Berlin'",
+            ).fetchone()
+            prices = connection.execute(
+                'SELECT market, outcome, decimal_odds FROM sports_ai_odds_snapshots WHERE fixture_id=? ORDER BY market, outcome',
+                (fixture['id'],),
+            ).fetchall()
+            connection.execute('DELETE FROM sports_ai_odds_history')
+            connection.execute('DELETE FROM sports_ai_odds_snapshots')
+            connection.execute('DELETE FROM sports_ai_sportybet_observations')
+            connection.execute('DELETE FROM sports_ai_fixtures')
+        self.assertEqual(result['imported'], 5)
+        self.assertEqual(
+            [(row['market'], row['outcome'], row['decimal_odds']) for row in prices],
+            [('h2h', 'away', 2.55), ('h2h', 'draw', 4.1), ('h2h', 'home', 2.4), ('totals', 'OVER', 1.87), ('totals', 'UNDER', 1.95)],
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

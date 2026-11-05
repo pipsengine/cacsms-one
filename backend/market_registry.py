@@ -510,12 +510,13 @@ def _canonical(sport, market, outcome, line):
     market = str(market or '').lower()
     outcome = str(outcome or '')
     if market == 'h2h':
+        goal = sport in ('football', 'frauenfussball', 'ice_hockey')
         if outcome == 'draw':
-            return 'DRAW' if sport == 'football' else None
+            return 'DRAW' if goal else None
         if outcome == 'home':
-            return 'HOME' if sport == 'football' else 'MONEYLINE_HOME'
+            return 'HOME' if goal else 'MONEYLINE_HOME'
         if outcome == 'away':
-            return 'AWAY' if sport == 'football' else 'MONEYLINE_AWAY'
+            return 'AWAY' if goal else 'MONEYLINE_AWAY'
     if market == 'totals' and outcome.upper() in ('OVER', 'UNDER') and line is not None:
         return f'{outcome.upper()}_{float(line):g}'
     if market == 'spreads' and outcome:

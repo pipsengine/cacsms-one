@@ -89,6 +89,7 @@ def _observed(stage, result, failed=False):
 
 def tick():
     initialize()
+    _operator_booking()
     try:
         from autonomous_engine import ensure_running
         with connect() as connection:
@@ -105,6 +106,7 @@ def tick():
     _qualification_tick()
     _process_browser_queue()
     _odds_refresh_tick()
+    _coverage_tick()
     _ticket_tick()
     _draw_tick()
     _weekly_draw_tick()
@@ -228,6 +230,8 @@ def _process_browser_queue():
         collected = collect_displayed_odds()
         print('sportybet feed', collected.get('status'), 'imported', collected.get('imported', 0), collected.get('error', ''))
         _observed('browser', collected)
+        if collected.get('imported'):
+            _operator_booking()
     except Exception as error:
         _observed('browser', {'status': 'failed'}, failed=True)
         _report('browser queue failed', error)
@@ -260,12 +264,16 @@ def _odds_refresh_tick():
 
 def _ticket_tick():
     try:
+        from accumulator_engine import build_high_probability_tickets
         from pipeline_engine import build_autonomous_tickets
         with connect() as connection:
             result = build_autonomous_tickets(connection, 'sports-ai-worker', _audit)
+            coverage = build_high_probability_tickets(connection, 'sports-ai-worker', _audit)
         print(
             'tickets', result.get('status'),
             'created', result.get('tickets_created', result.get('ticket_count', 0)),
+            'high_probability', coverage.get('created', 0),
+            'leagues', coverage.get('leagues', 0),
             'places_wager', False,
         )
         _observed('tickets', result)
@@ -274,11 +282,66 @@ def _ticket_tick():
         _report('autonomous tickets failed', error)
 
 
+def _coverage_tick():
+    try:
+        from prediction_engine import run_analysis
+        with connect() as connection:
+            result = run_analysis(connection, 'sports-ai-worker', _audit, coverage=True, limit=8)
+        print(
+            'coverage analysis',
+            'fixtures', result.get('fixtures'),
+            'predictions', result.get('predictions'),
+            'skipped', result.get('skipped'),
+        )
+    except Exception as error:
+        _report('coverage analysis failed', error)
+
+
+def _operator_booking():
+    """One operator-named ticket. A closed window does not open the browser until its prices are fresh."""
+    try:
+        import json
+        with connect() as connection:
+            row = connection.execute(
+                "SELECT value_json FROM sports_ai_settings WHERE key='operator_booking_ticket'",
+            ).fetchone()
+        if not row:
+            return
+        stored = json.loads(row['value_json'] or '{}')
+        ticket_id = stored.get('ticket_id')
+        attempts = int(stored.get('attempts') or 0)
+        if not ticket_id or attempts >= 4:
+            with connect() as connection:
+                connection.execute("DELETE FROM sports_ai_settings WHERE key='operator_booking_ticket'")
+            return
+        from sportybet_booking import confirm_ticket
+        result = confirm_ticket(ticket_id)
+        print(
+            'operator booking', result.get('status'),
+            result.get('code') or result.get('reason_code') or '',
+            'places_wager', False,
+        )
+        if result.get('status') == 'waiting':
+            stored['attempts'] = attempts + 1
+            with connect() as connection:
+                connection.execute(
+                    """INSERT INTO sports_ai_settings(key,value_json,updated_at) VALUES('operator_booking_ticket',?,?)
+                       ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at""",
+                    (json.dumps(stored), datetime.now(timezone.utc).isoformat()),
+                )
+            return
+        with connect() as connection:
+            connection.execute("DELETE FROM sports_ai_settings WHERE key='operator_booking_ticket'")
+    except Exception as error:
+        _report('operator booking failed', error)
+
+
 def _booking_tick():
+    _operator_booking()
     try:
         from sportybet_booking import process_booking_queue
         booked = process_booking_queue()
-        print('sportybet booking', booked.get('status'), 'qualified', booked.get('qualified', ''), 'places_wager', booked.get('places_wager'))
+        print('sportybet booking', booked.get('status'), 'qualified', booked.get('qualified', ''), 'restored', (booked.get('examined') or {}).get('restored', 0), 'places_wager', booked.get('places_wager'))
         _observed('booking', booked)
     except Exception as error:
         _observed('booking', {'status': 'failed'}, failed=True)

@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 
 import db
 from accumulator_engine import combine_ticket
-from market_registry import assign_status, choose_best, refresh_market_registry
+from market_registry import _canonical, assign_status, choose_best, refresh_market_registry
 from qualification_engine import decide, default_policy
 from sport_adapters import probability
 
@@ -56,6 +56,14 @@ class MarketStatusTests(unittest.TestCase):
         by_fixture = {item['fixture_id']: item['market'] for item in chosen}
         self.assertEqual(by_fixture['a'], 'OVER_2.5')
         self.assertEqual(by_fixture['b'], 'DRAW')
+
+    def test_goal_sports_use_the_result_market_names(self):
+        self.assertEqual(_canonical('ice_hockey', 'h2h', 'home', None), 'HOME')
+        self.assertEqual(_canonical('ice_hockey', 'h2h', 'draw', None), 'DRAW')
+        self.assertEqual(_canonical('frauenfussball', 'h2h', 'away', None), 'AWAY')
+        self.assertEqual(_canonical('basketball', 'h2h', 'home', None), 'MONEYLINE_HOME')
+        self.assertIsNone(_canonical('basketball', 'h2h', 'draw', None))
+        self.assertEqual(_canonical('tennis', 'h2h', 'home', None), 'MONEYLINE_HOME')
 
     def test_registry_active_market_can_qualify_without_reusing_the_result_set(self):
         result = decide(_row(), default_policy({'min_edge': 0.05}), NOW)

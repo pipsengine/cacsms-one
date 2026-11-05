@@ -1511,13 +1511,72 @@ def _rank_score(edge, calibration_error, probability, completeness, fresh):
     return score, uncertainty
 
 
-def run_analysis(connection, actor, audit, deadline=None, fixture_id=None):
+def rotate_by_league(rows, limit):
+    """Take one fixture from each league before taking a second from any league."""
+    buckets = {}
+    for row in rows:
+        buckets.setdefault((row['sport'], row['competition']), []).append(row)
+    chosen = []
+    index = 0
+    while len(chosen) < limit:
+        progressed = False
+        for key in sorted(buckets):
+            pool = buckets[key]
+            if index < len(pool):
+                chosen.append(pool[index])
+                progressed = True
+                if len(chosen) >= limit:
+                    break
+        if not progressed:
+            break
+        index += 1
+    return chosen
+
+
+def quoted_coverage_fixtures(connection, now=None, limit=8):
+    """Upcoming quoted fixtures whose league already has stored results, one league at a time."""
+    current = now or datetime.now(timezone.utc)
+    fresh = (current - timedelta(minutes=15)).isoformat()
+    history = {}
+    for row in connection.execute(
+        """SELECT f.sport, f.competition
+           FROM sports_ai_fixtures f
+           JOIN sports_ai_results r ON r.fixture_id=f.id AND r.status='final'
+           WHERE f.sport IN ('football','basketball','ice_hockey','frauenfussball')""",
+    ):
+        history.setdefault(row['sport'], set()).add(league_key(row['competition']))
+    rows = [dict(row) for row in connection.execute(
+        f"""SELECT f.* FROM sports_ai_fixtures f
+            WHERE {upcoming_fixture_sql('f')}
+              AND f.sport IN ('football','basketball','ice_hockey','frauenfussball')
+              AND lower(COALESCE(f.competition,'')) NOT LIKE '%srl%'
+              AND lower(COALESCE(f.competition,'')) NOT LIKE '%simulated%'
+              AND NOT EXISTS (SELECT 1 FROM sports_ai_engine_predictions p WHERE p.fixture_id=f.id)
+              AND NOT EXISTS (
+                SELECT 1 FROM sports_ai_prediction_jobs j
+                WHERE j.idempotency_key='insufficient:' || f.id
+                  AND j.finished_at > datetime('now','-12 hours')
+              )
+              AND EXISTS (
+                SELECT 1 FROM sports_ai_odds_snapshots q
+                WHERE q.fixture_id=f.id AND q.bookmaker='SportyBet' AND q.observed_at>=?
+              )
+            ORDER BY f.sport, f.competition, {upcoming_order_sql('f')}""",
+        (fresh,),
+    )]
+    covered = [row for row in rows if league_key(row['competition']) in history.get(row['sport'], ())]
+    return rotate_by_league(covered, max(1, int(limit)))
+
+
+def run_analysis(connection, actor, audit, deadline=None, fixture_id=None, coverage=False, limit=8):
     now = datetime.now(timezone.utc)
     if fixture_id:
         selected = connection.execute(
             'SELECT * FROM sports_ai_fixtures WHERE id=?', (fixture_id,),
         ).fetchone()
         fixtures = [dict(selected)] if selected else []
+    elif coverage:
+        fixtures = quoted_coverage_fixtures(connection, now, limit)
     else:
         fixtures = [dict(row) for row in connection.execute(
             f"""SELECT * FROM sports_ai_fixtures f
@@ -1814,7 +1873,7 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None):
         except (ValueError,TypeError,KeyError,OverflowError) as error:
             kind = type(error).__name__
             stats['skipped'][kind] = stats['skipped'].get(kind, 0) + 1
-    if not fixture_id and not fixtures:
+    if not fixture_id and not fixtures and not coverage:
         stats['snapshots_reused'] += _reuse_existing_snapshots(connection)
     details = {**stats,'minimum_edge':min_edge,'odds_max_age_minutes':odds_age_limit,
                'activated_models':[item['id'] for item in models.values() if item['active']]}

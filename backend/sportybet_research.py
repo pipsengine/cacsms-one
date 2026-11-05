@@ -19,6 +19,7 @@ PERIOD_MARKERS = (
     '1st half', 'first half', '2nd half', 'second half', 'half time', 'halftime',
     'corner', 'card', 'booking', 'quarter', 'period', 'first quarter',
 )
+DISPLAY_SPORTS = {'football', 'basketball', 'frauenfussball', 'ice_hockey'}
 CONFIRM_MIN = 0.5
 PROPOSE_MIN = 0.85
 
@@ -155,7 +156,7 @@ def parse_visible_text(text):
             if len(parts) != 9:
                 continue
             _, sport, competition, home, away, kickoff, market, selection, price = parts
-            if sport not in {'football', 'basketball'} or not home.strip() or not away.strip():
+            if sport not in DISPLAY_SPORTS or not home.strip() or not away.strip():
                 continue
             rows.append({
                 'sport': sport,
@@ -360,7 +361,7 @@ def match_observation(connection, observation_id, fixture_id, acknowledge_ambigu
 
 def validate_observation_market(connection, observation_id):
     row = _observation(connection, observation_id)
-    if row['sport'] not in {'football', 'basketball'}:
+    if row['sport'] not in DISPLAY_SPORTS:
         raise ValueError('Set the sport by matching a stored fixture before validating the market.')
     mapped = map_market(row['sport'], row['market_label'], row['selection_label'], row['line'])
     if not mapped.get('supported'):
@@ -551,7 +552,7 @@ def _rank_loaded(fixtures, observation):
     sport = observation.get('sport')
     ranked = []
     for fixture in fixtures:
-        if sport in {'football', 'basketball'} and fixture['sport'] != sport:
+        if sport and fixture['sport'] != sport:
             continue
         scored = score_fixture(observation, fixture)
         if scored:
@@ -570,7 +571,7 @@ def _ensure_displayed_fixture(connection, row, now):
     home = (row.get('home') or '').strip()
     away = (row.get('away') or '').strip()
     starts_at = row.get('starts_at')
-    if sport not in {'football', 'basketball'} or not competition or not home or not away or not starts_at:
+    if sport not in DISPLAY_SPORTS or not competition or not home or not away or not starts_at:
         return None
     try:
         kickoff = parse_time(starts_at)

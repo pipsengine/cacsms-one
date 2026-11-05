@@ -119,3 +119,8 @@ class QualificationDecisionTests(unittest.TestCase):
         self.assertEqual(result['state'], 'REJECTED')
         self.assertEqual(result['reason_code'], 'SPORT_NOT_MODELLED')
         self.assertIsNone(result['rank_score'])
+
+    def test_ice_hockey_result_uses_the_stored_model(self):
+        result = decide(row(sport='ice_hockey', market='HOME'), policy(), NOW)
+        self.assertEqual(result['state'], 'QUALIFIED')
+        self.assertEqual(result['reason_code'], 'QUALIFIED_OK')
