@@ -79,6 +79,38 @@ class ModelGovernanceTests(unittest.TestCase):
         self.assertTrue(any('calibration error' in reason for reason in decision['reasons']))
         self.assertTrue(any('holdout' in reason for reason in decision['reasons']))
 
+    def test_newest_validated_model_promotes_without_a_hard_coded_release_version(self):
+        with db.connect() as connection:
+            model_id = self._model(connection, 'football', '1', 0.04, 40, 1.1, 'baseline', 1.1)
+            result = govern_models(connection, 'test', None, self.now)
+            model = connection.execute(
+                'SELECT active,status FROM sports_ai_model_registry WHERE id=?', (model_id,),
+            ).fetchone()
+        decision = next(item for item in result['decisions'] if item['sport'] == 'football')
+        self.assertEqual(result['activated'], [model_id])
+        self.assertEqual(model['active'], 1)
+        self.assertEqual(model['status'], 'active')
+        self.assertEqual(decision['version'], '1')
+
+    def test_newer_unvalidated_model_does_not_promote_or_replace_older_candidate(self):
+        with db.connect() as connection:
+            older_id = self._model(connection, 'football', '1', 0.04, 40, 1.1, 'baseline', 1.1)
+            newer_id = self._model(connection, 'football', '2', 0.04, 40, 1.1, 'baseline', 1.1)
+            connection.execute(
+                "UPDATE sports_ai_model_registry SET status='unvalidated' WHERE id=?",
+                (newer_id,),
+            )
+            result = govern_models(connection, 'test', None, self.now)
+            older = connection.execute(
+                'SELECT active FROM sports_ai_model_registry WHERE id=?', (older_id,),
+            ).fetchone()
+        decision = next(item for item in result['decisions'] if item['sport'] == 'football')
+        self.assertEqual(result['activated'], [])
+        self.assertEqual(older['active'], 0)
+        self.assertEqual(decision['model_id'], newer_id)
+        self.assertEqual(decision['action'], 'inactive')
+        self.assertTrue(any('not validated' in reason for reason in decision['reasons']))
+
     def test_passing_holdout_activates_and_a_later_failure_rolls_back(self):
         with db.connect() as connection:
             model_id = self._model(connection, 'football', '2', 0.04, 101, 1.10, 'gradient_boosting', 1.01)

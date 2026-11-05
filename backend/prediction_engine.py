@@ -2029,7 +2029,7 @@ def rollback_model(connection, model_id):
     return {'rolled_back': True, 'restored_model_id': restored}
 
 
-PRODUCTION_TARGETS = (('football', '2'), ('basketball', '1'), ('frauenfussball', '1'), ('ice_hockey', '1'))
+PRODUCTION_SPORTS = ('football', 'basketball', 'frauenfussball', 'ice_hockey')
 MAX_CALIBRATION_ERROR = 0.20
 DEGRADED_CALIBRATION_ERROR = 0.25
 
@@ -2081,41 +2081,44 @@ def _decision_reasons(model):
 
 
 def govern_models(connection, actor, audit, now=None):
-    """Activate Football v2 and Basketball v1 only from their stored chronological holdout."""
+    """Promote the newest non-blocked model for each sport when its holdout gates pass."""
     current = now or datetime.now(timezone.utc)
     state = _governance_state(connection)
     blocked = set(state.get('blocked_ids') or [])
     decisions = []
-    for sport, version in PRODUCTION_TARGETS:
-        model = connection.execute(
+    for sport in PRODUCTION_SPORTS:
+        candidates = connection.execute(
             """SELECT m.*, t.status AS training_status, c.sample_size AS calibration_sample_size
                FROM sports_ai_model_registry m
                JOIN sports_ai_training_runs t ON t.id=m.training_run_id
                LEFT JOIN sports_ai_calibration_results c ON c.model_id=m.id
-               WHERE m.sport=? AND m.version=? AND m.model_name=?
-               ORDER BY m.created_at DESC LIMIT 1""",
-            (sport, version, MODEL_NAMES[sport]),
-        ).fetchone()
+               WHERE m.sport=? AND m.model_name=?
+               ORDER BY CAST(m.version AS INTEGER) DESC, m.created_at DESC""",
+            (sport, MODEL_NAMES[sport]),
+        ).fetchall()
+        model = next((candidate for candidate in candidates if candidate['id'] not in blocked), None)
         if not model:
-            decisions.append({'sport': sport, 'version': version, 'action': 'missing', 'reasons': ['No stored model version was found.']})
-            continue
-        if model['id'] in blocked:
-            decisions.append({
-                'sport': sport, 'version': version, 'model_id': model['id'], 'action': 'blocked',
-                'reasons': ['This version was rolled back after live degradation and stays inactive until a new training run.'],
-            })
+            if candidates:
+                candidate = candidates[0]
+                decisions.append({
+                    'sport': sport, 'version': candidate['version'], 'model_id': candidate['id'],
+                    'action': 'blocked',
+                    'reasons': ['This version was rolled back after live degradation and stays inactive until a new training run.'],
+                })
+            else:
+                decisions.append({'sport': sport, 'action': 'missing', 'reasons': ['No stored model version was found.']})
             continue
         reasons, metrics = _decision_reasons(model)
         if model['active']:
             decisions.append({
-                'sport': sport, 'version': version, 'model_id': model['id'], 'action': 'already_active',
+                'sport': sport, 'version': model['version'], 'model_id': model['id'], 'action': 'already_active',
                 'reasons': [], 'calibration_error': metrics.get('calibration_error'),
                 'holdout_fixtures': metrics.get('holdout_fixtures'),
             })
             continue
         if reasons:
             decisions.append({
-                'sport': sport, 'version': version, 'model_id': model['id'], 'action': 'inactive',
+                'sport': sport, 'version': model['version'], 'model_id': model['id'], 'action': 'inactive',
                 'reasons': reasons, 'calibration_error': metrics.get('calibration_error'),
                 'holdout_fixtures': metrics.get('holdout_fixtures'),
             })
@@ -2133,14 +2136,17 @@ def govern_models(connection, actor, audit, now=None):
             (sport,),
         )
         decisions.append({
-            'sport': sport, 'version': version, 'model_id': model['id'], 'action': 'activated',
+            'sport': sport, 'version': model['version'], 'model_id': model['id'], 'action': 'activated',
             'reasons': [], 'calibration_error': metrics.get('calibration_error'),
             'holdout_fixtures': metrics.get('holdout_fixtures'),
             'selected_family': metrics.get('selected_family'),
             'family_log_loss': metrics.get('family_log_loss'),
         })
         if audit:
-            audit(connection, actor, 'models.activate', {'model_id': model['id'], 'sport': sport, 'version': version, 'source': 'holdout_governance'})
+            audit(connection, actor, 'models.activate', {
+                'model_id': model['id'], 'sport': sport,
+                'version': model['version'], 'source': 'holdout_governance',
+            })
     state['decisions'] = decisions
     state['evaluated_at'] = current.isoformat()
     _save_setting(connection, 'model_governance', state, current)
