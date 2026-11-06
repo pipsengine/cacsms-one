@@ -7,6 +7,7 @@ import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
+from sport_support import ANALYSED_SPORTS, GOAL_SPORTS, sql_in
 from prediction_math import (
     apply_isotonic,
     apply_sigmoid,
@@ -279,12 +280,13 @@ def domestic_team_rows(connection, sport, team, cutoff):
     return copied
 
 
-GOAL_SPORTS = ('football', 'frauenfussball', 'ice_hockey')
 MODEL_NAMES = {
     'football': 'sports-ai-football-ensemble',
     'basketball': 'sports-ai-basketball-ensemble',
     'frauenfussball': 'sports-ai-frauenfussball-ensemble',
     'ice_hockey': 'sports-ai-ice-hockey-ensemble',
+    'efootball': 'sports-ai-efootball-ensemble',
+    'vfootball': 'sports-ai-vfootball-ensemble',
 }
 VERSION = '2'
 MIN_TEAM_GAMES = 3
@@ -814,6 +816,28 @@ def football_market(features, market, rho=0.0):
         if handicap:
             margin = h - a if handicap.group(1) == 'HOME' else a - h
             return _line_settlement(margin, -float(handicap.group(2)), True)
+        if market == 'ODD_GOALS':
+            return 1 if (h + a) % 2 else -1
+        if market == 'EVEN_GOALS':
+            return 1 if (h + a) % 2 == 0 else -1
+        if market == 'CLEAN_SHEET_HOME':
+            return 1 if a == 0 else -1
+        if market == 'CLEAN_SHEET_AWAY':
+            return 1 if h == 0 else -1
+        european = re.fullmatch(r'EUROPEAN_(HOME|DRAW|AWAY)_(-?\d+(?:\.\d+)?)', market)
+        if european:
+            adjusted = h + float(european.group(2))
+            if european.group(1) == 'HOME':
+                return 1 if adjusted > a else 0 if adjusted == a else -1
+            if european.group(1) == 'AWAY':
+                return 1 if adjusted < a else 0 if adjusted == a else -1
+            return 1 if adjusted == a else -1
+        margin_band = re.fullmatch(r'MARGIN_(HOME|AWAY)_(1|2|3PLUS)', market)
+        if margin_band:
+            diff = (h - a) if margin_band.group(1) == 'HOME' else (a - h)
+            band = margin_band.group(2)
+            won = diff == 1 if band == '1' else diff == 2 if band == '2' else diff >= 3
+            return 1 if won else -1
         correct = re.fullmatch(r'CORRECT_(\d+)_(\d+)', market)
         if correct:
             return 1 if h == int(correct.group(1)) and a == int(correct.group(2)) else -1
@@ -1306,13 +1330,13 @@ def train_model(connection, sport):
 
 
 def ensure_goal_sport_models(connection):
-    """Train women's football and ice hockey once their own finals reach the sample floor.
+    """Train a goal sport once its own finals reach the sample floor.
 
-    Handball, tennis, volleyball, baseball, cricket and table tennis stay untrained
-    until that sport has at least 30 stored final scores. Training does not activate a model.
+    Tennis, table tennis, volleyball and MMA stay untrained until a winner model
+    exists for that sport. Training does not activate a model.
     """
     trained = []
-    for sport in ('frauenfussball', 'ice_hockey'):
+    for sport in ('frauenfussball', 'ice_hockey', 'efootball', 'vfootball'):
         existing = connection.execute(
             'SELECT id FROM sports_ai_model_registry WHERE sport=? LIMIT 1', (sport,),
         ).fetchone()
@@ -1356,6 +1380,10 @@ def normalize_quote_market(sport, fixture, quote):
         side = 'HOME' if pick in ('home', home) else 'AWAY' if pick in ('away', away) else None
         if side:
             return f'{side}_SPREAD_{float(line):g}'
+    from sportybet_research import map_market
+    mapped = map_market(sport, quote['market'], quote['outcome'], quote.get('line'))
+    if mapped.get('supported'):
+        return mapped['canonical_market']
     return None
 
 
@@ -1538,17 +1566,19 @@ def quoted_coverage_fixtures(connection, now=None, limit=8):
     current = now or datetime.now(timezone.utc)
     fresh = (current - timedelta(minutes=15)).isoformat()
     history = {}
+    played = {}
     for row in connection.execute(
-        """SELECT f.sport, f.competition
+        f"""SELECT f.sport, f.competition, f.home, f.away
            FROM sports_ai_fixtures f
            JOIN sports_ai_results r ON r.fixture_id=f.id AND r.status='final'
-           WHERE f.sport IN ('football','basketball','ice_hockey','frauenfussball')""",
+           WHERE f.sport IN ({sql_in(ANALYSED_SPORTS)})""",
     ):
         history.setdefault(row['sport'], set()).add(league_key(row['competition']))
+        played.setdefault(row['sport'], set()).update((row['home'], row['away']))
     rows = [dict(row) for row in connection.execute(
         f"""SELECT f.* FROM sports_ai_fixtures f
             WHERE {upcoming_fixture_sql('f')}
-              AND f.sport IN ('football','basketball','ice_hockey','frauenfussball')
+              AND f.sport IN ({sql_in(ANALYSED_SPORTS)})
               AND lower(COALESCE(f.competition,'')) NOT LIKE '%srl%'
               AND lower(COALESCE(f.competition,'')) NOT LIKE '%simulated%'
               AND NOT EXISTS (SELECT 1 FROM sports_ai_engine_predictions p WHERE p.fixture_id=f.id)
@@ -1564,7 +1594,12 @@ def quoted_coverage_fixtures(connection, now=None, limit=8):
             ORDER BY f.sport, f.competition, {upcoming_order_sql('f')}""",
         (fresh,),
     )]
-    covered = [row for row in rows if league_key(row['competition']) in history.get(row['sport'], ())]
+    covered = [
+        row for row in rows
+        if league_key(row['competition']) in history.get(row['sport'], ())
+        or row['home'] in played.get(row['sport'], ())
+        or row['away'] in played.get(row['sport'], ())
+    ]
     return rotate_by_league(covered, max(1, int(limit)))
 
 
@@ -1591,7 +1626,7 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None, cover
                 LIMIT 40"""
         )]
     models = {}
-    for sport in ('football', 'basketball', 'frauenfussball', 'ice_hockey'):
+    for sport in ANALYSED_SPORTS:
         model = connection.execute(
             'SELECT * FROM sports_ai_model_registry WHERE sport=? AND active=1', (sport,),
         ).fetchone()
@@ -2088,7 +2123,7 @@ def rollback_model(connection, model_id):
     return {'rolled_back': True, 'restored_model_id': restored}
 
 
-PRODUCTION_SPORTS = ('football', 'basketball', 'frauenfussball', 'ice_hockey')
+PRODUCTION_SPORTS = ANALYSED_SPORTS
 MAX_CALIBRATION_ERROR = 0.20
 DEGRADED_CALIBRATION_ERROR = 0.25
 
@@ -2272,7 +2307,7 @@ def price_quoted_board(connection, now=None, limit=40):
            FROM sports_ai_fixtures f
            JOIN sports_ai_model_registry m ON m.sport=f.sport AND m.active=1 AND m.status='active'
            WHERE {upcoming_fixture_sql('f')}
-             AND f.sport IN ('football','basketball','ice_hockey','frauenfussball')
+             AND f.sport IN ({sql_in(ANALYSED_SPORTS)})
              AND EXISTS (
                SELECT 1 FROM sports_ai_odds_snapshots q
                WHERE q.fixture_id=f.id AND q.bookmaker='SportyBet' AND q.observed_at>=?
@@ -2320,7 +2355,7 @@ def price_quoted_board(connection, now=None, limit=40):
         priced_here = 0
         for quote in quotes:
             market = normalize_quote_market(fixture['sport'], fixture, quote)
-            if priced_here >= 8 or not market or market in seen or not supported_market(fixture['sport'], market):
+            if priced_here >= 16 or not market or market in seen or not supported_market(fixture['sport'], market):
                 continue
             try:
                 odds = float(quote['decimal_odds'])

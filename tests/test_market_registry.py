@@ -8,9 +8,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 
 import db
 from accumulator_engine import combine_ticket
+from discovery_catalogue import (
+    COMPETITIONS, MARKET_GROUPS, catalogue_summary, ensure_reference_catalogue, load_reference_catalogue, match_competition,
+)
 from market_registry import _canonical, assign_status, choose_best, refresh_market_registry
+from prediction_engine import football_market
 from qualification_engine import decide, default_policy
+from accumulator_engine import settle_result
 from sport_adapters import probability
+from sport_support import coverage_status
+from sportybet_research import map_market
+from prediction_engine import market_probability
 
 
 NOW = datetime(2026, 11, 4, 9, 0, tzinfo=timezone.utc)
@@ -54,8 +62,13 @@ class MarketStatusTests(unittest.TestCase):
             {'fixture_id': 'b', 'market': 'DRAW', 'expected_edge': 0.08, 'probability': 0.3},
         ])
         by_fixture = {item['fixture_id']: item['market'] for item in chosen}
-        self.assertEqual(by_fixture['a'], 'OVER_2.5')
+        self.assertEqual(by_fixture['a'], 'HOME')
         self.assertEqual(by_fixture['b'], 'DRAW')
+        tied = choose_best([
+            {'fixture_id': 'c', 'market': 'HOME', 'probability': 0.81, 'confidence': 0.70},
+            {'fixture_id': 'c', 'market': 'OVER_2.5', 'probability': 0.81, 'confidence': 0.91},
+        ])
+        self.assertEqual(tied[0]['market'], 'OVER_2.5')
 
     def test_goal_sports_use_the_result_market_names(self):
         self.assertEqual(_canonical('ice_hockey', 'h2h', 'home', None), 'HOME')
@@ -99,9 +112,12 @@ class RegistryRefreshTests(unittest.TestCase):
         self.assertEqual(by_key[('football', 'CORNERS')], 'data_pending')
         self.assertEqual(by_key[('football', 'CARDS')], 'data_pending')
         self.assertEqual(by_key[('football', 'CORRECT_SCORE')], 'research')
-        self.assertEqual(by_key[('tennis', 'MATCH_WINNER')], 'unsupported')
+        self.assertEqual(by_key[('tennis', 'MATCH_WINNER')], 'research')
+        self.assertEqual(by_key[('tennis', 'MONEYLINE_HOME')], 'research')
         self.assertEqual(by_key[('cricket', 'MATCH_WINNER')], 'unsupported')
-        self.assertEqual(by_key[('table_tennis', 'MATCH_WINNER')], 'unsupported')
+        self.assertEqual(by_key[('table_tennis', 'MONEYLINE_HOME')], 'research')
+        self.assertEqual(by_key[('volleyball', 'SET_HANDICAP')], 'unsupported')
+        self.assertEqual(by_key[('mma', 'MONEYLINE_AWAY')], 'research')
         self.assertNotIn('active', set(by_key.values()))
         self.assertFalse(report['places_wager'])
         self.assertFalse(report['thresholds_changed'])
@@ -129,6 +145,112 @@ class RegistryRefreshTests(unittest.TestCase):
             report = refresh_market_registry(connection)
         tennis = [item for item in report['items'] if item['sport'] == 'tennis' and item['market_key'] == 'MONEYLINE_HOME']
         self.assertEqual(len(tennis), 1)
-        self.assertEqual(tennis[0]['status'], 'discovered')
+        self.assertEqual(tennis[0]['status'], 'research')
         self.assertIsNone(tennis[0]['evidence'].get('probability'))
         self.assertNotIn('active', {item['status'] for item in report['items'] if item['sport'] == 'tennis'})
+
+    def test_the_starting_catalogue_registers_every_group_without_activating_it(self):
+        summary = catalogue_summary()
+        self.assertEqual(summary['sports'], 4)
+        self.assertEqual(summary['competitions'], 23)
+        self.assertEqual(summary['market_groups'], 61)
+        self.assertEqual(summary['by_sport']['football'], {'competitions': 10, 'markets': 17})
+        self.assertEqual(summary['by_sport']['basketball'], {'competitions': 5, 'markets': 15})
+        self.assertEqual(summary['by_sport']['tennis'], {'competitions': 4, 'markets': 14})
+        self.assertEqual(summary['by_sport']['ice_hockey'], {'competitions': 4, 'markets': 15})
+        self.assertEqual(len(COMPETITIONS), 23)
+        self.assertEqual(len(MARKET_GROUPS), 61)
+        self.assertEqual(match_competition('football', 'English Premier League 2026/27'), 'england-premier-league')
+        self.assertEqual(match_competition('football', 'UEFA Champions League'), 'uefa-champions-league')
+        self.assertEqual(match_competition('football', 'EFL Championship'), 'england-championship')
+        self.assertEqual(match_competition('basketball', 'NBA'), 'usa-nba')
+        with db.connect() as connection:
+            report = refresh_market_registry(connection)
+        by_key = {(item['sport'], item['market_key']): item['status'] for item in report['items']}
+        for group in MARKET_GROUPS:
+            self.assertIn((group['sport'], group['key']), by_key)
+            if group['kind'] == 'unsupported':
+                self.assertEqual(by_key[(group['sport'], group['key'])], 'unsupported')
+            if group['kind'] == 'data_pending':
+                self.assertIn(by_key[(group['sport'], group['key'])], {'data_pending', 'research'})
+        self.assertEqual(by_key[('ice_hockey', 'MATCH_WINNER_INCL_OT')], 'unsupported')
+        self.assertEqual(by_key[('ice_hockey', 'REGULATION_RESULT')], 'research')
+        self.assertEqual(by_key[('football', 'CORNERS')], 'data_pending')
+        self.assertNotIn('active', set(by_key.values()))
+        self.assertEqual(report['catalogue']['registered'], 23)
+        self.assertEqual(report['catalogue']['fixtures_invented'], 0)
+        self.assertEqual(report['reference_catalogue']['competitions'], 932)
+        self.assertEqual(report['reference_catalogue']['football'], 603)
+        self.assertEqual(report['reference_catalogue']['fixtures_invented'], 0)
+        self.assertFalse(report['reference_catalogue']['places_wager'])
+        reference = [item for item in report['items'] if item['period'] == 'reference']
+        self.assertTrue(reference)
+        self.assertTrue(all(item['status'] == 'data_pending' for item in reference))
+        self.assertTrue(all(item['evidence'].get('probability') is None for item in reference))
+        self.assertTrue(all(item['evidence'].get('activated') is False for item in reference))
+        priced = football_market({'expected_home_goals': 1.4, 'expected_away_goals': 1.1}, 'ODD_GOALS')
+        other = football_market({'expected_home_goals': 1.4, 'expected_away_goals': 1.1}, 'EVEN_GOALS')
+        self.assertAlmostEqual(priced['p_win'] + other['p_win'], 1, places=6)
+        self.assertEqual(settle_result('football', 'MARGIN_HOME_1', 2, 1), 'won')
+        self.assertEqual(settle_result('football', 'EUROPEAN_HOME_-1', 2, 1), 'push')
+
+    def test_every_workbook_league_is_registered_and_no_fixture_is_invented(self):
+        catalogue = load_reference_catalogue()
+        expected = {
+            f"{item['country']} — {item['name']}"
+            for item in catalogue['competitions']
+            if item['sport'] == 'football'
+        }
+        with db.connect() as connection:
+            before = connection.execute('SELECT COUNT(*) FROM sports_ai_fixtures').fetchone()[0]
+            report = ensure_reference_catalogue(connection)
+            stored = {
+                row['name'] for row in connection.execute(
+                    "SELECT name FROM sports_ai_leagues WHERE sport_code='football' AND season='catalogue'",
+                )
+            }
+            divisions = {
+                row['division'] for row in connection.execute(
+                    "SELECT DISTINCT division FROM sports_ai_leagues WHERE sport_code='football' AND season='catalogue'",
+                )
+            }
+            snooker = connection.execute(
+                "SELECT prediction_status FROM sports_ai_sports WHERE code='snooker'",
+            ).fetchone()
+            football = connection.execute(
+                "SELECT prediction_status FROM sports_ai_sports WHERE code='football'",
+            ).fetchone()
+            after = connection.execute('SELECT COUNT(*) FROM sports_ai_fixtures').fetchone()[0]
+            again = ensure_reference_catalogue(connection)
+        self.assertEqual(len(expected), 603)
+        self.assertEqual(stored, expected)
+        self.assertEqual(report['competitions'], 932)
+        self.assertEqual(again['added'], 0)
+        self.assertEqual(before, after)
+        self.assertEqual(football['prediction_status'], 'modelled')
+        self.assertEqual(snooker['prediction_status'], 'not_modelled')
+        for division in (
+            'First Division', 'Second Division', 'Lower / Regional', 'Domestic Cup',
+            "Women's top divisions", 'Youth U17', 'Friendlies',
+        ):
+            self.assertIn(division, divisions)
+
+    def test_collected_sports_wait_for_their_own_model(self):
+        self.assertEqual(coverage_status('tennis', set(), 0), 'Research')
+        self.assertEqual(coverage_status('efootball', set(), 0), 'Research')
+        self.assertEqual(coverage_status('vfootball', set(), 0), 'Research')
+        self.assertEqual(coverage_status('volleyball', set(), 0), 'Research')
+        self.assertEqual(coverage_status('mma', set(), 0), 'Research')
+        self.assertEqual(coverage_status('table_tennis', set(), 0), 'Research')
+        self.assertEqual(coverage_status('football', {'football'}, 2), 'Active')
+        self.assertEqual(coverage_status('darts', set(), 0), 'Unsupported')
+        self.assertEqual(settle_result('tennis', 'MONEYLINE_HOME', 2, 1), 'won')
+        self.assertEqual(settle_result('mma', 'MONEYLINE_AWAY', 0, 1), 'won')
+        self.assertEqual(settle_result('volleyball', 'MONEYLINE_HOME', 1, 3), 'lost')
+        self.assertIsNone(settle_result('tennis', 'TOTAL_GAMES', 2, 1))
+        self.assertEqual(map_market('efootball', '1X2', 'Home')['canonical_market'], 'HOME')
+        self.assertEqual(map_market('tennis', 'Winner', 'Home')['canonical_market'], 'MONEYLINE_HOME')
+        self.assertEqual(map_market('table_tennis', 'Winner', 'Player B', home='Player A', away='Player B')['canonical_market'], 'MONEYLINE_AWAY')
+        self.assertFalse(map_market('tennis', 'Total Games', 'Over 22.5')['supported'])
+        self.assertIsNone(market_probability('tennis', 'MONEYLINE_HOME', {'anything': 1}))
+        self.assertIsNone(probability('tennis', 'MATCH_WINNER', {'anything': 1}))

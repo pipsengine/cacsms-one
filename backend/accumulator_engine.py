@@ -12,8 +12,9 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from booking_schedule import WAT
+from booking_schedule import WAT, opportunity_week
 from prediction_engine import _line_settlement
+from sport_support import ANALYSED_SPORTS, GOAL_SPORTS, WINNER_SPORTS, sql_in
 
 TARGETS = (1.5, 2, 3, 5, 8, 10, 15, 25, 50, 100, 400, 500, 800, 1000, 5000, 10000, 20000, 25000, 50000)
 # Stored configs from earlier ladders are rewritten to TARGETS on load.
@@ -87,13 +88,17 @@ def supported_market(sport, market):
     market = (market or '').upper()
     if not market or market.startswith('FIRST_HALF_'):
         return False
-    if sport in ('football', 'frauenfussball', 'ice_hockey'):
+    if sport in GOAL_SPORTS:
         if market in _BINARY_FOOTBALL:
+            return True
+        if market in {'ODD_GOALS', 'EVEN_GOALS', 'CLEAN_SHEET_HOME', 'CLEAN_SHEET_AWAY'}:
             return True
         return bool(
             re.fullmatch(r'(OVER|UNDER)_\d+(?:\.\d+)?', market)
             or re.fullmatch(r'(HOME|AWAY)_(OVER|UNDER)_\d+(?:\.\d+)?', market)
             or re.fullmatch(r'(HOME|AWAY)_(HANDICAP|SPREAD)_-?\d+(?:\.\d+)?', market)
+            or re.fullmatch(r'EUROPEAN_(HOME|DRAW|AWAY)_-?\d+(?:\.\d+)?', market)
+            or re.fullmatch(r'MARGIN_(HOME|AWAY)_(1|2|3PLUS)', market)
         )
     if sport == 'basketball':
         if market in ('MONEYLINE_HOME', 'MONEYLINE_AWAY'):
@@ -103,6 +108,8 @@ def supported_market(sport, market):
             or re.fullmatch(r'(HOME|AWAY)_(OVER|UNDER)_\d+(?:\.\d+)?', market)
             or re.fullmatch(r'(HOME|AWAY)_SPREAD_-?\d+(?:\.\d+)?', market)
         )
+    if sport in WINNER_SPORTS:
+        return market in ('MONEYLINE_HOME', 'MONEYLINE_AWAY')
     return False
 
 
@@ -485,6 +492,12 @@ def _same_score_family(legs):
             return 'score'
         if re.fullmatch(r'(HOME|AWAY)_(HANDICAP|SPREAD)_-?\d+(?:\.\d+)?', market):
             return 'score'
+        if market in {'ODD_GOALS', 'EVEN_GOALS', 'CLEAN_SHEET_HOME', 'CLEAN_SHEET_AWAY'}:
+            return 'score'
+        if re.fullmatch(r'EUROPEAN_(HOME|DRAW|AWAY)_-?\d+(?:\.\d+)?', market):
+            return 'score'
+        if re.fullmatch(r'MARGIN_(HOME|AWAY)_(1|2|3PLUS)', market):
+            return 'score'
         return None
     families = {family(leg.get('market')) for leg in legs}
     return families == {'score'}
@@ -597,6 +610,10 @@ def market_family(market):
     market = str(market or '').upper()
     if market in {'HOME', 'AWAY', 'DRAW', 'MONEYLINE_HOME', 'MONEYLINE_AWAY'}:
         return 'result'
+    if market.startswith('DOUBLE_CHANCE'):
+        return 'double_chance'
+    if market.startswith('DNB_'):
+        return 'dnb'
     if market.startswith('BTTS'):
         return 'btts'
     if 'SPREAD' in market or 'HANDICAP' in market:
@@ -793,7 +810,7 @@ def _live_ticket(accepted, config):
                 'tier_label': 'Live',
                 'tier_mode': 'standard',
                 'legs': legs,
-                'signature': '|'.join(sorted(leg['opportunity_id'] for leg in legs)),
+                'signature': selection_signature(legs),
                 'score': combined.get('joint_probability'),
                 'components': {},
                 **combined,
@@ -850,7 +867,7 @@ def _span_ticket(accepted, config, size):
         'tier_label': f'{size}-selection',
         'tier_mode': 'standard',
         'legs': legs,
-        'signature': '|'.join(sorted(leg['opportunity_id'] for leg in legs)),
+        'signature': selection_signature(legs),
         'score': combined.get('joint_probability'),
         'components': {},
         **combined,
@@ -987,7 +1004,7 @@ def optimize_candidates(candidates, config, now=None):
             if _hard_failure(combined['issues']):
                 continue
             score, components = _ticket_score(target, float(config['tolerance']), legs, combined)
-            signature = '|'.join(sorted(leg['opportunity_id'] for leg in legs))
+            signature = selection_signature(legs)
             sports_used = sorted({leg['sport'] for leg in legs})
             league_names = sorted({leg.get('competition') for leg in legs if leg.get('competition')})
             status = 'qualified' if combined['probability_basis'] == 'independent' else 'unverified_probability'
@@ -1102,7 +1119,7 @@ def _optimize_days(candidates, config, now=None):
                     'tier_label': f'{day_name} {target:g}×',
                     'tier_mode': 'standard',
                     'legs': legs,
-                    'signature': '|'.join(sorted(leg['opportunity_id'] for leg in legs)),
+                    'signature': selection_signature(legs),
                     'score': combined.get('joint_probability'),
                     'components': {},
                     **combined,
@@ -1168,7 +1185,7 @@ def _optimize_ranges(candidates, config, now=None):
             combined = combine_ticket(legs, config)
             if _hard_failure(combined['issues']):
                 continue
-            signature = '|'.join(sorted(leg['opportunity_id'] for leg in legs))
+            signature = selection_signature(legs)
             status = 'qualified' if combined['probability_basis'] == 'independent' else 'unverified_probability'
             explanation = combined['explanation']
             if band['mode'] == 'simulation':
@@ -1362,9 +1379,9 @@ def settle_result(sport, market, home_score, away_score):
     if market.startswith('FIRST_HALF_') or not supported_market(sport, market):
         return None
     home, away = int(home_score), int(away_score)
-    if sport in ('football', 'frauenfussball', 'ice_hockey'):
+    if sport in GOAL_SPORTS:
         value = _football_result(market, home, away)
-    elif sport == 'basketball':
+    elif sport == 'basketball' or sport in WINNER_SPORTS:
         value = _basketball_result(market, home, away)
     else:
         return None
@@ -1403,6 +1420,28 @@ def _football_result(market, home, away):
     if handicap:
         margin = home - away if handicap.group(1) == 'HOME' else away - home
         return _line_settlement(margin, -float(handicap.group(2)), True)
+    if market == 'ODD_GOALS':
+        return 1 if (home + away) % 2 else -1
+    if market == 'EVEN_GOALS':
+        return 1 if (home + away) % 2 == 0 else -1
+    if market == 'CLEAN_SHEET_HOME':
+        return 1 if away == 0 else -1
+    if market == 'CLEAN_SHEET_AWAY':
+        return 1 if home == 0 else -1
+    european = re.fullmatch(r'EUROPEAN_(HOME|DRAW|AWAY)_(-?\d+(?:\.\d+)?)', market)
+    if european:
+        adjusted = home + float(european.group(2))
+        if european.group(1) == 'HOME':
+            return 1 if adjusted > away else 0 if adjusted == away else -1
+        if european.group(1) == 'AWAY':
+            return 1 if adjusted < away else 0 if adjusted == away else -1
+        return 1 if adjusted == away else -1
+    margin_band = re.fullmatch(r'MARGIN_(HOME|AWAY)_(1|2|3PLUS)', market)
+    if margin_band:
+        diff = (home - away) if margin_band.group(1) == 'HOME' else (away - home)
+        band = margin_band.group(2)
+        won = diff == 1 if band == '1' else diff == 2 if band == '2' else diff >= 3
+        return 1 if won else -1
     return None
 
 
@@ -1484,7 +1523,63 @@ def _blocked_fixtures(connection):
     return {row['fixture_id'] for row in rows}
 
 
-def load_opportunity_rows(connection):
+def selection_signature(legs):
+    """The fixture and market identify a slip. A refreshed price does not."""
+    return '|'.join(sorted(f"{leg['fixture_id']}:{str(leg['market']).upper()}" for leg in legs))
+
+
+def open_selection_signatures(connection):
+    grouped = {}
+    for row in connection.execute(
+        """SELECT t.id, l.fixture_id, l.market
+           FROM sports_ai_accumulator_tickets t
+           JOIN sports_ai_accumulator_legs l ON l.ticket_id=t.id
+           WHERE t.status IN ('qualified','unverified_probability','review_required','awaiting_odds')""",
+    ):
+        grouped.setdefault(row['id'], []).append(row)
+    return {selection_signature(legs) for legs in grouped.values() if legs}
+
+
+def retire_duplicate_tickets(connection, now=None):
+    """Keep the newest open ticket for each fixture and market set."""
+    current = _now(now) or datetime.now(timezone.utc)
+    rows = connection.execute(
+        """SELECT id, created_at FROM sports_ai_accumulator_tickets
+           WHERE status IN ('qualified','unverified_probability','review_required','awaiting_odds')
+           ORDER BY created_at DESC, id DESC""",
+    ).fetchall()
+    grouped = {}
+    for row in rows:
+        legs = connection.execute(
+            'SELECT fixture_id, market FROM sports_ai_accumulator_legs WHERE ticket_id=?',
+            (row['id'],),
+        ).fetchall()
+        if not legs:
+            continue
+        grouped.setdefault(selection_signature(legs), []).append(row['id'])
+    retired = 0
+    for ticket_ids in grouped.values():
+        for ticket_id in ticket_ids[1:]:
+            coded = connection.execute(
+                """SELECT 1 FROM sports_ai_booking_codes
+                   WHERE accumulator_ticket_id=? AND TRIM(COALESCE(code,''))<>'' LIMIT 1""",
+                (ticket_id,),
+            ).fetchone()
+            if coded:
+                continue
+            connection.execute(
+                "UPDATE sports_ai_accumulator_tickets SET status='expired', publication_state='EXPIRED' WHERE id=?",
+                (ticket_id,),
+            )
+            retired += 1
+    return {'retired': retired, 'kept': len(grouped), 'places_wager': False, 'at': current.isoformat()}
+
+
+def load_opportunity_rows(connection, now=None):
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    _monday, week_end = opportunity_week(current)
     rows = connection.execute(
         """SELECT o.id AS opportunity_id, o.status AS opportunity_status, o.expected_edge,
                   COALESCE(o.data_completeness, s.completeness) AS data_completeness,
@@ -1500,7 +1595,8 @@ def load_opportunity_rows(connection):
            JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
            JOIN sports_ai_qualification_decisions d ON d.opportunity_id=o.id AND d.state='QUALIFIED'
            LEFT JOIN sports_ai_feature_snapshots s ON s.id=p.feature_id
-           WHERE o.status='qualified'""",
+           WHERE o.status='qualified' AND f.starts_at>? AND f.starts_at<?""",
+        (current.astimezone(timezone.utc).isoformat(), week_end.astimezone(timezone.utc).isoformat()),
     ).fetchall()
     from market_registry import choose_best
     return choose_best([dict(row) for row in rows])
@@ -1511,10 +1607,10 @@ def _simulated_competition(name):
     return 'simulated' in text or 'srl' in text.split()
 
 
-def build_high_probability_tickets(connection, actor, audit, now=None, minimum=0.75):
-    """Store 3-to-8 selection tickets from leagues with a 75% model price. They are not booked."""
+def build_high_probability_tickets(connection, actor, audit, now=None, minimum=0.70):
+    """Store tickets from every analysed market above 70%. They are not booked."""
     current = _now(now)
-    fresh = (current - timedelta(minutes=15)).isoformat()
+    fresh = (current - timedelta(hours=6)).isoformat()
     short = connection.execute(
         """SELECT DISTINCT t.id FROM sports_ai_accumulator_tickets t
            JOIN sports_ai_accumulator_legs l ON l.ticket_id=t.id
@@ -1554,20 +1650,16 @@ def build_high_probability_tickets(connection, actor, audit, now=None, minimum=0
             narrow_ids.append(ticket_id)
         else:
             used.update(row['fixture_id'] for row in rows)
-    open_signatures = {
-        row['signature'] for row in connection.execute(
-            """SELECT signature FROM sports_ai_accumulator_tickets
-               WHERE status IN ('qualified','unverified_probability','review_required','awaiting_odds')""",
-        )
-    }
+    open_signatures = open_selection_signatures(connection)
     from prediction_engine import normalize_quote_market, upcoming_fixture_sql
     fixtures = [dict(row) for row in connection.execute(
         f"""SELECT DISTINCT f.* FROM sports_ai_fixtures f
             JOIN sports_ai_engine_predictions p ON p.fixture_id=f.id AND p.probability>=?
             JOIN sports_ai_odds_snapshots q ON q.fixture_id=f.id AND q.bookmaker='SportyBet' AND q.observed_at>=?
             WHERE {upcoming_fixture_sql('f')}
-              AND f.sport IN ('football','basketball','ice_hockey','frauenfussball')""",
-        (minimum, fresh),
+              AND f.starts_at<?
+              AND f.sport IN ({sql_in(ANALYSED_SPORTS)})""",
+        (minimum, fresh, opportunity_week(current)[1].astimezone(timezone.utc).isoformat()),
     )]
     legs_by_sport = {}
     for fixture in fixtures:
@@ -1733,12 +1825,7 @@ def build_bookable_cross_tickets(connection, actor, audit, now=None):
                  AND json_extract(t.parameters_json, '$.coverage')='cross_market'""",
         )
     }
-    open_signatures = {
-        row['signature'] for row in connection.execute(
-            """SELECT signature FROM sports_ai_accumulator_tickets
-               WHERE status IN ('qualified','unverified_probability','review_required','awaiting_odds')""",
-        )
-    }
+    open_signatures = open_selection_signatures(connection)
     decisions = [dict(row) for row in connection.execute(
         f"""SELECT d.fixture_id, d.market, p.id AS prediction_id, p.probability, p.settlement_json, p.outcome,
                   p.model_id, m.version AS model_version, m.metrics_json, s.completeness,
@@ -1757,7 +1844,9 @@ def build_bookable_cross_tickets(connection, actor, audit, now=None):
              )
            WHERE d.state='QUALIFIED'
              AND EXISTS (SELECT 1 FROM json_each(d.products_json) WHERE value='booking')
-             AND {upcoming_fixture_sql('f')}""",
+             AND {upcoming_fixture_sql('f')}
+             AND f.starts_at<?""",
+        (opportunity_week(current)[1].astimezone(timezone.utc).isoformat(),),
     )]
     legs = []
     for decision in decisions:
@@ -1935,7 +2024,7 @@ def generate_accumulators(connection, actor, audit, sport_mode='mixed', override
     try:
         from qualification_engine import revalidate
         revalidate(connection, actor, current)
-        rows = load_opportunity_rows(connection)
+        rows = load_opportunity_rows(connection, current)
         accepted, decisions = qualify_candidates(rows, config, current, _blocked_fixtures(connection))
         if span:
             ticket = _span_ticket(accepted, config, span)
@@ -1965,12 +2054,7 @@ def generate_accumulators(connection, actor, audit, sport_mode='mixed', override
             }
         else:
             search = optimize_candidates(accepted, config, current)
-        open_signatures = {
-            row['signature'] for row in connection.execute(
-                """SELECT signature FROM sports_ai_accumulator_tickets
-                   WHERE status IN ('qualified','unverified_probability','review_required','awaiting_odds')""",
-            )
-        }
+        open_signatures = open_selection_signatures(connection)
         stored = []
         tier_summary = []
         for tier in search['tiers']:
@@ -2157,7 +2241,16 @@ def list_tickets(connection, tier=None, sport_mode=None, status=None, family_id=
             ORDER BY created_at DESC, tier, signature LIMIT 200""",
         args,
     ).fetchall()
-    return [_ticket_payload(connection, row['id']) for row in rows]
+    tickets = [_ticket_payload(connection, row['id']) for row in rows]
+    return [
+        ticket for ticket in tickets
+        if ticket.get('status') != 'qualified'
+        or (
+            ticket.get('probability_basis') == 'independent'
+            and ticket.get('joint_probability') is not None
+            and float(ticket['joint_probability']) > 0.70
+        )
+    ]
 
 
 def revalidate_ticket(connection, ticket_id, now=None):
@@ -2218,7 +2311,7 @@ def _clone_from(connection, ticket_id, legs, status, change_type, reason, now, r
         combined['estimated_edge'] = None
     ticket = {
         'tier': source['tier'],
-        'signature': '|'.join(sorted(leg['opportunity_id'] for leg in material)) or f"empty:{source['family_id']}:{source['version']+1}",
+        'signature': selection_signature(material) if material else f"empty:{source['family_id']}:{source['version']+1}",
         'legs': material,
         'score': source['score'],
         'components': _loads(source['parameters_json'], {}).get('score_components') or {},
@@ -2294,7 +2387,7 @@ def replace_leg(connection, actor, audit, ticket_id, remove_id, add_id, now=None
     if any(leg['opportunity_id'] == add_id for leg in source_legs):
         return {'error': 'That opportunity is already on the ticket'}
     config = load_config(connection)
-    rows = [row for row in load_opportunity_rows(connection) if row['opportunity_id'] == add_id]
+    rows = [row for row in load_opportunity_rows(connection, current) if row['opportunity_id'] == add_id]
     accepted, decisions = qualify_candidates(rows, config, current, _blocked_fixtures(connection))
     if not accepted:
         reason = decisions[0]['reason'] if decisions else 'The replacement did not qualify'

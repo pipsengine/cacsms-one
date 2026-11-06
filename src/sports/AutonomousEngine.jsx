@@ -127,7 +127,7 @@ export default function AutonomousEngine({nav}) {
     [CalendarDays, 'Live matches', count(summary.live), summary.live ? 'In play' : 'None in play', 'green'],
     [Cpu, 'Analysed (24h)', count(summary.analysed), 'Prediction rows', 'violet'],
     [Target, 'Value opportunities', count(summary.opportunities), 'Qualified', 'orange'],
-    [Ticket, 'Tickets generated', count(summary.tickets), summary.tickets ? 'Stored suggestions' : 'None qualified', 'violet'],
+    [Ticket, 'Tickets generated', count((data?.tickets || []).length), 'Ready this week, above 70%', 'violet'],
     [BarChart3, 'Prediction accuracy', percent(summary.accuracy), summary.settled ? `${count(summary.settled)} settled` : 'No settled results', 'orange'],
     [TrendingUp, 'Model edge (avg)', summary.edge == null ? '—' : `+${Number(summary.edge).toFixed(1)}%`, summary.edge == null ? 'No qualified edge' : 'Qualified average', 'green'],
     [ShieldCheck, 'Qualified decisions', count(summary.qualified_decisions), 'Central qualification', 'blue'],
@@ -239,7 +239,7 @@ export default function AutonomousEngine({nav}) {
     {tab === 'Generated Tickets' && <section className="ae-panel">
       <div className="ae-head"><h2><Ticket size={18}/> Generated Tickets</h2><button className="ae-link" onClick={() => nav('tickets')}>Open ticket builder</button></div>
       <TicketGrid tickets={data?.tickets || []}/>
-      <p className="ae-note">Checked {clock(data?.tickets_checked_at)}. These are the tickets that are still qualified. A ticket whose price or qualification has lapsed leaves this list. Nothing on this page submits a wager.</p>
+      <p className="ae-note">Checked {clock(data?.tickets_checked_at)}. This is the same list as Ticket Builder: qualified, above 70%, and kicking off between Monday and Sunday this week. Nothing on this page submits a wager.</p>
     </section>}
 
     {tab === 'Model Performance' && <section className="ae-panel">
@@ -314,6 +314,6 @@ function OpportunityTable({rows, onOpen}) {
 }
 
 function TicketGrid({tickets}) {
-  if (!tickets.length) return <p className="ae-empty">No ticket is currently qualified. The worker checks again on its next cycle.</p>;
+  if (!tickets.length) return <p className="ae-empty">No ticket above 70% is stored for this week. The worker checks again on its next cycle.</p>;
   return <div className="ae-ticket-grid">{tickets.map(ticket => <article className="ae-ticket" key={ticket.id}><h3><Ticket size={16}/>{ticket.type}</h3><small>{clock(ticket.created_at)}</small>{ticket.booking_code ? <p className="ae-code">{ticket.booking_code}</p> : <p className="ae-code wait">{ticket.status === 'qualified' ? 'Awaiting code' : ticket.status}</p>}{ticket.picks.map(pick => <p key={pick}>{pick}</p>)}<div><strong>{ticket.odds == null ? 'Odds not stored' : `Total odds ${Number(ticket.odds).toFixed(2)}`}</strong><span>{ticket.status}</span></div></article>)}</div>;
 }

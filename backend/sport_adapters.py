@@ -3,15 +3,23 @@
 Each adapter refuses to return a probability. A name in this file is not activation.
 """
 
+def _tennis_names():
+    from discovery_catalogue import ADDITIONAL_GROUPS, MARKET_GROUPS
+    return tuple(
+        item['key'] for item in (*MARKET_GROUPS, *ADDITIONAL_GROUPS)
+        if item['sport'] == 'tennis' and item['key'] != 'MATCH_WINNER'
+    )
+
+
 UNSUPPORTED = {
-    'tennis': ('MATCH_WINNER', 'SET_HANDICAP', 'TOTAL_GAMES'),
-    'volleyball': ('MATCH_WINNER', 'SET_HANDICAP', 'TOTAL_POINTS'),
+    'tennis': _tennis_names(),
+    'volleyball': ('SET_HANDICAP', 'TOTAL_POINTS'),
     'baseball': ('MONEYLINE', 'RUN_LINE', 'TOTAL_RUNS'),
-    'ice_hockey': ('MONEYLINE', 'PUCK_LINE', 'TOTAL_GOALS'),
+    'ice_hockey': ('MONEYLINE',),
     'cricket': ('MATCH_WINNER', 'TOTAL_RUNS'),
     'handball': ('MATCH_WINNER', 'HANDICAP', 'TOTAL_GOALS'),
-    'table_tennis': ('MATCH_WINNER', 'GAME_HANDICAP', 'TOTAL_POINTS'),
-    'tischtennis': ('MATCH_WINNER', 'GAME_HANDICAP', 'TOTAL_POINTS'),
+    'table_tennis': ('GAME_HANDICAP', 'TOTAL_POINTS'),
+    'tischtennis': ('GAME_HANDICAP', 'TOTAL_POINTS'),
 }
 
 

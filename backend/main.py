@@ -277,7 +277,7 @@ def booking_centre(connection):
                   (SELECT group_concat(l.home || ' vs ' || l.away, ' · ')
                    FROM sports_ai_accumulator_legs l WHERE l.ticket_id=t.id) AS matchup
            FROM sports_ai_accumulator_tickets t
-           WHERE t.status='qualified'
+           WHERE (t.status='qualified' AND t.probability_basis='independent' AND t.joint_probability>0.70)
               OR EXISTS (
                 SELECT 1 FROM sports_ai_booking_codes b
                 WHERE b.accumulator_ticket_id=t.id AND b.status='verified'
@@ -370,7 +370,7 @@ def dashboard(user=Depends(auth)):
                JOIN sports_ai_engine_predictions p ON p.id=o.prediction_id
                JOIN sports_ai_fixtures f ON f.id=p.fixture_id
                LEFT JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
-               WHERE o.status='qualified' ORDER BY o.evaluated_at DESC LIMIT 10""")
+               WHERE o.status='qualified' AND p.probability>0.80 ORDER BY p.probability DESC LIMIT 10""")
         row=c.execute('SELECT created_at FROM sports_ai_analysis_runs ORDER BY created_at DESC LIMIT 1').fetchone()
         counts['last_run']=row[0] if row else None
         counts['last_analysis']=c.execute('SELECT MAX(created_at) FROM sports_ai_match_analyses').fetchone()[0]
@@ -459,7 +459,7 @@ def dashboard(user=Depends(auth)):
                         o.expected_edge AS edge,o.rank_score,q.decimal_odds,q.bookmaker,q.observed_at,
                         ROW_NUMBER() OVER (
                           PARTITION BY f.id
-                          ORDER BY o.rank_score IS NULL, o.rank_score DESC, o.expected_edge DESC
+                          ORDER BY p.probability DESC, o.expected_edge DESC
                         ) AS pick
                  FROM sports_ai_value_opportunities o
                  JOIN sports_ai_engine_predictions p ON p.id=o.prediction_id
@@ -469,11 +469,12 @@ def dashboard(user=Depends(auth)):
                  JOIN sports_ai_qualification_decisions d
                    ON d.prediction_id=p.id AND d.market=p.market AND d.state='QUALIFIED'
                  WHERE o.status='qualified' AND o.expected_edge>0 AND m.active=1 AND m.status='active'
+                   AND p.probability>0.80
                    AND {upcoming_fixture_sql('f')} AND q.observed_at>=? AND q.decimal_odds>1
                )
                WHERE pick=1
-               ORDER BY rank_score IS NULL, rank_score DESC, edge DESC
-               LIMIT 15""", (fresh_quote,))
+               ORDER BY probability DESC, edge DESC
+               LIMIT 10""", (fresh_quote,))
         settled=c.execute(
             """SELECT
                  SUM(CASE WHEN (p.market IN ('HOME','MONEYLINE_HOME') AND r.home_score>r.away_score)

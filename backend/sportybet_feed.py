@@ -15,18 +15,35 @@ from sportybet_research import (
     BOOKMAKER,
     accept_displayed_quotes,
     blocked_page,
-    map_market,
     store_observations,
     validate_decimal,
 )
 
-SECTIONS = (
-    ('basketball', 'https://www.sportybet.com/ng/sport/basketball'),
+COLLECTION_URL = 'https://www.sportybet.com/ng/sport/football'
+FALLBACK_SECTIONS = (
     ('football', 'https://www.sportybet.com/ng/sport/football'),
+    ('basketball', 'https://www.sportybet.com/ng/sport/basketball'),
+    ('tennis', 'https://www.sportybet.com/ng/sport/tennis'),
     ('ice_hockey', 'https://www.sportybet.com/ng/sport/iceHockey'),
 )
-MAX_PAGES = 20
+SECTIONS = FALLBACK_SECTIONS
+SLUGS = {
+    'football': 'football',
+    'soccer': 'football',
+    'basketball': 'basketball',
+    'tennis': 'tennis',
+    'icehockey': 'ice_hockey',
+    'ice-hockey': 'ice_hockey',
+    'tabletennis': 'table_tennis',
+    'table-tennis': 'table_tennis',
+}
+PAGE_CEILING = 500
 REFRESH_MINUTES = 15
+FOOTBALL_MENU_PATHS = (
+    '/api/ng/factsCenter/sportCategory?sportId=sr:sport:1',
+    '/api/ng/factsCenter/queryTournamentBySport?sportId=sr:sport:1',
+    '/api/ng/factsCenter/sportMenu?sportId=sr:sport:1',
+)
 
 
 def quotes_from_payload(payload, sport, source_url):
@@ -55,7 +72,7 @@ def quotes_from_payload(payload, sport, source_url):
                         continue
                     odds = validate_decimal(outcome.get('odds'))
                     selection = (outcome.get('desc') or '').strip()
-                    if odds is None or not selection or not map_market(sport, label, selection, line).get('supported'):
+                    if odds is None or not selection:
                         continue
                     rows.append({
                         'sport': sport,
@@ -72,6 +89,178 @@ def quotes_from_payload(payload, sport, source_url):
     return rows
 
 
+def _tournament_record(tournament, category):
+    if not isinstance(tournament, dict):
+        return None
+    name = str(tournament.get('name') or tournament.get('tournamentName') or '').strip()
+    if not name:
+        return None
+    category = str(category or tournament.get('categoryName') or '').strip()
+    if category and name.casefold().startswith(category.casefold()):
+        label = name
+    else:
+        label = ' '.join(part for part in (category, name) if part).strip()
+    identifier = str(tournament.get('id') or tournament.get('tournamentId') or '').strip()
+    raw_events = tournament.get('eventSize')
+    if raw_events is None:
+        raw_events = tournament.get('eventCount')
+    if raw_events is None:
+        raw_events = len(tournament.get('events') or [])
+    try:
+        events = int(raw_events or 0)
+    except (TypeError, ValueError):
+        events = 0
+    return {
+        'id': identifier,
+        'category': category,
+        'name': name,
+        'label': label,
+        'events': events,
+        'key': identifier or label.casefold(),
+    }
+
+
+def _competitions_from_rows(rows):
+    found = []
+    seen = set()
+    for row in rows or []:
+        if row.get('sport') != 'football':
+            continue
+        label = str(row.get('competition') or '').strip()
+        if not label or label.casefold() in seen:
+            continue
+        seen.add(label.casefold())
+        found.append({
+            'id': f'football:{label.casefold()}',
+            'category': '',
+            'name': label,
+            'label': label,
+            'events': 1,
+        })
+    return found
+
+
+def _football_menu(page, sample_url):
+    origin = '{0.scheme}://{0.netloc}'.format(urlsplit(sample_url or COLLECTION_URL))
+    found = []
+    seen = set()
+    for path in FOOTBALL_MENU_PATHS:
+        try:
+            response = page.context.request.get(origin + path, timeout=20000)
+        except Exception:
+            continue
+        if response.status != 200:
+            continue
+        try:
+            payload = response.json()
+        except Exception:
+            continue
+        for item in tournaments_from_menu(payload):
+            if item['key'] in seen:
+                continue
+            seen.add(item['key'])
+            found.append(item)
+        if found:
+            break
+    return found
+
+
+def _tournament_url(sample_url, tournament_id):
+    parts = urlsplit(sample_url or COLLECTION_URL)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query['sportId'] = query.get('sportId') or 'sr:sport:1'
+    query['tournamentId'] = str(tournament_id)
+    query['pageSize'] = '100'
+    query['pageNum'] = '1'
+    path = parts.path if 'factsCenter' in (parts.path or '') else '/api/ng/factsCenter/pcUpcomingEvents'
+    scheme = parts.scheme or 'https'
+    netloc = parts.netloc or 'www.sportybet.com'
+    return urlunsplit((scheme, netloc, path, urlencode(query), ''))
+
+
+def tournaments_from_events(payload):
+    """Every tournament on an events page. Nothing is dropped for being a lower division or a cup."""
+    found = []
+    seen = set()
+    for tournament in ((payload or {}).get('data') or {}).get('tournaments') or []:
+        item = _tournament_record(tournament, tournament.get('categoryName') or '')
+        if item and item['label'] not in seen:
+            seen.add(item['label'])
+            found.append(item)
+    return found
+
+
+def tournaments_from_menu(payload):
+    """Every league, division and cup in a category tree."""
+    found = []
+    seen = set()
+
+    def walk(node, category):
+        if isinstance(node, list):
+            for item in node:
+                walk(item, category)
+            return
+        if not isinstance(node, dict):
+            return
+        nested = node.get('tournaments') or node.get('tournamentList') or node.get('tournamentInfos')
+        current = node.get('categoryName') or category
+        if isinstance(nested, list):
+            group = node.get('categoryName') or node.get('name') or current
+            for item in nested:
+                record = _tournament_record(item, group or '')
+                if record and record['key'] not in seen:
+                    seen.add(record['key'])
+                    found.append(record)
+            return
+        for value in node.values():
+            walk(value, current)
+
+    walk(payload, '')
+    return found
+
+
+def register_football_leagues(connection, tournaments, source_url, now=None):
+    """Store each displayed football competition. No fixture is invented."""
+    from catalog_engine import _upsert_league
+    current = now or datetime.now(timezone.utc)
+    observed = current.isoformat()
+    provider = {'id': 'provider-sportybet', 'provider_key': 'sportybet'}
+    saved = 0
+    for item in tournaments or []:
+        label = str(item.get('label') or '').strip()
+        if not label:
+            continue
+        external = str(item.get('id') or f"football:{label.casefold()}")
+        league_id = _upsert_league(connection, provider, {
+            'sport_code': 'football',
+            'sport_name': 'Football',
+            'name': label,
+            'division': item.get('category') or '',
+            'season': 'sportybet',
+            'source_url': source_url,
+            'external_id': external,
+            'observed_at': observed,
+            'league_kind': 'competition',
+        })
+        if league_id:
+            saved += 1
+    return {'leagues': saved, 'fixtures_invented': 0, 'places_wager': False}
+
+
+def register_stored_football_leagues(connection, now=None):
+    """Register every football competition SportyBet has already displayed."""
+    rows = connection.execute(
+        """SELECT DISTINCT competition FROM sports_ai_fixtures
+           WHERE sport='football' AND source='sportybet-displayed' AND TRIM(competition)<>''
+           ORDER BY competition""",
+    ).fetchall()
+    tournaments = [
+        {'id': f"football:{row['competition'].casefold()}", 'category': '', 'name': row['competition'], 'label': row['competition']}
+        for row in rows
+    ]
+    return register_football_leagues(connection, tournaments, COLLECTION_URL, now)
+
+
 def publish_quotes(connection, rows, source_url, actor='sports-ai-worker', now=None):
     now = now or datetime.now(timezone.utc)
     if not rows:
@@ -79,6 +268,9 @@ def publish_quotes(connection, rows, source_url, actor='sports-ai-worker', now=N
     stored = store_observations(connection, None, rows, source_url, now.isoformat())
     accepted = accept_displayed_quotes(connection, stored['saved'], actor, now)
     accepted['saved'] = len(stored['saved'])
+    accepted['leagues'] = register_football_leagues(
+        connection, _competitions_from_rows(rows), source_url, now,
+    )['leagues']
     return accepted
 
 
@@ -98,7 +290,7 @@ def collect_displayed_odds():
         browser = playwright.chromium.launch(headless=True)
         try:
             page = browser.new_page()
-            for sport, url in SECTIONS:
+            for sport, url in _discover_sections(page):
                 try:
                     result = _read_section(page, sport, url)
                 except Exception as error:
@@ -143,43 +335,79 @@ def _read_section(page, sport, url):
         if not payload:
             return {'blocked': None, 'rows': []}
         rows = []
+        seen_ids = set()
         for body in _pages(page, captured.get('url'), payload):
             rows.extend(quotes_from_payload(body, sport, url))
+            for item in tournaments_from_events(body):
+                if item.get('id'):
+                    seen_ids.add(item['id'])
+        if sport == 'football':
+            menu = _football_menu(page, captured.get('url') or url)
+            with connect() as connection:
+                register_football_leagues(connection, menu, url)
+            for item in menu:
+                if not item.get('id') or item['id'] in seen_ids or int(item.get('events') or 0) <= 0:
+                    continue
+                for body in _pages(page, _tournament_url(captured.get('url') or url, item['id']), None):
+                    rows.extend(quotes_from_payload(body, sport, url))
         return {'blocked': None, 'rows': rows}
     finally:
         page.remove_listener('response', remember)
 
 
+def page_count(total, page_size):
+    """How many pages the feed says it has. The ceiling only stops a broken total."""
+    size = page_size if page_size > 0 else 100
+    if total <= 0:
+        return PAGE_CEILING
+    return min(PAGE_CEILING, max(1, (int(total) + size - 1) // size))
+
+
 def _pages(page, first_url, first_payload):
-    bodies = [first_payload]
-    total = int(((first_payload or {}).get('data') or {}).get('totalNum') or 0)
-    if not first_url or total <= 100:
-        return bodies
+    """Read every page of the feed. A lower division on a later page is kept."""
+    if not first_url:
+        return [first_payload] if first_payload else []
     parts = urlsplit(first_url)
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
-    last = min(MAX_PAGES, max(1, (total + 99) // 100))
-    for number in range(2, last + 1):
+    query['pageSize'] = '100'
+    bodies = []
+    total = int((((first_payload or {}).get('data') or {}).get('totalNum')) or 0)
+    last = page_count(total, 100)
+    for number in range(1, last + 1):
         query['pageNum'] = str(number)
         target = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ''))
-        response = page.context.request.get(target, timeout=20000)
+        try:
+            response = page.context.request.get(target, timeout=20000)
+        except Exception:
+            break
         if response.status != 200:
             break
         try:
             body = response.json()
         except Exception:
             break
-        if not ((body.get('data') or {}).get('tournaments')):
+        tournaments = (body.get('data') or {}).get('tournaments') or []
+        if not tournaments:
             break
         bodies.append(body)
-    return bodies
+        reported = int((body.get('data') or {}).get('totalNum') or 0)
+        if reported:
+            total = reported
+            last = page_count(total, 100)
+        if total and number * 100 >= total:
+            break
+    if bodies:
+        return bodies
+    return [first_payload] if first_payload else []
 
 
 def _due():
     with connect() as connection:
         row = connection.execute(
             """SELECT finished_at, status FROM sports_ai_browser_jobs
-               WHERE url='https://www.sportybet.com/ng/sport/basketball'
-               ORDER BY created_at DESC LIMIT 1"""
+               WHERE url=?
+               ORDER BY created_at DESC LIMIT 1""",
+            (COLLECTION_URL,),
         ).fetchone()
     if not row or not row['finished_at']:
         return True
@@ -214,6 +442,33 @@ def _due():
     return now - observed >= timedelta(minutes=10)
 
 
+def sections_from_links(links):
+    """Open every sport the SportyBet menu links, and always the four analysis sports."""
+    found = list(FALLBACK_SECTIONS)
+    seen = {code for code, _url in found}
+    for link in links or []:
+        match = re.search(r'/ng/sport/([A-Za-z0-9_-]+)', str(link or ''))
+        if not match:
+            continue
+        slug = match.group(1)
+        code = SLUGS.get(slug.casefold(), re.sub(r'[^a-z0-9]+', '_', slug.casefold()).strip('_'))
+        if not re.fullmatch(r'[a-z][a-z0-9_]{0,40}', code) or code in seen:
+            continue
+        seen.add(code)
+        found.append((code, f'https://www.sportybet.com/ng/sport/{slug}'))
+    return found
+
+
+def _discover_sections(page):
+    try:
+        page.goto(COLLECTION_URL, wait_until='domcontentloaded', timeout=45000)
+        page.wait_for_timeout(3000)
+        links = page.eval_on_selector_all('a[href*="/ng/sport/"]', 'els => els.map(el => el.href)')
+    except Exception:
+        links = []
+    return sections_from_links(links)
+
+
 def _authorize():
     with connect() as connection:
         existing = connection.execute(
@@ -244,7 +499,7 @@ def _record(status, imported, blocked, errors):
                (id,url,status,created_at,started_at,finished_at,title,observations,error)
                VALUES(?,?,?,?,?,?,?,?,?)""",
             (
-                str(uuid.uuid4()), 'https://www.sportybet.com/ng/sport/basketball',
+                str(uuid.uuid4()), COLLECTION_URL,
                 'inspected' if status == 'collected' else 'failed',
                 now, now, now, 'SportyBet displayed prices', imported,
                 None if not blocked and not errors else json.dumps({'blocked': blocked, 'errors': errors})[:500],

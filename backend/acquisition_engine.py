@@ -67,6 +67,43 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def _record_provider_failure(connection, provider_id, job_id, error):
+    """Keep one open collection failure per provider. A repeated DNS miss is the same issue."""
+    detail = json.dumps({'job_id': job_id, 'error': str(error)[:500]})
+    existing = connection.execute(
+        """SELECT id FROM sports_ai_data_quality_issues
+           WHERE provider_id=? AND issue_type='provider_collection_failed' AND resolved_at IS NULL
+           ORDER BY created_at DESC""",
+        (provider_id,),
+    ).fetchall()
+    now = utc_now()
+    if existing:
+        connection.execute(
+            'UPDATE sports_ai_data_quality_issues SET details_json=?, created_at=? WHERE id=?',
+            (detail, now, existing[0]['id']),
+        )
+        for extra in existing[1:]:
+            connection.execute(
+                'UPDATE sports_ai_data_quality_issues SET resolved_at=? WHERE id=? AND resolved_at IS NULL',
+                (now, extra['id']),
+            )
+        return
+    connection.execute(
+        """INSERT INTO sports_ai_data_quality_issues
+           (id,provider_id,severity,issue_type,details_json)
+           VALUES(?,?,'high','provider_collection_failed',?)""",
+        (str(uuid.uuid4()), provider_id, detail),
+    )
+
+
+def _resolve_provider_failures(connection, provider_id, resolved_at):
+    connection.execute(
+        """UPDATE sports_ai_data_quality_issues SET resolved_at=?
+           WHERE provider_id=? AND issue_type='provider_collection_failed' AND resolved_at IS NULL""",
+        (resolved_at, provider_id),
+    )
+
+
 def validate_public_config(config):
     sensitive_markers=('apikey','token','secret','password','credential','authorization')
 
@@ -988,6 +1025,7 @@ def run_collection(provider_id, retry_of=None, actor='sports-ai-acquisition'):
             if batch.get(key) is not None
         })
         with connect() as connection:
+            _resolve_provider_failures(connection, provider_id, completed)
             connection.execute(
                 """UPDATE sports_ai_provider_registry SET cursor_json=?,
                    status=?,last_success_at=CASE WHEN ?>0 THEN ? ELSE last_success_at END,
@@ -1027,12 +1065,7 @@ def run_collection(provider_id, retry_of=None, actor='sports-ai-acquisition'):
                  (datetime.now(timezone.utc)+timedelta(seconds=interval)).isoformat(),
                  provider_id),
             )
-            connection.execute(
-                """INSERT INTO sports_ai_data_quality_issues
-                   (id,provider_id,severity,issue_type,details_json)
-                   VALUES(?,?,'high','provider_collection_failed',?)""",
-                (str(uuid.uuid4()),provider_id,json.dumps({'job_id':job_id,'error':str(error)[:500]})),
-            )
+            _record_provider_failure(connection, provider_id, job_id, error)
             connection.execute(
                 """INSERT INTO sports_ai_audit_events(id,actor,action,metadata_json)
                    VALUES(?,?,?,?)""",

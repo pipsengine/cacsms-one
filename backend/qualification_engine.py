@@ -6,11 +6,15 @@ import math
 import uuid
 from datetime import datetime, timedelta, timezone
 
+from sport_support import GOAL_SPORTS
+
 STATES = ('QUALIFIED', 'MONITORING', 'REJECTED', 'AWAITING_DATA', 'EXPIRED', 'SUSPENDED')
 CALIBRATED = {
     'football': {'HOME', 'DRAW', 'AWAY'},
     'frauenfussball': {'HOME', 'DRAW', 'AWAY'},
     'ice_hockey': {'HOME', 'DRAW', 'AWAY'},
+    'efootball': {'HOME', 'DRAW', 'AWAY'},
+    'vfootball': {'HOME', 'DRAW', 'AWAY'},
     'basketball': {'MONEYLINE_HOME', 'MONEYLINE_AWAY'},
 }
 OPEN_STATES = ('QUALIFIED', 'MONITORING', 'AWAITING_DATA')
@@ -191,7 +195,7 @@ def decide(row, policy, now=None):
         products = []
         if state == 'QUALIFIED' and kickoff:
             products.append('booking')
-            if sport == 'football' and market == 'DRAW' and kickoff <= current + timedelta(days=7):
+            if sport in GOAL_SPORTS and market == 'DRAW' and kickoff <= current + timedelta(days=7):
                 products.append('weekly_draw')
             if kickoff.date() == current.date():
                 products.append('daily_rollover')
@@ -720,6 +724,25 @@ def list_decisions(connection, state=None, sport=None, market=None, competition=
     if product:
         filters.append("EXISTS (SELECT 1 FROM json_each(d.products_json) WHERE value=?)")
         args.append(product)
+    if product == 'weekly_draw':
+        filters.append("""EXISTS (
+            SELECT 1 FROM sports_ai_engine_predictions p
+            WHERE p.id=d.prediction_id AND p.probability>0.60
+        )""")
+    else:
+        filters.append("""(
+            d.state!='QUALIFIED'
+            OR d.id IN (
+                SELECT picked.id FROM (
+                    SELECT d2.id, ROW_NUMBER() OVER (
+                        PARTITION BY d2.fixture_id ORDER BY p.probability DESC
+                    ) AS rn
+                    FROM sports_ai_qualification_decisions d2
+                    JOIN sports_ai_engine_predictions p ON p.id=d2.prediction_id
+                    WHERE d2.state='QUALIFIED' AND p.probability>0.80
+                ) picked WHERE picked.rn=1
+            )
+        )""")
     where = (' WHERE ' + ' AND '.join(filters)) if filters else ''
     total = connection.execute(
         f'SELECT COUNT(*) FROM sports_ai_qualification_decisions d{where}', args,

@@ -12,12 +12,12 @@ import db
 NOW = datetime(2026, 11, 4, 9, 0, tzinfo=timezone.utc)
 
 
-def insert_result(connection, fixture_id, competition, home, away, kickoff, home_score, away_score, status='final'):
+def insert_result(connection, fixture_id, competition, home, away, kickoff, home_score, away_score, status='final', sport='football'):
     connection.execute(
         """INSERT INTO sports_ai_fixtures
            (id,external_id,source,sport,competition,home,away,starts_at,status,statistics_json,odds_json,observed_at)
            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (fixture_id, fixture_id, 'test', 'football', competition, home, away, kickoff, status, '{}', '{}', kickoff),
+        (fixture_id, fixture_id, 'test', sport, competition, home, away, kickoff, status, '{}', '{}', kickoff),
     )
     if status == 'final':
         connection.execute(
@@ -86,6 +86,35 @@ class DrawIntelligenceTests(unittest.TestCase):
         self.assertIsNone(fixture['qualification_state'])
         self.assertEqual(decisions, 0)
         self.assertEqual(summary['ranked'], 0)
+        self.assertEqual(league['sport'], 'football')
+
+    def test_each_sport_keeps_its_own_league_draw_rate(self):
+        with db.connect() as connection:
+            insert_result(connection, 'fb', 'Cup', 'A', 'B', '2025-08-01T15:00:00+00:00', 1, 1, sport='football')
+            insert_result(connection, 'ih', 'Cup', 'C', 'D', '2025-08-02T15:00:00+00:00', 3, 1, sport='ice_hockey')
+            refresh_draw_intelligence(connection, NOW)
+            football = connection.execute("SELECT draws, matches FROM sports_ai_draw_leagues WHERE sport='football' AND competition='Cup'").fetchone()
+            hockey = connection.execute("SELECT draws, matches, detail_json FROM sports_ai_draw_leagues WHERE sport='ice_hockey' AND competition='Cup'").fetchone()
+        self.assertEqual(football['draws'], 1)
+        self.assertEqual(football['matches'], 1)
+        self.assertEqual(hockey['draws'], 0)
+        self.assertEqual(hockey['matches'], 1)
+        self.assertIn('60-minute', hockey['detail_json'])
+
+    def test_a_competition_of_only_zero_scores_is_left_out(self):
+        with db.connect() as connection:
+            insert_result(connection, 'z1', 'Blank League', 'A', 'B', '2025-08-01T15:00:00+00:00', 0, 0, sport='ice_hockey')
+            insert_result(connection, 'z2', 'Blank League', 'C', 'D', '2025-08-02T15:00:00+00:00', 0, 0, sport='ice_hockey')
+            insert_result(connection, 'played', 'DEL', 'E', 'F', '2025-08-03T15:00:00+00:00', 2, 1, sport='ice_hockey')
+            insert_result(connection, 'level', 'DEL', 'F', 'E', '2025-08-04T15:00:00+00:00', 0, 0, sport='ice_hockey')
+            summary = refresh_draw_intelligence(connection, NOW)
+            blank = connection.execute("SELECT COUNT(*) AS n FROM sports_ai_draw_leagues WHERE competition='Blank League'").fetchone()['n']
+            played = connection.execute("SELECT matches, draws FROM sports_ai_draw_leagues WHERE competition='DEL'").fetchone()
+        self.assertEqual(blank, 0)
+        self.assertEqual(summary['unscored_competitions'], 1)
+        self.assertEqual(summary['matches'], 2)
+        self.assertEqual(played['matches'], 2)
+        self.assertEqual(played['draws'], 1)
 
     def test_missing_sample_does_not_invent_a_reliability_score(self):
         self.assertIsNone(shrink(None, 0, 0.27, 30))

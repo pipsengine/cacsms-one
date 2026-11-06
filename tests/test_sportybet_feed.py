@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 
 import db
-from sportybet_feed import publish_quotes, quotes_from_payload
+from sportybet_feed import page_count, publish_quotes, quotes_from_payload, sections_from_links, tournaments_from_menu
 from sportybet_research import blocked_page
 
 
@@ -144,6 +144,78 @@ class SportyBetFeedTests(unittest.TestCase):
             [(row['market'], row['outcome'], row['decimal_odds']) for row in prices],
             [('h2h', 'away', 2.55), ('h2h', 'draw', 4.1), ('h2h', 'home', 2.4), ('totals', 'OVER', 1.87), ('totals', 'UNDER', 1.95)],
         )
+
+
+    def test_the_menu_adds_tennis_and_an_empty_menu_uses_the_four_sports(self):
+        discovered = sections_from_links([
+            'https://www.sportybet.com/ng/sport/football',
+            'https://www.sportybet.com/ng/sport/tennis',
+            'https://www.sportybet.com/ng/sport/iceHockey',
+            'https://www.sportybet.com/ng/sport/football',
+        ])
+        self.assertEqual(
+            [code for code, _url in discovered],
+            ['football', 'basketball', 'tennis', 'ice_hockey'],
+        )
+        fallback = sections_from_links(['https://www.sportybet.com/ng/sport/tableTennis'])
+        self.assertEqual(
+            [code for code, _url in fallback],
+            ['football', 'basketball', 'tennis', 'ice_hockey', 'table_tennis'],
+        )
+
+    def test_a_displayed_market_without_a_model_is_stored_and_not_qualified(self):
+        kickoff = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=2)
+        payload = {'data': {'tournaments': [{'categoryName': 'England', 'name': 'Premier League', 'events': [{
+            'homeTeamName': 'Arsenal', 'awayTeamName': 'Chelsea',
+            'estimateStartTime': int(kickoff.timestamp() * 1000),
+            'markets': [{'status': 0, 'desc': 'Corners Over/Under', 'specifier': 'total=9.5', 'outcomes': [
+                {'isActive': 1, 'desc': 'Over 9.5', 'odds': '1.91'},
+            ]}],
+        }]}]}}
+        rows = quotes_from_payload(payload, 'football', 'https://www.sportybet.com/ng/sport/football')
+        self.assertEqual(len(rows), 1)
+        with db.connect() as connection:
+            result = publish_quotes(connection, rows, rows[0]['source_url'])
+            fixture = connection.execute(
+                "SELECT id FROM sports_ai_fixtures WHERE source='sportybet-displayed' AND home='Arsenal'",
+            ).fetchone()
+            stored = connection.execute(
+                'SELECT market, decimal_odds FROM sports_ai_odds_snapshots WHERE fixture_id=?',
+                (fixture['id'],),
+            ).fetchone()
+            qualified = connection.execute('SELECT COUNT(*) FROM sports_ai_value_opportunities').fetchone()[0]
+            connection.execute('DELETE FROM sports_ai_odds_history')
+            connection.execute('DELETE FROM sports_ai_odds_snapshots')
+            connection.execute('DELETE FROM sports_ai_sportybet_observations')
+            connection.execute('DELETE FROM sports_ai_fixtures')
+        self.assertEqual(result['imported'], 1)
+        self.assertEqual(stored['market'], 'Corners Over/Under')
+        self.assertEqual(stored['decimal_odds'], 1.91)
+        self.assertEqual(qualified, 0)
+
+    def test_football_menu_keeps_every_division_and_cup(self):
+        payload = {'data': {'categories': [
+            {'name': 'England', 'tournaments': [
+                {'id': 'sr:tournament:17', 'name': 'Premier League', 'eventSize': 10},
+                {'id': 'sr:tournament:18', 'name': 'Championship', 'eventSize': 12},
+                {'id': 'sr:tournament:19', 'name': 'League One', 'eventSize': 12},
+                {'id': 'sr:tournament:20', 'name': 'League Two', 'eventSize': 12},
+                {'id': 'sr:tournament:21', 'name': 'FA Cup', 'eventSize': 0},
+            ]},
+            {'name': 'Ghana', 'tournaments': [
+                {'id': 'sr:tournament:99', 'name': 'Premier League', 'eventSize': 4},
+            ]},
+        ]}}
+        found = tournaments_from_menu(payload)
+        labels = {item['label'] for item in found}
+        self.assertEqual(len(found), 6)
+        self.assertEqual(labels, {
+            'England Premier League', 'England Championship', 'England League One',
+            'England League Two', 'England FA Cup', 'Ghana Premier League',
+        })
+        self.assertEqual(page_count(250, 100), 3)
+        self.assertEqual(page_count(100, 100), 1)
+        self.assertEqual(page_count(50000, 100), 500)
 
 
 if __name__ == '__main__':

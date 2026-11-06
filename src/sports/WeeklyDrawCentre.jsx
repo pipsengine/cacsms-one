@@ -16,6 +16,19 @@ function when(value) {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
 }
 
+function sportName(sport) {
+  const names = {football: 'Football', frauenfussball: 'Frauenfussball', ice_hockey: 'Ice hockey', efootball: 'Efootball', vfootball: 'Virtual football'};
+  return names[sport] || String(sport || '').replaceAll('_', ' ');
+}
+
+function rateLine(summary) {
+  const rates = summary?.draw_rates || {};
+  const parts = Object.entries(rates).map(([sport, rate]) => (
+    sport === 'ice_hockey' ? `${sportName(sport)} ${percent(rate)} on the 60-minute score` : `${sportName(sport)} ${percent(rate)}`
+  ));
+  return parts.length ? `Stored draw rates from each sport’s own finals: ${parts.join('; ')}.` : '';
+}
+
 export default function WeeklyDrawCentre({tab = 0}) {
   if (tab === 1 || tab === 2) return <DrawResearch tab={tab} />;
   if (tab === 3) return <PredictionBoard mode="WEEKLY" />;
@@ -89,10 +102,10 @@ function DrawResearch({tab}) {
       <article className="sp-kpi"><span>Leagues</span><strong>{summary?.leagues ?? '—'}</strong></article>
       <article className="sp-kpi"><span>Teams</span><strong>{summary?.teams ?? '—'}</strong></article>
       <article className="sp-kpi"><span>Ranked fixtures</span><strong>{summary?.ranked ?? '—'}</strong></article>
-      <article className="sp-kpi"><span>Observed draw rate</span><strong>{percent(summary?.global_draw_rate)}</strong></article>
+      <article className="sp-kpi"><span>Football draw rate</span><strong>{percent(summary?.global_draw_rate)}</strong></article>
       <article className="sp-kpi"><span>Half-time draws</span><strong>Unavailable</strong></article>
     </div>
-    <p className="sp-muted">{summary?.halftime_reason || 'No half-time score is stored.'} Validation sample {validation.sample_size ?? 0}. Brier {validation.brier_score == null ? '—' : Number(validation.brier_score).toFixed(3)}. {model.reason || 'Model status is stored after the next refresh.'} {model.dixon_coles_rho == null ? '' : `Stored Dixon–Coles rho ${Number(model.dixon_coles_rho).toFixed(2)}.`} Last refresh {when(summary?.refreshed_at)}.</p>
+    <p className="sp-muted">{summary?.note || 'Each sport is scored from its own finals and its own leagues.'} {rateLine(summary)} {summary?.halftime_reason || 'No half-time score is stored.'} Validation sample {validation.sample_size ?? 0}. Brier {validation.brier_score == null ? '—' : Number(validation.brier_score).toFixed(3)}. {model.reason || 'Model status is stored after the next refresh.'} {model.dixon_coles_rho == null ? '' : `Stored Dixon–Coles rho ${Number(model.dixon_coles_rho).toFixed(2)}.`} Last refresh {when(summary?.refreshed_at)}.</p>
     <div className="sp-filter-bar">
       <label>Competition<input value={competition} onChange={event => setCompetition(event.target.value)} placeholder="League or division"/></label>
       {tab !== 0 && <label>Data quality<select value={quality} onChange={event => setQuality(event.target.value)}><option value="">All</option><option value="usable">Usable</option><option value="limited">Limited</option><option value="thin">Thin</option></select></label>}
@@ -105,16 +118,16 @@ function DrawResearch({tab}) {
 }
 
 function LeagueTable({rows}) {
-  return <section className="sp-panel"><div className="sp-table-scroll"><table className="sp-table"><thead><tr>{['League', 'Matches', 'Draw rate', 'Reliability', 'Uncertainty', '0–0', '1–1', '2–2', 'Years', 'Quality', 'Expected goals'].map(heading => <th key={heading}>{heading}</th>)}</tr></thead><tbody>
-    {rows.map(row => <tr key={row.competition}><td>{row.competition || '—'}</td><td>{row.matches}</td><td>{percent(row.draw_rate)}</td><td>{percent(row.reliability)}</td><td>{percent(row.uncertainty)}</td><td>{percent(row.score_00)}</td><td>{percent(row.score_11)}</td><td>{percent(row.score_22)}</td><td>{row.seasons}</td><td>{row.quality}</td><td>{row.detail?.expected_home_goals == null ? '—' : `${decimal(row.detail.expected_home_goals)} / ${decimal(row.detail.expected_away_goals)}`}</td></tr>)}
-    {!rows.length && <tr><td className="sp-empty" colSpan="11">No stored football result is available for this filter. Half-time frequencies are not calculated.</td></tr>}
+  return <section className="sp-panel"><div className="sp-table-scroll"><table className="sp-table"><thead><tr>{['Sport', 'League', 'Matches', 'Draw rate', 'Reliability', 'Uncertainty', '0–0', '1–1', '2–2', 'Years', 'Quality', 'Expected goals'].map(heading => <th key={heading}>{heading}</th>)}</tr></thead><tbody>
+    {rows.map(row => <tr key={`${row.sport}:${row.competition}`}><td>{sportName(row.sport || 'football')}</td><td>{row.competition || '—'}</td><td>{row.matches}</td><td>{percent(row.draw_rate)}</td><td>{percent(row.reliability)}</td><td>{percent(row.uncertainty)}</td><td>{percent(row.score_00)}</td><td>{percent(row.score_11)}</td><td>{percent(row.score_22)}</td><td>{row.seasons}</td><td>{row.quality}</td><td>{row.detail?.expected_home_goals == null ? '—' : `${decimal(row.detail.expected_home_goals)} / ${decimal(row.detail.expected_away_goals)}`}</td></tr>)}
+    {!rows.length && <tr><td className="sp-empty" colSpan="12">No stored full-time result is available for this filter. Half-time frequencies are not calculated.</td></tr>}
   </tbody></table></div></section>;
 }
 
 function TeamTable({rows}) {
-  return <section className="sp-panel"><div className="sp-table-scroll"><table className="sp-table"><thead><tr>{['Team', 'League', 'Matches', 'Draw rate', 'Home', 'Away', 'Last 5', 'Last 10', 'Last 20', 'Goals against', 'Reliability', 'Schedule', 'Quality'].map(heading => <th key={heading}>{heading}</th>)}</tr></thead><tbody>
-    {rows.map(row => <tr key={`${row.competition}:${row.team}`}><td>{row.team}</td><td>{row.competition || '—'}</td><td>{row.matches}</td><td>{percent(row.draw_rate)}</td><td>{row.home_matches ? percent(row.home_draw_rate) : '—'}</td><td>{row.away_matches ? percent(row.away_draw_rate) : '—'}</td><td>{row.roll5_rate == null ? `${row.roll5_matches}/5` : percent(row.roll5_rate)}</td><td>{row.roll10_rate == null ? `${row.roll10_matches}/10` : percent(row.roll10_rate)}</td><td>{row.roll20_rate == null ? `${row.roll20_matches}/20` : percent(row.roll20_rate)}</td><td>{decimal(row.goals_against)}</td><td>{percent(row.reliability)}</td><td>{row.schedule_strength == null ? '—' : decimal(row.schedule_strength)}</td><td>{row.quality}</td></tr>)}
-    {!rows.length && <tr><td className="sp-empty" colSpan="13">No stored team sample matches this filter.</td></tr>}
+  return <section className="sp-panel"><div className="sp-table-scroll"><table className="sp-table"><thead><tr>{['Sport', 'Team', 'League', 'Matches', 'Draw rate', 'Home', 'Away', 'Last 5', 'Last 10', 'Last 20', 'Goals against', 'Reliability', 'Schedule', 'Quality'].map(heading => <th key={heading}>{heading}</th>)}</tr></thead><tbody>
+    {rows.map(row => <tr key={`${row.sport}:${row.competition}:${row.team}`}><td>{sportName(row.sport)}</td><td>{row.team}</td><td>{row.competition || '—'}</td><td>{row.matches}</td><td>{percent(row.draw_rate)}</td><td>{row.home_matches ? percent(row.home_draw_rate) : '—'}</td><td>{row.away_matches ? percent(row.away_draw_rate) : '—'}</td><td>{row.roll5_rate == null ? `${row.roll5_matches}/5` : percent(row.roll5_rate)}</td><td>{row.roll10_rate == null ? `${row.roll10_matches}/10` : percent(row.roll10_rate)}</td><td>{row.roll20_rate == null ? `${row.roll20_matches}/20` : percent(row.roll20_rate)}</td><td>{decimal(row.goals_against)}</td><td>{percent(row.reliability)}</td><td>{row.schedule_strength == null ? '—' : decimal(row.schedule_strength)}</td><td>{row.quality}</td></tr>)}
+    {!rows.length && <tr><td className="sp-empty" colSpan="14">No stored team sample matches this filter.</td></tr>}
   </tbody></table></div></section>;
 }
 

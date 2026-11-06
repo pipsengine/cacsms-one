@@ -1,18 +1,23 @@
-"""Football draw research from stored results and stored model probabilities.
+"""Draw research from each sport's own stored results and model probabilities.
 
-Half-time frequencies stay empty because no half-time score is stored.
-Historical draw percentage is context. It is not the ranking score.
+A full-time draw is scored only for sports whose stored score can finish level.
+Each league is compared with that sport's results. One sport's draw rate is not
+applied to another. Half-time frequencies stay empty because no half-time score
+is stored. Historical draw percentage is context. It is not the ranking score.
 """
 
 import json
 import math
 from datetime import datetime, timedelta, timezone
 
+from sport_support import GOAL_SPORTS, sql_in
+
 STATUS_KEY = 'draw_intelligence_status'
 REFRESH_HOURS = 6
 LEAGUE_PRIOR = 30
 TEAM_PRIOR = 12
 HALF_LIFE_DAYS = 180
+SCOPE_VERSION = 3
 
 
 def _now(now=None):
@@ -105,7 +110,7 @@ def refresh_if_due(connection, now=None):
     ).fetchone()
     stored = json.loads(row['value_json']) if row else {}
     previous = _parse(stored.get('refreshed_at'))
-    if previous and current - previous < timedelta(hours=REFRESH_HOURS):
+    if stored.get('scope_version') == SCOPE_VERSION and previous and current - previous < timedelta(hours=REFRESH_HOURS):
         return {'status': 'current', 'refreshed_at': stored.get('refreshed_at')}
     return refresh_draw_intelligence(connection, current)
 
@@ -125,21 +130,21 @@ def _gates(connection):
 def _expected_goals(connection):
     leagues, teams = {}, {}
     for row in connection.execute(
-        """SELECT f.competition, f.home, f.away,
+        f"""SELECT f.sport, f.competition, f.home, f.away,
                   json_extract(s.features_json,'$.expected_home_goals') AS home_goals,
                   json_extract(s.features_json,'$.expected_away_goals') AS away_goals
            FROM sports_ai_feature_snapshots s
            JOIN sports_ai_fixtures f ON f.id=s.fixture_id
-           WHERE f.sport='football'""",
+           WHERE f.sport IN ({sql_in(GOAL_SPORTS)})""",
     ):
         competition = row['competition'] or ''
-        league = leagues.setdefault(competition, {'home': [], 'away': []})
+        league = leagues.setdefault((row['sport'], competition), {'home': [], 'away': []})
         if row['home_goals'] is not None:
             league['home'].append(float(row['home_goals']))
-            teams.setdefault((competition, row['home']), []).append(float(row['home_goals']))
+            teams.setdefault((row['sport'], competition, row['home']), []).append(float(row['home_goals']))
         if row['away_goals'] is not None:
             league['away'].append(float(row['away_goals']))
-            teams.setdefault((competition, row['away']), []).append(float(row['away_goals']))
+            teams.setdefault((row['sport'], competition, row['away']), []).append(float(row['away_goals']))
     return leagues, teams
 
 
@@ -179,26 +184,31 @@ def refresh_draw_intelligence(connection, now=None):
     current = _now(now)
     results = []
     for row in connection.execute(
-        """SELECT f.competition, f.home, f.away, f.starts_at, r.home_score, r.away_score
+        f"""SELECT f.sport, f.competition, f.home, f.away, f.starts_at, r.home_score, r.away_score
            FROM sports_ai_fixtures f
            JOIN sports_ai_results r ON r.fixture_id=f.id
-           WHERE f.sport='football' AND r.status='final'""",
+           WHERE f.sport IN ({sql_in(GOAL_SPORTS)}) AND r.status='final'""",
     ):
         kickoff = _parse(row['starts_at'])
         if kickoff is None:
             continue
         results.append({
+            'sport': row['sport'],
             'competition': row['competition'] or '',
             'home': row['home'], 'away': row['away'], 'kickoff': kickoff,
             'home_score': int(row['home_score']), 'away_score': int(row['away_score']),
             'draw': int(row['home_score'] == row['away_score']),
         })
-    global_rate = _weighted_draw_rate(results, current)
-    leagues = _league_rows(results, global_rate, current)
-    teams = _team_rows(results, leagues, global_rate, current)
+    results, unscored = _without_unscored(results)
+    by_sport = {}
+    for row in results:
+        by_sport.setdefault(row['sport'], []).append(row)
+    global_rates = {sport: _weighted_draw_rate(rows, current) for sport, rows in by_sport.items()}
+    leagues = _league_rows(results, global_rates, current)
+    teams = _team_rows(results, leagues, global_rates, current)
     expected_leagues, expected_teams = _expected_goals(connection)
-    for competition, item in leagues.items():
-        stored = expected_leagues.get(competition) or {'home': [], 'away': []}
+    for key, item in leagues.items():
+        stored = expected_leagues.get(key) or {'home': [], 'away': []}
         item['detail']['expected_home_goals'] = _mean(stored['home'])
         item['detail']['expected_away_goals'] = _mean(stored['away'])
         item['detail']['expected_goals_matches'] = max(len(stored['home']), len(stored['away']))
@@ -215,11 +225,11 @@ def refresh_draw_intelligence(connection, now=None):
     for item in leagues.values():
         connection.execute(
             """INSERT INTO sports_ai_draw_leagues
-               (competition,matches,draws,draw_rate,reliability,uncertainty,seasons,score_00,score_11,score_22,
+               (sport,competition,matches,draws,draw_rate,reliability,uncertainty,seasons,score_00,score_11,score_22,
                 goals_for,goals_against,quality,detail_json,updated_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                item['competition'], item['matches'], item['draws'], item['draw_rate'], item['reliability'],
+                item['sport'], item['competition'], item['matches'], item['draws'], item['draw_rate'], item['reliability'],
                 item['uncertainty'], item['seasons'], item['score_00'], item['score_11'], item['score_22'],
                 item['goals_for'], item['goals_against'], item['quality'], json.dumps(item['detail']), moment,
             ),
@@ -227,13 +237,13 @@ def refresh_draw_intelligence(connection, now=None):
     for item in teams.values():
         connection.execute(
             """INSERT INTO sports_ai_draw_teams
-               (competition,team,matches,draw_rate,home_matches,home_draw_rate,away_matches,away_draw_rate,
+               (sport,competition,team,matches,draw_rate,home_matches,home_draw_rate,away_matches,away_draw_rate,
                 roll5_matches,roll5_rate,roll10_matches,roll10_rate,roll20_matches,roll20_rate,
                 goals_for,goals_against,reliability,uncertainty,schedule_strength,adjusted_balance,
                 quality,detail_json,updated_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                item['competition'], item['team'], item['matches'], item['draw_rate'], item['home_matches'],
+                item['sport'], item['competition'], item['team'], item['matches'], item['draw_rate'], item['home_matches'],
                 item['home_draw_rate'], item['away_matches'], item['away_draw_rate'],
                 item['roll5_matches'], item['roll5_rate'], item['roll10_matches'], item['roll10_rate'],
                 item['roll20_matches'], item['roll20_rate'], item['goals_for'], item['goals_against'],
@@ -244,11 +254,11 @@ def refresh_draw_intelligence(connection, now=None):
     for item in fixtures:
         connection.execute(
             """INSERT INTO sports_ai_draw_fixtures
-               (fixture_id,competition,home,away,starts_at,model_probability,implied_probability,edge,calibrated,
+               (fixture_id,sport,competition,home,away,starts_at,model_probability,implied_probability,edge,calibrated,
                 qualification_state,league_reliability,home_reliability,away_reliability,rank_score,explanation,quality,updated_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                item['fixture_id'], item['competition'], item['home'], item['away'], item['starts_at'],
+                item['fixture_id'], item['sport'], item['competition'], item['home'], item['away'], item['starts_at'],
                 item['model_probability'], item['implied_probability'], item['edge'], item['calibrated'],
                 item['qualification_state'], item['league_reliability'], item['home_reliability'],
                 item['away_reliability'], item['rank_score'], item['explanation'], item['quality'], moment,
@@ -261,7 +271,12 @@ def refresh_draw_intelligence(connection, now=None):
         'teams': len(teams),
         'fixtures': len(fixtures),
         'ranked': sum(1 for item in fixtures if item['rank_score'] is not None),
-        'global_draw_rate': global_rate,
+        'scope_version': SCOPE_VERSION,
+        'sports': sorted(by_sport),
+        'draw_rates': global_rates,
+        'global_draw_rate': global_rates.get('football'),
+        'unscored_competitions': unscored,
+        'note': 'Each sport is scored from its own finals and its own leagues. A draw rate is not copied from another sport. A competition whose every stored final is 0–0 is left out of the rate.',
         'halftime': None,
         'halftime_reason': 'No half-time score is stored.',
         'validation': validation,
@@ -276,15 +291,28 @@ def refresh_draw_intelligence(connection, now=None):
     return summary
 
 
-def _league_rows(results, global_rate, now):
+def _without_unscored(results):
     grouped = {}
     for row in results:
-        grouped.setdefault(row['competition'], []).append(row)
+        grouped.setdefault((row['sport'], row['competition']), []).append(row)
+    dropped = {
+        key for key, rows in grouped.items()
+        if rows and all(item['home_score'] == 0 and item['away_score'] == 0 for item in rows)
+    }
+    kept = [row for row in results if (row['sport'], row['competition']) not in dropped]
+    return kept, len(dropped)
+
+
+def _league_rows(results, global_rates, now):
+    grouped = {}
+    for row in results:
+        grouped.setdefault((row['sport'], row['competition']), []).append(row)
     output = {}
-    for competition, rows in grouped.items():
+    for (sport, competition), rows in grouped.items():
         draws = sum(row['draw'] for row in rows)
         matches = len(rows)
         rate = _weighted_draw_rate(rows, now)
+        prior = global_rates.get(sport)
         years = {_year(row['kickoff']) for row in rows}
         scores = {(0, 0): 0, (1, 1): 0, (2, 2): 0}
         home_goals = 0
@@ -298,12 +326,13 @@ def _league_rows(results, global_rate, now):
             away_goals += row['away_score']
             total = row['home_score'] + row['away_score']
             buckets[min(3, total)] += 1
-        output[competition] = {
+        output[(sport, competition)] = {
+            'sport': sport,
             'competition': competition,
             'matches': matches,
             'draws': draws,
             'draw_rate': rate,
-            'reliability': shrink(rate, matches, global_rate, LEAGUE_PRIOR),
+            'reliability': shrink(rate, matches, prior, LEAGUE_PRIOR),
             'uncertainty': _uncertainty(rate, matches),
             'seasons': len(years),
             'score_00': _rate(scores[(0, 0)], matches),
@@ -325,13 +354,14 @@ def _league_rows(results, global_rate, now):
                 'venue_note': 'A league draw is a match result, so the home and away draw rates are the same stored rate.',
                 'halftime': None,
                 'halftime_reason': 'No half-time score is stored.',
-                'prior': 'The reliability score shrinks the recency-weighted draw rate toward the draw rate of all stored football results.',
+                'prior': 'The reliability score shrinks the recency-weighted draw rate toward this sport’s own stored draw rate.',
+                'regulation': 'Ice hockey uses the 60-minute score. A winner after overtime is not a draw.' if sport == 'ice_hockey' else None,
             },
         }
     return output
 
 
-def _team_rows(results, leagues, global_rate, now):
+def _team_rows(results, leagues, global_rates, now):
     by_team = {}
     opponent_samples = {}
     for row in results:
@@ -339,24 +369,24 @@ def _team_rows(results, leagues, global_rate, now):
             (row['home'], 'home', row['home_score'], row['away_score']),
             (row['away'], 'away', row['away_score'], row['home_score']),
         ):
-            key = (row['competition'], team)
+            key = (row['sport'], row['competition'], team)
             by_team.setdefault(key, []).append({
                 'kickoff': row['kickoff'], 'draw': row['draw'], 'venue': venue,
                 'for': scored, 'against': conceded, 'opponent': row['away'] if venue == 'home' else row['home'],
             })
-            opponent_samples.setdefault((row['competition'], row['away'] if venue == 'home' else row['home']), []).append(scored - conceded)
+            opponent_samples.setdefault((row['sport'], row['competition'], row['away'] if venue == 'home' else row['home']), []).append(scored - conceded)
     output = {}
     for key, rows in by_team.items():
-        competition, team = key
+        sport, competition, team = key
         rows.sort(key=lambda item: item['kickoff'], reverse=True)
         matches = len(rows)
         rate = _weighted_draw_rate(rows, now)
         home = [item for item in rows if item['venue'] == 'home']
         away = [item for item in rows if item['venue'] == 'away']
-        league_rate = (leagues.get(competition) or {}).get('draw_rate') or global_rate
+        league_rate = (leagues.get((sport, competition)) or {}).get('draw_rate') or global_rates.get(sport)
         strengths = []
         for item in rows:
-            sample = opponent_samples.get((competition, item['opponent'])) or []
+            sample = opponent_samples.get((sport, competition, item['opponent'])) or []
             if len(sample) >= 5:
                 strengths.append(sum(sample) / len(sample))
         schedule = sum(strengths) / len(strengths) if strengths else None
@@ -366,6 +396,7 @@ def _team_rows(results, leagues, global_rate, now):
         prior_strength = TEAM_PRIOR if schedule is not None else TEAM_PRIOR * 2
         roll5, roll10, roll20 = rolling(rows, 5), rolling(rows, 10), rolling(rows, 20)
         output[key] = {
+            'sport': sport,
             'competition': competition,
             'team': team,
             'matches': matches,
@@ -411,9 +442,9 @@ def _fixture_rows(connection, leagues, teams, now):
     horizon = (now + timedelta(days=7)).isoformat()
     odds_minutes, max_error, min_holdout = _gates(connection)
     upcoming = connection.execute(
-        """SELECT id, competition, home, away, starts_at
+        f"""SELECT id, sport, competition, home, away, starts_at
            FROM sports_ai_fixtures
-           WHERE sport='football' AND status IN ('scheduled','not_started') AND starts_at>? AND starts_at<=?
+           WHERE sport IN ({sql_in(GOAL_SPORTS)}) AND status IN ('scheduled','not_started') AND starts_at>? AND starts_at<=?
            ORDER BY starts_at""",
         (now.isoformat(), horizon),
     ).fetchall()
@@ -458,9 +489,10 @@ def _fixture_rows(connection, leagues, teams, now):
             fresh = observed is not None and now - observed <= timedelta(minutes=odds_minutes)
         edge = float(stored['expected_edge']) if fresh and stored.get('expected_edge') is not None else None
         rank = edge if calibrated and edge is not None else None
-        league = leagues.get(fixture['competition'] or '') or {}
-        home = teams.get((fixture['competition'] or '', fixture['home'])) or {}
-        away = teams.get((fixture['competition'] or '', fixture['away'])) or {}
+        sport = fixture['sport']
+        league = leagues.get((sport, fixture['competition'] or '')) or {}
+        home = teams.get((sport, fixture['competition'] or '', fixture['home'])) or {}
+        away = teams.get((sport, fixture['competition'] or '', fixture['away'])) or {}
         if not stored:
             explanation = 'No stored draw probability. The historical draw rate is not used as a prediction.'
             quality = 'missing_model'
@@ -471,10 +503,11 @@ def _fixture_rows(connection, leagues, teams, now):
             explanation = 'Calibrated draw probability is stored. No fresh bookmaker price is stored, so there is no value rank.'
             quality = 'no_price'
         else:
-            explanation = 'Ranked by stored calibrated draw probability against the fresh bookmaker price, not by historical draw percentage.'
+            explanation = 'Ranked by this sport’s stored calibrated draw probability against the fresh price, not by historical draw percentage.'
             quality = 'ranked'
         rows.append({
             'fixture_id': fixture['id'],
+            'sport': sport,
             'competition': fixture['competition'] or '',
             'home': fixture['home'],
             'away': fixture['away'],
@@ -514,12 +547,12 @@ def _validation(connection):
 
 def _stored_profiles(connection):
     leagues = {
-        row['competition']: {'reliability': row['reliability']}
-        for row in connection.execute('SELECT competition, reliability FROM sports_ai_draw_leagues')
+        (row['sport'], row['competition']): {'reliability': row['reliability']}
+        for row in connection.execute('SELECT sport, competition, reliability FROM sports_ai_draw_leagues')
     }
     teams = {
-        (row['competition'], row['team']): {'reliability': row['reliability']}
-        for row in connection.execute('SELECT competition, team, reliability FROM sports_ai_draw_teams')
+        (row['sport'], row['competition'], row['team']): {'reliability': row['reliability']}
+        for row in connection.execute('SELECT sport, competition, team, reliability FROM sports_ai_draw_teams')
     }
     return leagues, teams
 
@@ -551,7 +584,8 @@ def list_leagues(connection, competition='', quality=''):
     rows = []
     for row in connection.execute(
         f"""SELECT * FROM sports_ai_draw_leagues WHERE {' AND '.join(clauses)}
-            ORDER BY reliability IS NULL, reliability DESC, matches DESC LIMIT 200""",
+            ORDER BY CASE quality WHEN 'usable' THEN 0 WHEN 'limited' THEN 1 WHEN 'thin' THEN 2 ELSE 3 END,
+                     reliability IS NULL, reliability DESC, matches DESC LIMIT 200""",
         args,
     ):
         item = dict(row)
@@ -571,7 +605,8 @@ def list_teams(connection, competition='', quality=''):
     rows = []
     for row in connection.execute(
         f"""SELECT * FROM sports_ai_draw_teams WHERE {' AND '.join(clauses)}
-            ORDER BY reliability IS NULL, reliability DESC, matches DESC LIMIT 200""",
+            ORDER BY CASE quality WHEN 'usable' THEN 0 WHEN 'limited' THEN 1 WHEN 'thin' THEN 2 ELSE 3 END,
+                     reliability IS NULL, reliability DESC, matches DESC LIMIT 200""",
         args,
     ):
         item = dict(row)

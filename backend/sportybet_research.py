@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 
 from prediction_engine import expected_value, parse_time
+from sport_support import GOAL_SPORTS, WINNER_SPORTS, recognised
 
 BOOKMAKER = 'SportyBet'
 PROVIDER_ID = 'provider-sportybet'
@@ -19,7 +20,7 @@ PERIOD_MARKERS = (
     '1st half', 'first half', '2nd half', 'second half', 'half time', 'halftime',
     'corner', 'card', 'booking', 'quarter', 'period', 'first quarter',
 )
-DISPLAY_SPORTS = {'football', 'basketball', 'frauenfussball', 'ice_hockey'}
+DISPLAY_SPORTS = {sport for sport in (*GOAL_SPORTS, *WINNER_SPORTS, 'basketball') if recognised(sport)}
 CONFIRM_MIN = 0.5
 PROPOSE_MIN = 0.85
 
@@ -56,7 +57,31 @@ def _quarter_line(value):
     return number
 
 
-def map_market(sport, market_label, selection_label, line=None):
+def _european_handicap(sport, selection, line, market):
+    if sport not in ('football', 'frauenfussball') or 'handicap' not in f'{market} {selection}'.casefold():
+        return None
+    parsed = _quarter_line(line)
+    if parsed is None:
+        found = re.search(r'(-?\d+(?:\.\d+)?)', f'{market} {selection}')
+        parsed = _quarter_line(found.group(1)) if found else 0.0
+    if parsed is None:
+        parsed = 0.0
+    pick = selection.casefold()
+    if pick in {'1', 'home', 'home win'} or pick.startswith('home'):
+        side = 'HOME'
+    elif pick in {'x', 'draw', 'tie'}:
+        side = 'DRAW'
+    elif pick in {'2', 'away', 'away win'} or pick.startswith('away'):
+        side = 'AWAY'
+    else:
+        return None
+    return {
+        'supported': True, 'canonical_market': f'EUROPEAN_{side}_{parsed:g}', 'line': parsed,
+        'provider_market': 'european_handicap', 'provider_outcome': side,
+    }
+
+
+def map_market(sport, market_label, selection_label, line=None, home=None, away=None):
     """Return a canonical market only when the settlement definition is the same."""
     market = (market_label or '').strip()
     selection = (selection_label or '').strip()
@@ -64,13 +89,18 @@ def map_market(sport, market_label, selection_label, line=None):
     if any(marker in combined for marker in PERIOD_MARKERS):
         return {'supported': False, 'reason': 'A different period or statistic is not the full-match market.'}
     if 'european' in combined or '3-way' in combined or '3 way' in combined:
+        mapped = _european_handicap(sport, selection, line, market)
+        if mapped:
+            return mapped
         return {'supported': False, 'reason': 'A three-way handicap is not the Asian handicap settlement.'}
     parsed_line = _quarter_line(line)
     line_in_text = re.search(r'(-?\d+(?:\.\d+)?)', f'{market} {selection}')
     if parsed_line is None and line_in_text and any(word in combined for word in ('over', 'under', 'handicap', 'spread', 'total')):
         parsed_line = _quarter_line(line_in_text.group(1))
     pick = selection.casefold()
-    if sport in ('football', 'frauenfussball', 'ice_hockey'):
+    if sport in GOAL_SPORTS:
+        if sport == 'ice_hockey' and any(word in combined for word in ('overtime', 'shootout', 'incl. ot', 'including ot')):
+            return {'supported': False, 'reason': 'A winner after overtime or a shootout is not the 60-minute result.'}
         if 'handicap' not in combined and (
             any(name in market.casefold() for name in ('1x2', 'match result', 'full time', 'fulltime'))
             or market.casefold() in {'1x2', 'result'}
@@ -81,12 +111,53 @@ def map_market(sport, market_label, selection_label, line=None):
                 return {'supported': True, 'canonical_market': 'DRAW', 'line': None, 'provider_market': 'h2h', 'provider_outcome': 'draw'}
             if pick in {'2', 'away', 'away win'}:
                 return {'supported': True, 'canonical_market': 'AWAY', 'line': None, 'provider_market': 'h2h', 'provider_outcome': 'away'}
+        if 'odd' in pick or 'even' in pick:
+            if 'odd' in pick and 'even' not in pick:
+                return {'supported': True, 'canonical_market': 'ODD_GOALS', 'line': None, 'provider_market': 'odd_even', 'provider_outcome': 'odd'}
+            if 'even' in pick:
+                return {'supported': True, 'canonical_market': 'EVEN_GOALS', 'line': None, 'provider_market': 'odd_even', 'provider_outcome': 'even'}
+        if 'clean sheet' in combined:
+            side = 'AWAY' if 'away' in combined and 'home' not in combined else 'HOME'
+            return {'supported': True, 'canonical_market': f'CLEAN_SHEET_{side}', 'line': None, 'provider_market': 'clean_sheet', 'provider_outcome': side}
+        if 'winning margin' in combined or 'win by' in combined:
+            band = '3PLUS' if re.search(r'3\s*\+|3\s*or more|or more', pick) else '1' if re.search(r'\b1\b', pick) else '2' if re.search(r'\b2\b', pick) else None
+            side = 'HOME' if pick.startswith('home') or pick in {'1', 'home'} or 'home' in pick else 'AWAY' if 'away' in pick or pick in {'2', 'away'} else None
+            if band and side:
+                return {'supported': True, 'canonical_market': f'MARGIN_{side}_{band}', 'line': None, 'provider_market': 'margin', 'provider_outcome': f'{side}_{band}'}
+        if 'draw no bet' in market.casefold() or market.casefold() in {'dnb'}:
+            if pick.startswith('home') or pick in {'1', 'home'}:
+                return {'supported': True, 'canonical_market': 'DNB_HOME', 'line': None, 'provider_market': 'draw_no_bet', 'provider_outcome': 'home'}
+            if pick.startswith('away') or pick in {'2', 'away'}:
+                return {'supported': True, 'canonical_market': 'DNB_AWAY', 'line': None, 'provider_market': 'draw_no_bet', 'provider_outcome': 'away'}
         if 'double chance' in market.casefold():
             token = re.sub(r'[^a-z0-9]', '', pick)
+            words = set(re.findall(r'[a-z]+', pick))
             mapped = {'1x': 'DOUBLE_CHANCE_1X', '12': 'DOUBLE_CHANCE_12', 'x2': 'DOUBLE_CHANCE_X2'}.get(token)
+            if mapped is None and 'draw' in words and 'home' in words and 'away' not in words:
+                mapped = 'DOUBLE_CHANCE_1X'
+            elif mapped is None and 'home' in words and 'away' in words:
+                mapped = 'DOUBLE_CHANCE_12'
+            elif mapped is None and 'draw' in words and 'away' in words:
+                mapped = 'DOUBLE_CHANCE_X2'
             if mapped:
-                return {'supported': True, 'canonical_market': mapped, 'line': None, 'provider_market': 'double_chance', 'provider_outcome': token}
-        if 'both teams' in combined or re.search(r'\bbtts\b', combined):
+                return {'supported': True, 'canonical_market': mapped, 'line': None, 'provider_market': 'double_chance', 'provider_outcome': token or mapped}
+        score_handicap = re.fullmatch(r'handicap\s+(\d+)\s*:\s*(\d+)', market.casefold())
+        if score_handicap and sport in ('football', 'frauenfussball'):
+            handicap = int(score_handicap.group(1)) - int(score_handicap.group(2))
+            if pick.startswith('home') or pick in {'1', 'home'}:
+                side = 'HOME'
+            elif pick.startswith('draw') or pick in {'x', 'draw', 'tie'}:
+                side = 'DRAW'
+            elif pick.startswith('away') or pick in {'2', 'away'}:
+                side = 'AWAY'
+            else:
+                side = None
+            if side:
+                return {
+                    'supported': True, 'canonical_market': f'EUROPEAN_{side}_{handicap:g}', 'line': handicap,
+                    'provider_market': 'european_handicap', 'provider_outcome': side,
+                }
+        if market.casefold().replace(' ', '') in {'gg/ng', 'ggng'} or 'both teams' in combined or re.search(r'\bbtts\b', combined):
             if pick in {'yes', 'gg', 'btts yes'}:
                 return {'supported': True, 'canonical_market': 'BTTS_YES', 'line': None, 'provider_market': 'btts', 'provider_outcome': 'yes'}
             if pick in {'no', 'ng', 'btts no'}:
@@ -143,6 +214,23 @@ def map_market(sport, market_label, selection_label, line=None):
                     'provider_market': 'spreads',
                     'provider_outcome': f'{side}_SPREAD_{parsed_line:g}',
                 }
+    if sport in WINNER_SPORTS:
+        folded = market.casefold()
+        if any(word in folded for word in ('set', 'game', 'point', 'handicap', 'total', 'over', 'under', 'ace', 'break')):
+            return {
+                'supported': False,
+                'reason': 'Only the match winner is settled from the stored score. This line needs its own result.',
+            }
+        if any(word in folded for word in ('winner', 'moneyline', 'money line', 'to win', 'match result')) or folded in {'1x2', 'result'}:
+            if pick in {'x', 'draw'}:
+                return {'supported': False, 'reason': 'This sport has no draw selection.'}
+            home_name = str(home or '').casefold()
+            away_name = str(away or '').casefold()
+            if pick in {'1', 'home', 'home win'} or (home_name and pick == home_name):
+                return {'supported': True, 'canonical_market': 'MONEYLINE_HOME', 'line': None, 'provider_market': 'h2h', 'provider_outcome': 'home'}
+            if pick in {'2', 'away', 'away win'} or (away_name and pick == away_name):
+                return {'supported': True, 'canonical_market': 'MONEYLINE_AWAY', 'line': None, 'provider_market': 'h2h', 'provider_outcome': 'away'}
+            return {'supported': False, 'reason': 'The winner selection does not match either named side.'}
     return {'supported': False, 'reason': 'No verified mapping exists for this SportyBet market label.'}
 
 
@@ -363,7 +451,7 @@ def validate_observation_market(connection, observation_id):
     row = _observation(connection, observation_id)
     if row['sport'] not in DISPLAY_SPORTS:
         raise ValueError('Set the sport by matching a stored fixture before validating the market.')
-    mapped = map_market(row['sport'], row['market_label'], row['selection_label'], row['line'])
+    mapped = map_market(row['sport'], row['market_label'], row['selection_label'], row['line'], row['home'], row['away'])
     if not mapped.get('supported'):
         connection.execute(
             """UPDATE sports_ai_sportybet_observations
@@ -401,7 +489,7 @@ def import_observation(connection, observation_id, actor, now=None):
             ('stale' if age_status == 'stale' else 'expired', age_reason, observation_id),
         )
         raise ValueError(age_reason)
-    mapped = map_market(row['sport'], row['market_label'], row['selection_label'], row['line'])
+    mapped = map_market(row['sport'], row['market_label'], row['selection_label'], row['line'], row['home'], row['away'])
     if not mapped.get('supported') or mapped['canonical_market'] != row['canonical_market']:
         raise ValueError('The stored market mapping no longer matches the SportyBet label.')
     recent = connection.execute(
@@ -571,7 +659,7 @@ def _ensure_displayed_fixture(connection, row, now):
     home = (row.get('home') or '').strip()
     away = (row.get('away') or '').strip()
     starts_at = row.get('starts_at')
-    if sport not in DISPLAY_SPORTS or not competition or not home or not away or not starts_at:
+    if not re.fullmatch(r'[a-z][a-z0-9_]{0,40}', sport or '') or not competition or not home or not away or not starts_at:
         return None
     try:
         kickoff = parse_time(starts_at)
@@ -655,13 +743,61 @@ def accept_displayed_quotes(connection, observation_ids, actor, now=None):
                    WHERE id=?""",
                 (best['fixture_id'], best['confidence'], best['sport'], observation_id),
             )
-            validate_observation_market(connection, observation_id)
-            confirm_observation(connection, observation_id, actor, now)
-            import_observation(connection, observation_id, actor, now)
+            mapped = map_market(row['sport'] or best['sport'], row['market_label'], row['selection_label'], row['line'], row['home'], row['away'])
+            if not mapped.get('supported'):
+                _store_unmapped_price(connection, observation_id, actor, now, mapped.get('reason'))
+            else:
+                validate_observation_market(connection, observation_id)
+                confirm_observation(connection, observation_id, actor, now)
+                import_observation(connection, observation_id, actor, now)
             imported += 1
         except (ValueError, LookupError, sqlite3.IntegrityError):
             skipped += 1
     return {'imported': imported, 'skipped': skipped}
+
+
+def _store_unmapped_price(connection, observation_id, actor, now, reason):
+    """Keep a price SportyBet displayed even when no model can settle that market yet.
+
+    The price is stored. No probability and no qualified opportunity are created.
+    """
+    row = _observation(connection, observation_id)
+    odds = validate_decimal(row['decimal_odds'])
+    if odds is None or not row['fixture_id']:
+        raise ValueError(reason or 'The displayed price cannot be stored.')
+    label = f"{row['market_label']} / {row['selection_label']}"[:180]
+    recent = connection.execute(
+        """SELECT decimal_odds, observed_at FROM sports_ai_odds_snapshots
+           WHERE fixture_id=? AND bookmaker=? AND market=? AND outcome=? AND IFNULL(line,-999)=IFNULL(?, -999)""",
+        (row['fixture_id'], BOOKMAKER, row['market_label'], row['selection_label'], row['line']),
+    ).fetchall()
+    observed = parse_time(row['observed_at'])
+    if any(
+        abs(float(item['decimal_odds']) - odds) < 0.0001
+        and abs((parse_time(item['observed_at']) - observed).total_seconds()) <= 60
+        for item in recent
+    ):
+        return
+    odds_id = str(uuid.uuid4())
+    evidence = json.loads(row['evidence_json'] or '{}')
+    evidence.update({'imported_by': actor, 'imported_at': now.isoformat(), 'settlement': 'not_modelled'})
+    connection.execute(
+        """INSERT INTO sports_ai_odds_snapshots
+           (id,fixture_id,provider_id,bookmaker,market,outcome,line,decimal_odds,source_url,observed_at,
+            confirmation_status,expiry_status,original_label,evidence_json)
+           VALUES(?,?,?,?,?,?,?,?,?,?,'confirmed','current',?,?)""",
+        (
+            odds_id, row['fixture_id'], PROVIDER_ID, BOOKMAKER, row['market_label'], row['selection_label'],
+            row['line'], odds, row['source_url'], row['observed_at'], label, json.dumps(evidence),
+        ),
+    )
+    connection.execute(
+        """UPDATE sports_ai_sportybet_observations
+           SET confirmation_status='confirmed', market_status='unsupported', canonical_market=NULL,
+               rejection_reason=?, import_status='imported', odds_id=?, evidence_json=?
+           WHERE id=?""",
+        (reason or 'SportyBet displayed this price. No settlement model is stored for it.', odds_id, json.dumps(evidence), observation_id),
+    )
 
 
 def unattended_status(connection, now=None):

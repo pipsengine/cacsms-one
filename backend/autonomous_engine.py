@@ -8,6 +8,8 @@ import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
+from booking_schedule import opportunity_week
+
 AUTONOMOUS_KINDS = (
     'prediction', 'accumulator', 'settlement', 'model_evaluation', 'browser_queue', 'booking_queue',
     'collection', 'weekly_draw', 'rollover', 'learning', 'wat_window',
@@ -119,7 +121,7 @@ def build_overview(connection, now=None):
         'stages': _stages(connection, schedules, jobs, now),
         'engines': _engines(connection, schedules, jobs, fresh, now),
         'opportunities': _opportunities(connection, now),
-        'tickets': _tickets(connection),
+        'tickets': _tickets(connection, now),
         'tickets_checked_at': connection.execute(
             "SELECT MAX(created_at) FROM sports_ai_autonomous_cycles WHERE stage='tickets'",
         ).fetchone()[0],
@@ -403,15 +405,15 @@ def _engines(connection, schedules, jobs, fresh, now):
 
 
 def _opportunities(connection, now):
-    """One current row per fixture and market. Repeated analysis runs do not each take a slot."""
+    """One current market per fixture: the highest stored win probability above 80%."""
     rows = connection.execute(
         """SELECT id,home,away,competition,starts_at,market,probability,expected_edge,decimal_odds,bookmaker
            FROM (
              SELECT o.id,f.home,f.away,f.competition,f.starts_at,p.market,p.probability,
                     o.expected_edge,q.decimal_odds,q.bookmaker,
                     ROW_NUMBER() OVER (
-                      PARTITION BY f.id, p.market, COALESCE(p.outcome, '')
-                      ORDER BY o.evaluated_at DESC
+                      PARTITION BY f.id
+                      ORDER BY p.probability DESC, o.evaluated_at DESC
                     ) AS rn
              FROM sports_ai_value_opportunities o
              JOIN sports_ai_engine_predictions p ON p.id=o.prediction_id
@@ -420,11 +422,12 @@ def _opportunities(connection, now):
              JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
              JOIN sports_ai_qualification_decisions d ON d.opportunity_id=o.id AND d.state='QUALIFIED'
              WHERE o.status='qualified' AND o.expected_edge>0 AND m.active=1 AND m.status='active'
-               AND f.status='scheduled' AND f.starts_at>?
+               AND p.probability>0.80
+               AND f.status='scheduled' AND f.starts_at>? AND f.starts_at<?
            )
            WHERE rn=1
-           ORDER BY expected_edge DESC LIMIT 8""",
-        (now.isoformat(),),
+           ORDER BY probability DESC LIMIT 10""",
+        (now.isoformat(), opportunity_week(now)[1].astimezone(timezone.utc).isoformat()),
     )
     return [{
         'id': row['id'],
@@ -440,37 +443,50 @@ def _opportunities(connection, now):
     } for row in rows]
 
 
-def _tickets(connection):
-    """Current suggestions only. A review_required ticket has left qualification and is not listed again."""
-    tickets = [dict(row) for row in connection.execute(
-        """SELECT id,tier,status,combined_odds,joint_probability,estimated_edge,leg_count,created_at,sport_mode,signature
+def _tickets(connection, now=None):
+    """The same slips the Ticket Builder lists: qualified, above 70%, and still inside this Monday–Sunday week."""
+    current = now or datetime.now(timezone.utc)
+    now_iso = current.astimezone(timezone.utc).isoformat()
+    week_end = opportunity_week(current)[1].astimezone(timezone.utc).isoformat()
+    candidates = [dict(row) for row in connection.execute(
+        """SELECT id,tier,status,combined_odds,joint_probability,estimated_edge,leg_count,created_at,sport_mode
            FROM sports_ai_accumulator_tickets
-           WHERE status='qualified'
-           ORDER BY created_at DESC LIMIT 24""",
+           WHERE probability_basis='independent' AND joint_probability>?
+             AND (
+               status='qualified'
+               OR (status='unverified_probability' AND json_extract(parameters_json,'$.coverage')='high_probability')
+             )
+           ORDER BY created_at DESC""",
+        (0.70,),
     )]
-    seen = set()
-    unique = []
-    for row in tickets:
-        key = row.get('signature') or row['id']
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(row)
-        if len(unique) == 8:
-            break
-    tickets = unique
-    if not tickets:
+    if not candidates:
         return []
-    ids = [row['id'] for row in tickets]
+    ids = [row['id'] for row in candidates]
     legs = {}
+    selections = {}
     for row in connection.execute(
-        f"""SELECT ticket_id,home,away,market,decimal_odds FROM sports_ai_accumulator_legs
+        f"""SELECT ticket_id,fixture_id,home,away,market,decimal_odds,starts_at FROM sports_ai_accumulator_legs
             WHERE ticket_id IN ({','.join('?' for _ in ids)}) ORDER BY id""",
         ids,
     ):
         legs.setdefault(row['ticket_id'], []).append(
             f"{row['home']} vs {row['away']} — {row['market']} ({float(row['decimal_odds']):.2f})",
         )
+        selections.setdefault(row['ticket_id'], []).append(row)
+    tickets = []
+    seen = set()
+    for row in candidates:
+        items = selections.get(row['id'], [])
+        if not items or any(
+            not item['starts_at'] or item['starts_at'] <= now_iso or item['starts_at'] >= week_end
+            for item in items
+        ):
+            continue
+        key = '|'.join(sorted(f"{item['fixture_id']}:{str(item['market']).upper()}" for item in items))
+        if key in seen:
+            continue
+        seen.add(key)
+        tickets.append(row)
     codes = {}
     for row in connection.execute(
         f"""SELECT accumulator_ticket_id, code, status, verification_method

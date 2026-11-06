@@ -21,6 +21,20 @@ def _minute(value):
     return int(hour) * 60 + int(minute)
 
 
+def opportunity_week(now=None):
+    """Monday 00:00 WAT through the next Monday 00:00.
+
+    The end is exclusive, so a kickoff on Sunday is inside the week and a
+    kickoff on the following Monday is the next week.
+    """
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    local = current.astimezone(WAT)
+    monday = (local - timedelta(days=local.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    return monday, monday + timedelta(days=7)
+
+
 def phase_at(now):
     """Return the active window. Minutes outside those ranges are event-driven."""
     current = now if now.tzinfo else now.replace(tzinfo=timezone.utc)

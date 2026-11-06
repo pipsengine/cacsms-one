@@ -4,7 +4,10 @@ import math
 import os
 from datetime import datetime, timedelta, timezone
 
-from booking_schedule import WAT
+from booking_schedule import WAT, opportunity_week
+from workflow_status import workflow_board
+from display_policy import DRAW_PROBABILITY, LIVE_LIMIT, LIVE_PROBABILITY, SLIP_PROBABILITY, confidence_from_metrics
+from sport_support import GOAL_SPORTS, sql_in
 
 
 def _status_label(state, reason):
@@ -47,16 +50,18 @@ def command_view(connection, now=None):
     current = now or datetime.now(timezone.utc)
     local = current.astimezone(WAT)
     day_start = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
-    week_start = (local - timedelta(days=local.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
-    week_end = week_start + timedelta(days=7)
-    opportunities = _opportunities(connection, current)
+    week_start, week_end = opportunity_week(current)
+    opportunities = _opportunities(connection, current, week_end)
     draws = _draws(connection, week_start.astimezone(timezone.utc), week_end.astimezone(timezone.utc))
     draw_count = connection.execute(
         """SELECT COUNT(*) FROM sports_ai_qualification_decisions d
            JOIN sports_ai_fixtures f ON f.id=d.fixture_id
+           JOIN sports_ai_engine_predictions p ON p.id=d.prediction_id
            WHERE d.market='DRAW' AND d.state IN ('QUALIFIED','MONITORING')
+             AND f.sport IN (""" + sql_in(GOAL_SPORTS) + """)
+             AND p.probability>?
              AND f.starts_at>=? AND f.starts_at<?""",
-        (week_start.astimezone(timezone.utc).isoformat(), week_end.astimezone(timezone.utc).isoformat()),
+        (DRAW_PROBABILITY, week_start.astimezone(timezone.utc).isoformat(), week_end.astimezone(timezone.utc).isoformat()),
     ).fetchone()[0]
     sports = _sports(connection, current)
     centre = _booking_centre(connection, current)
@@ -75,10 +80,24 @@ def command_view(connection, now=None):
             online = (current - beat).total_seconds() < 120
         except ValueError:
             online = False
+    qualified_visible = connection.execute(
+        """SELECT COUNT(*) FROM (
+             SELECT d.fixture_id FROM sports_ai_qualification_decisions d
+             JOIN sports_ai_engine_predictions p ON p.id=d.prediction_id
+             JOIN sports_ai_fixtures f ON f.id=d.fixture_id
+             WHERE d.state='QUALIFIED' AND p.probability>? AND f.starts_at>? AND f.starts_at<?
+             GROUP BY d.fixture_id
+           )""",
+        (LIVE_PROBABILITY, current.isoformat(), week_end.astimezone(timezone.utc).isoformat()),
+    ).fetchone()[0]
     qualified_new = connection.execute(
-        """SELECT COUNT(*) FROM sports_ai_qualification_decisions
-           WHERE state='QUALIFIED' AND created_at>=?""",
-        (day_start.isoformat(),),
+        """SELECT COUNT(*) FROM (
+             SELECT d.fixture_id FROM sports_ai_qualification_decisions d
+             JOIN sports_ai_engine_predictions p ON p.id=d.prediction_id
+             WHERE d.state='QUALIFIED' AND p.probability>? AND d.created_at>=?
+             GROUP BY d.fixture_id
+           )""",
+        (LIVE_PROBABILITY, day_start.isoformat()),
     ).fetchone()[0]
     risk = connection.execute(
         """SELECT COUNT(*) FROM sports_ai_qualification_decisions
@@ -118,7 +137,7 @@ def command_view(connection, now=None):
         'updated_at': None if not heartbeat else heartbeat['heartbeat_at'],
         'places_wager': False,
         'kpis': {
-            'qualified': stages.get('QUALIFIED', 0),
+            'qualified': qualified_visible,
             'qualified_new': qualified_new,
             'slips': slip_count,
             'codes': centre['counts']['active'],
@@ -138,7 +157,7 @@ def command_view(connection, now=None):
         'pipeline': [
             {'name': 'Fixtures discovered', 'count': stages.get('DISCOVERED', 0)},
             {'name': 'Predictions generated', 'count': stages.get('PREDICTED', 0)},
-            {'name': 'Qualified selections', 'count': stages.get('QUALIFIED', 0)},
+            {'name': 'Qualified selections', 'count': qualified_visible},
             {'name': 'Bet slips ready', 'count': slip_count},
             {'name': 'Booking codes stored', 'count': stages.get('CODE_VERIFIED', 0)},
         ],
@@ -154,40 +173,65 @@ def command_view(connection, now=None):
             'average_odds': None if average is None else round(float(average), 2),
         },
         'alerts': alerts,
+        'workflow': workflow_board(
+            connection, current,
+            ready_slips=slip_count,
+            qualified_visible=qualified_visible,
+            win_rate=round(100 * won / (won + lost), 1) if won + lost else None,
+        ),
     }
 
 
-def _opportunities(connection, now):
+def _opportunities(connection, now, week_end):
+    from market_registry import choose_best
     rows = connection.execute(
         """SELECT d.fixture_id, d.state, d.reason_code, d.market, p.probability, f.sport, f.home, f.away, f.competition, f.starts_at,
-                  q.decimal_odds, o.expected_edge
+                  q.decimal_odds, m.metrics_json
            FROM sports_ai_qualification_decisions d
            JOIN sports_ai_fixtures f ON f.id=d.fixture_id
            JOIN sports_ai_engine_predictions p ON p.id=d.prediction_id
+           LEFT JOIN sports_ai_model_registry m ON m.id=p.model_id
            LEFT JOIN sports_ai_value_opportunities o ON o.id=d.opportunity_id
            LEFT JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
-           WHERE f.starts_at>?
-             AND (d.state='QUALIFIED' OR (d.state='MONITORING' AND d.reason_code='RISK_REVIEW'))
-           ORDER BY CASE d.state WHEN 'QUALIFIED' THEN 0 ELSE 1 END,
-                    o.expected_edge IS NULL, o.expected_edge DESC
-           LIMIT 8""",
-        (now.isoformat(),),
+           WHERE f.starts_at>? AND f.starts_at<?
+             AND p.probability>?
+             AND (d.state='QUALIFIED' OR (d.state='MONITORING' AND d.reason_code='RISK_REVIEW'))""",
+        (now.isoformat(), week_end.astimezone(timezone.utc).isoformat(), LIVE_PROBABILITY),
     ).fetchall()
-    items = []
+    prepared = []
     for row in rows:
-        family, selection = market_parts(row['market'])
-        items.append({
-            'fixture_id': row['fixture_id'] if 'fixture_id' in row.keys() else None,
+        prepared.append({
+            'fixture_id': row['fixture_id'],
+            'state': row['state'],
+            'reason_code': row['reason_code'],
+            'market_key': row['market'],
+            'probability': float(row['probability']),
+            'confidence': confidence_from_metrics(row['metrics_json']),
             'sport': str(row['sport'] or '').lower(),
-            'sport_label': str(row['sport'] or '').title(),
+            'home': row['home'],
+            'away': row['away'],
+            'starts_at': row['starts_at'],
+            'competition': row['competition'],
+            'decimal_odds': row['decimal_odds'],
+        })
+    ranked = choose_best(prepared)
+    ranked.sort(key=lambda item: (-item['probability'], -(item['confidence'] if item['confidence'] is not None else -1)))
+    items = []
+    for row in ranked[:LIVE_LIMIT]:
+        family, selection = market_parts(row['market_key'])
+        items.append({
+            'fixture_id': row['fixture_id'],
+            'sport': row['sport'],
+            'sport_label': str(row['sport'] or '').replace('_', ' ').title(),
             'fixture': f"{row['home']} vs {row['away']}",
             'home': row['home'],
             'away': row['away'],
-            'starts_at': row['starts_at'] if 'starts_at' in row.keys() else None,
+            'starts_at': row['starts_at'],
             'competition': row['competition'],
             'market': family,
             'selection': selection,
-            'probability': None if row['probability'] is None else round(float(row['probability']) * 100, 1),
+            'probability': round(row['probability'] * 100, 1),
+            'confidence': None if row['confidence'] is None else round(row['confidence'] * 100, 1),
             'odds': None if row['decimal_odds'] is None else round(float(row['decimal_odds']), 2),
             'status': _status_label(row['state'], row['reason_code']),
         })
@@ -196,22 +240,27 @@ def _opportunities(connection, now):
 
 def _draws(connection, start, end):
     rows = connection.execute(
-        """SELECT d.state, d.reason_code, p.probability, f.home, f.away, f.competition, q.decimal_odds
+        f"""SELECT d.state, d.reason_code, p.probability, f.sport, f.home, f.away, f.competition, f.starts_at, q.decimal_odds
            FROM sports_ai_qualification_decisions d
            JOIN sports_ai_fixtures f ON f.id=d.fixture_id
            JOIN sports_ai_engine_predictions p ON p.id=d.prediction_id
            LEFT JOIN sports_ai_value_opportunities o ON o.id=d.opportunity_id
            LEFT JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
            WHERE d.market='DRAW' AND d.state IN ('QUALIFIED','MONITORING')
+             AND f.sport IN ({sql_in(GOAL_SPORTS)})
+             AND p.probability>?
              AND f.starts_at>=? AND f.starts_at<?
-           ORDER BY CASE d.state WHEN 'QUALIFIED' THEN 0 ELSE 1 END, f.starts_at
-           LIMIT 8""",
-        (start.isoformat(), end.isoformat()),
+           ORDER BY p.probability DESC, f.starts_at
+           LIMIT 40""",
+        (DRAW_PROBABILITY, start.isoformat(), end.isoformat()),
     ).fetchall()
     return [
         {
+            'sport': row['sport'],
+            'sport_label': str(row['sport'] or '').replace('_', ' ').title(),
             'fixture': f"{row['home']} vs {row['away']}",
             'competition': row['competition'],
+            'starts_at': row['starts_at'],
             'probability': None if row['probability'] is None else round(float(row['probability']) * 100, 1),
             'odds': None if row['decimal_odds'] is None else round(float(row['decimal_odds']), 2),
             'status': _status_label(row['state'], row['reason_code']),
@@ -241,18 +290,14 @@ def _sports(connection, now):
             "SELECT code FROM sports_ai_sports WHERE prediction_status='modelled'",
         )
     }
+    from sport_support import coverage_status
     names = list(dict.fromkeys([*counts.keys(), *registry.keys()]))
     rows = []
     for sport in names:
-        if sport in modelled and registry.get(sport):
-            status = 'Active'
-        elif sport in modelled:
-            status = 'Research'
-        else:
-            status = 'Unsupported'
+        status = coverage_status(sport, modelled, registry.get(sport))
         rows.append({'name': str(sport).replace('_', ' ').title(), 'fixtures': counts.get(sport, 0), 'status': status})
     rows.sort(key=lambda item: ({'Active': 0, 'Research': 1, 'Unsupported': 2}[item['status']], -item['fixtures'], item['name']))
-    return [item for item in rows if item['fixtures'] or item['status'] == 'Active'][:8]
+    return [item for item in rows if item['fixtures'] or item['status'] == 'Active']
 
 
 def ticket_probability(basis, joint):
@@ -387,6 +432,7 @@ def _booking_centre(connection, now):
     slip_filter = f"""
         t.status='qualified' AND t.publication_state='READY_FOR_WINDOW'
         AND {_UPCOMING_TICKET}
+        AND t.probability_basis='independent' AND t.joint_probability>?
         AND NOT EXISTS (
             SELECT 1 FROM sports_ai_booking_codes b
             WHERE b.accumulator_ticket_id=t.id AND b.status='verified'
@@ -397,7 +443,7 @@ def _booking_centre(connection, now):
         )
     """
     code_args = (moment, moment)
-    slip_args = (moment, moment)
+    slip_args = (moment, SLIP_PROBABILITY, moment)
     counts = {
         'active': connection.execute(f'SELECT COUNT(*) FROM sports_ai_booking_codes b LEFT JOIN sports_ai_accumulator_tickets t ON t.id=b.accumulator_ticket_id WHERE {active_filter}', code_args).fetchone()[0],
         'active_qualified': connection.execute(f"SELECT COUNT(*) FROM sports_ai_booking_codes b LEFT JOIN sports_ai_accumulator_tickets t ON t.id=b.accumulator_ticket_id WHERE {active_filter} AND t.status='qualified'", code_args).fetchone()[0],
@@ -407,7 +453,8 @@ def _booking_centre(connection, now):
     active = _code_rows(connection, now, active_filter, code_args, 'starts_at ASC')
     history = _code_rows(connection, now, history_filter, code_args, 'COALESCE(b.verified_at, b.created_at) DESC')
     slips = _slip_rows(connection, now, slip_filter, slip_args)
-    return {'active': active, 'history': history, 'slips': slips, 'counts': counts}
+    counts['slips'] = len(slips)
+    return {'active': active, 'history': history, 'slips': slips[:12], 'counts': counts}
 
 
 _CODE_SELECT = """
@@ -448,11 +495,24 @@ def _slip_rows(connection, now, where, args):
                   (SELECT SUM(CASE WHEN result='pending' THEN 1 ELSE 0 END) FROM sports_ai_accumulator_legs WHERE ticket_id=t.id) AS pending
            FROM sports_ai_accumulator_tickets t
            WHERE {where}
-           ORDER BY starts_at ASC
-           LIMIT 12""",
+           ORDER BY t.created_at DESC
+           LIMIT 400""",
         args,
     ).fetchall()
-    return _attach_legs(connection, [_public_ticket(row, now, coded=False) for row in rows])
+    slips = _attach_legs(connection, [_public_ticket(row, now, coded=False) for row in rows])
+    return _one_slip_per_selection(slips)
+
+
+def _one_slip_per_selection(rows):
+    chosen = {}
+    for row in rows:
+        legs = row.get('legs') or []
+        key = '|'.join(sorted(
+            f"{leg['home']}|{leg['away']}|{leg['market']}|{leg['starts_at']}" for leg in legs
+        )) or row.get('ticket_id')
+        if key not in chosen:
+            chosen[key] = row
+    return sorted(chosen.values(), key=lambda row: row.get('starts_at') or '')
 
 
 def _public_ticket(row, now, coded):

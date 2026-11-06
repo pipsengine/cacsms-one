@@ -157,6 +157,12 @@ class AcquisitionEngineTests(unittest.TestCase):
         self.assertEqual(retry['retry_of'],failed['id'])
         self.assertEqual(retry['status'],'complete')
         self.assertEqual(retry['attempt'],2)
+        with db.connect() as connection:
+            open_failures = connection.execute(
+                """SELECT COUNT(*) FROM sports_ai_data_quality_issues
+                   WHERE issue_type='provider_collection_failed' AND resolved_at IS NULL""",
+            ).fetchone()[0]
+        self.assertEqual(open_failures, 0)
 
     def test_football_data_normalizes_provider_rows_and_standings(self):
         provider=self._provider(

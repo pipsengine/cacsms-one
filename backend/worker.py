@@ -88,6 +88,12 @@ def _observed(stage, result, failed=False):
 
 
 def tick():
+    """One cycle. Upcoming fixtures and completed matches move on separate lanes.
+
+    Discover, odds, validation, analysis, qualification, tickets, rollover and
+    booking read what is already stored for upcoming fixtures. Settle and learn
+    read completed matches. An unfinished kickoff does not hold the next cycle.
+    """
     initialize()
     _operator_booking()
     try:
@@ -270,7 +276,7 @@ def _ticket_tick():
         from datetime import datetime, timezone
         current = datetime.now(timezone.utc)
         with connect() as connection:
-            priced = price_quoted_board(connection, now=current, limit=24)
+            priced = price_quoted_board(connection, now=current, limit=60)
             result = build_autonomous_tickets(connection, 'sports-ai-worker', _audit, now=current)
             cross = build_bookable_cross_tickets(connection, 'sports-ai-worker', _audit, now=current)
             coverage = build_high_probability_tickets(connection, 'sports-ai-worker', _audit, now=current)
@@ -294,14 +300,16 @@ def _coverage_tick():
     try:
         from prediction_engine import run_analysis
         with connect() as connection:
-            result = run_analysis(connection, 'sports-ai-worker', _audit, coverage=True, limit=8)
+            result = run_analysis(connection, 'sports-ai-worker', _audit, coverage=True, limit=24)
         print(
             'coverage analysis',
             'fixtures', result.get('fixtures'),
             'predictions', result.get('predictions'),
             'skipped', result.get('skipped'),
         )
+        _observed('analyse', result)
     except Exception as error:
+        _observed('analyse', {'status': 'failed'}, failed=True)
         _report('coverage analysis failed', error)
 
 
@@ -374,7 +382,9 @@ def _reliability_tick():
             'audit_leaks', audited.get('leaked'),
             'reviews', reviews.get('inserted'),
         )
+        _observed('settle', {'status': 'complete', 'settled': settled.get('live_linked')})
     except Exception as error:
+        _observed('settle', {'status': 'failed'}, failed=True)
         _report('settlement failed', error)
 
 

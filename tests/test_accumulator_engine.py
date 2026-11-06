@@ -516,6 +516,41 @@ class AccumulatorPersistenceTests(unittest.TestCase):
         homes = {leg['home'] for leg in ticket['legs']}
         self.assertEqual(homes, {'Home A', 'Home B'})
 
+    def test_a_refreshed_price_does_not_store_another_copy(self):
+        with db.connect() as connection:
+            stored = self._opportunity(connection, home='Mavericks', away='Jazz', odds=1.55, probability=0.91, edge=0.2)
+            first = generate_accumulators(
+                connection, 'tester', None, 'mixed',
+                {'targets': [1.5], 'min_legs': 1, 'max_legs': 1}, 'copy-a', self.now,
+            )
+            prediction = connection.execute(
+                'SELECT prediction_id FROM sports_ai_value_opportunities WHERE id=?',
+                (stored['opportunity_id'],),
+            ).fetchone()['prediction_id']
+            quote = str(uuid.uuid4())
+            connection.execute(
+                """INSERT INTO sports_ai_odds_snapshots
+                   (id,fixture_id,provider_id,bookmaker,market,outcome,decimal_odds,source_url,observed_at)
+                   VALUES(?,?,'provider-manual-odds','Book','HOME','HOME',1.55,'https://example.test/quote',?)""",
+                (quote, stored['fixture_id'], self.now.isoformat()),
+            )
+            connection.execute(
+                """INSERT INTO sports_ai_value_opportunities
+                   (id,prediction_id,odds_id,implied_probability,expected_edge,status,reason,evaluated_at,data_completeness)
+                   VALUES(?,?,?,?,?,?,?,?,0.8)""",
+                (str(uuid.uuid4()), prediction, quote, 1 / 1.55, 0.2, 'qualified', 'qualified', self.now.isoformat()),
+            )
+            second = generate_accumulators(
+                connection, 'tester', None, 'mixed',
+                {'targets': [1.5], 'min_legs': 1, 'max_legs': 1}, 'copy-b', self.now,
+            )
+            open_count = connection.execute(
+                "SELECT COUNT(*) FROM sports_ai_accumulator_tickets WHERE status='qualified'",
+            ).fetchone()[0]
+        self.assertEqual(first['ticket_count'], 1)
+        self.assertEqual(second['ticket_count'], 0)
+        self.assertEqual(open_count, 1)
+
     def _opportunity_pair(self):
         with db.connect() as connection:
             self._opportunity(connection, home='Home A', away='Away A', odds=1.5, probability=0.70)

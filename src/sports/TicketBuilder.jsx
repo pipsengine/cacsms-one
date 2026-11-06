@@ -108,6 +108,23 @@ function latestTickets(rows) {
   return [...chosen.values()].sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)));
 }
 
+function openThisWeek(startsAt, now = Date.now()) {
+  const kick = Date.parse(startsAt);
+  if (!Number.isFinite(kick) || kick <= now) return false;
+  const shifted = new Date(now + 3600000);
+  const midnight = Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate());
+  const weekday = new Date(midnight).getUTCDay();
+  const monday = midnight - (weekday === 0 ? 6 : weekday - 1) * 86400000 - 3600000;
+  return kick >= monday && kick < monday + 7 * 86400000;
+}
+
+function currentSlip(row) {
+  const legs = row.legs || [];
+  return (row.label === 'Awaiting code' || row.label === 'Verified' || row.label === 'High probability')
+    && legs.length > 0
+    && legs.every((leg) => openThisWeek(leg.starts_at));
+}
+
 function withinRange(createdAt, range) {
   if (range === 'All time') return true;
   const created = new Date(createdAt).getTime();
@@ -172,7 +189,7 @@ function buildCombined(members) {
       sportLabel: sportMode === 'football' ? 'Football' : sportMode === 'basketball' ? 'Basketball' : 'Mixed',
       created_at: newest,
       status: 'combined',
-      explanation: `${title} gathers ${rankedMembers.length} stored tickets at 75% or above. ${slice.length} selections are listed, with each fixture and market kept once. The percentage is the joint estimate of this group. This ticket is for reading those selections together.`,
+      explanation: `${title} gathers ${rankedMembers.length} stored tickets above 70%. ${slice.length} selections are listed, with each fixture and market kept once. The percentage is the joint estimate of this group. This ticket is for reading those selections together.`,
     };
   }).filter((ticket) => ticket.leg_count);
 }
@@ -270,8 +287,8 @@ export default function TicketBuilder() {
     && (automation === 'All' || (automation === 'Has code' ? row.shownCode : !row.shownCode))
     && withinRange(row.created_at, range)), [rows, sport, tier, automation, range]);
 
-  const combinedTickets = useMemo(() => buildCombined(scopeRows.filter((row) => row.probability != null && row.probability >= 75)), [scopeRows]);
-  const memberIds = useMemo(() => new Set(scopeRows.filter((row) => row.probability != null && row.probability >= 75).map((row) => row.id)), [scopeRows]);
+  const combinedTickets = useMemo(() => buildCombined(scopeRows.filter((row) => row.probability != null && row.probability > 70 && currentSlip(row))), [scopeRows]);
+  const memberIds = useMemo(() => new Set(scopeRows.filter((row) => row.probability != null && row.probability > 70).map((row) => row.id)), [scopeRows]);
   const queryText = query.trim().toLowerCase();
   const visibleCombined = (status === 'All Status' || status === 'Combined')
     ? combinedTickets.filter((ticket) => {
@@ -282,8 +299,10 @@ export default function TicketBuilder() {
     : [];
 
   const shown = useMemo(() => scopeRows.filter((row) => {
+    if (row.probability == null || row.probability <= 70) return false;
     const text = `${row.shownCode} ${row.id} ${(row.legs || []).map((leg) => `${leg.home} ${leg.away} ${leg.market}`).join(' ')}`.toLowerCase();
     const textOk = !queryText || text.includes(queryText);
+    if ((status === 'All Status' || status === 'Combined') && !currentSlip(row)) return false;
     if (status === 'Combined') return memberIds.has(row.id) && textOk;
     return textOk && (status === 'All Status' || row.label === status);
   }), [scopeRows, status, memberIds, queryText]);
@@ -298,10 +317,10 @@ export default function TicketBuilder() {
 
   const selected = visibleCombined.find((row) => row.id === selectedId) || rows.find((row) => row.id === selectedId) || visibleCombined[0] || ranked[0] || null;
   const summary = overview?.summary || {};
-  const todayCount = rows.filter((row) => lagosDay(row.created_at) === lagosDay()).length;
   const verified = codes.filter((code) => code.status === 'verified' && code.verification_method === 'displayed').length;
   const expired = codes.filter((code) => code.status === 'expired').length;
-  const awaiting = rows.filter((row) => row.label === 'Awaiting code').length;
+  const ready = (overview?.tickets || []).length;
+  const awaiting = rows.filter((row) => currentSlip(row) && row.label === 'Awaiting code').length;
   const tierCounts = BANDS.map(([name]) => [name, rows.filter((row) => row.band === name).length]);
   const tierMax = Math.max(1, ...tierCounts.map((item) => item[1]));
   const active = overview?.status === 'running' && overview?.scheduler_fresh;
@@ -315,7 +334,7 @@ export default function TicketBuilder() {
   }
 
   const stats = [
-    ['Tickets Built', summary.tickets ?? rows.length, todayCount ? `+${todayCount} today in this list` : 'Stored tickets', Layers, 'blue'],
+    ['Tickets Built', ready, 'Ready this week, above 70%', Layers, 'blue'],
     ['Codes Stored', codes.length, 'SportyBet codes on file', Ticket, 'green'],
     ['Verified', verified, 'Displayed and still valid', CheckCircle2, 'green'],
     ['Awaiting Code', awaiting, 'In this list', Clock3, 'blue'],
@@ -328,7 +347,7 @@ export default function TicketBuilder() {
     ['Discover', summary.fixtures ?? '—', 'fixtures'],
     ['Analyze', summary.analysed ?? '—', 'predictions, 24h'],
     ['Qualify', summary.opportunities ?? '—', 'qualified'],
-    ['Build', summary.tickets ?? '—', 'tickets'],
+    ['Build', ready, 'ready this week'],
     ['Generate Code', codes.length, 'stored'],
     ['Displayed Code', codes.filter((code) => code.verification_method === 'displayed').length, 'displayed'],
     ['Verify', verified, 'still valid'],
@@ -367,7 +386,7 @@ export default function TicketBuilder() {
         <div className="tb-table-wrap"><table><thead><tr><th>#</th><th>Ticket / Code</th><th>Sport</th><th>Selections</th><th>Combined Odds</th><th>AI Probability</th><th>Status</th><th>Registered</th><th>Action</th></tr></thead><tbody>
           {tableRows.map((row, index) => {
             const individualIndex = row.combined ? index : (currentPage - 1) * pageSize + (index - (currentPage === 1 ? visibleCombined.length : 0)) + 1;
-            return <tr key={row.id} className={`${selected?.id === row.id ? 'selected' : ''} ${row.combined ? 'combined' : ''}`.trim()}><td>{row.combined ? `C${row.combinedPart}` : individualIndex}</td><td><strong>{row.shownCode || 'No code'}</strong>{row.combined && <div className="tb-sub">From {row.memberCount} tickets at 75%+</div>}{memberIds.has(row.id) && <span className="tb-mark">Combined</span>}{row.shownCode && !row.combined && <button className="tb-icon" title="Copy code" onClick={() => copy(row.shownCode, row.shownCode)}><Copy size={13} /></button>}</td><td title={row.sportLabel}>{row.sportLabel === 'Basketball' ? '🏀' : row.sportLabel === 'Football' ? '⚽' : row.sportLabel === 'Ice hockey' ? '🏒' : '🌐'}</td><td>{row.leg_count}</td><td><strong>{oddsText(row.combined_odds)}</strong></td><td><Prob value={row.probability} /></td><td><Badge status={row.label} /></td><td>{lagosStamp(row.code?.created_at || row.created_at)}</td><td><button className="tb-view" onClick={() => { setSelectedId(row.id); setTab('Ticket Details'); }}><Eye size={14} /> View</button></td></tr>;
+            return <tr key={row.id} className={`${selected?.id === row.id ? 'selected' : ''} ${row.combined ? 'combined' : ''}`.trim()}><td>{row.combined ? `C${row.combinedPart}` : individualIndex}</td><td><strong>{row.shownCode || 'No code'}</strong>{row.combined && <div className="tb-sub">From {row.memberCount} tickets above 70%</div>}{memberIds.has(row.id) && <span className="tb-mark">Combined</span>}{row.shownCode && !row.combined && <button className="tb-icon" title="Copy code" onClick={() => copy(row.shownCode, row.shownCode)}><Copy size={13} /></button>}</td><td title={row.sportLabel}>{row.sportLabel === 'Basketball' ? '🏀' : row.sportLabel === 'Football' ? '⚽' : row.sportLabel === 'Ice hockey' ? '🏒' : '🌐'}</td><td>{row.leg_count}</td><td><strong>{oddsText(row.combined_odds)}</strong></td><td><Prob value={row.probability} /></td><td><Badge status={row.label} /></td><td>{lagosStamp(row.code?.created_at || row.created_at)}</td><td><button className="tb-view" onClick={() => { setSelectedId(row.id); setTab('Ticket Details'); }}><Eye size={14} /> View</button></td></tr>;
           })}
         </tbody></table>{!tableRows.length && <div className="tb-empty">{loading ? 'Loading stored tickets…' : 'No stored ticket matches these filters.'}</div>}
           {ranked.length > pageSize && <div className="tb-pager"><button type="button" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)}>Previous</button><span>{currentPage} / {pageCount}</span><button type="button" disabled={currentPage >= pageCount} onClick={() => setPage(currentPage + 1)}>Next</button></div>}
@@ -385,7 +404,7 @@ export default function TicketBuilder() {
       </Panel>
     </div>}
     {tab === 'Ticket Details' && <Panel title="Ticket Details" icon={ClipboardList} action={<button onClick={() => setTab('Generated Tickets')}>Back to tickets</button>}>
-      {selected ? <div className="tb-detail"><div><small>{selected.combined ? 'Combined ticket' : 'Booking code'}</small><h2>{selected.combined ? selected.shownCode : (selected.shownCode || 'Not stored')}</h2><p>{selected.sportLabel} · {selected.leg_count} selections{selected.combined ? ` · ${selected.memberCount} tickets at 75%+` : ''}</p><Badge status={selected.label} /></div><div><small>Combined odds</small><h2>{oddsText(selected.combined_odds)}</h2><p>Joint probability: {selected.probability == null ? 'Unverified' : `${selected.probability}%`}</p></div><div><small>Evidence</small><h2>{selected.combined ? 'Not requested' : selected.code?.verification_method === 'displayed' ? 'Displayed' : 'Not displayed'}</h2><p>{selected.combined ? selected.explanation : 'A code is verified only while SportyBet has displayed it and it has not expired.'}</p><button disabled={!selected.shownCode || selected.combined} onClick={() => copy(selected.shownCode, selected.shownCode)}>Copy code</button></div></div> : <div className="tb-empty">No ticket is selected.</div>}
+      {selected ? <div className="tb-detail"><div><small>{selected.combined ? 'Combined ticket' : 'Booking code'}</small><h2>{selected.combined ? selected.shownCode : (selected.shownCode || 'Not stored')}</h2><p>{selected.sportLabel} · {selected.leg_count} selections{selected.combined ? ` · ${selected.memberCount} tickets above 70%` : ''}</p><Badge status={selected.label} /></div><div><small>Combined odds</small><h2>{oddsText(selected.combined_odds)}</h2><p>Joint probability: {selected.probability == null ? 'Unverified' : `${selected.probability}%`}</p></div><div><small>Evidence</small><h2>{selected.combined ? 'Not requested' : selected.code?.verification_method === 'displayed' ? 'Displayed' : 'Not displayed'}</h2><p>{selected.combined ? selected.explanation : 'A code is verified only while SportyBet has displayed it and it has not expired.'}</p><button disabled={!selected.shownCode || selected.combined} onClick={() => copy(selected.shownCode, selected.shownCode)}>Copy code</button></div></div> : <div className="tb-empty">No ticket is selected.</div>}
       {selected && <table className="tb-preview"><thead><tr><th>#</th><th>Fixture</th><th>Competition</th><th>Market</th><th>Odds</th><th>Model probability</th></tr></thead><tbody>{(selected.legs || []).map((leg, index) => <tr key={leg.id || index}><td>{index + 1}</td><td>{leg.home} vs {leg.away}</td><td>{leg.competition}</td><td>{marketText(leg)}</td><td>{oddsText(leg.decimal_odds)}</td><td>{leg.probability == null ? '—' : `${percent(leg.probability)}%`}</td></tr>)}</tbody></table>}
     </Panel>}
     {tab === 'Code History' && <Panel title="Booking Code History" icon={History}><table><thead><tr><th>Code</th><th>Status</th><th>Method</th><th>Bookmaker</th><th>Stored</th></tr></thead><tbody>

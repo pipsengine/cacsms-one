@@ -8,7 +8,7 @@ const STATE_FOR = {
 };
 const COPY = {
   booking: 'One qualification decision is shared by booking, the Weekly Draw Centre and the Daily Rollover Centre. A ticket or booking code cannot be created from a selection that is not QUALIFIED.',
-  weekly_draw: 'Football draw selections for the next seven days. This centre reads the same decisions as booking and does not qualify anything on its own.',
+  weekly_draw: 'Full-time draw selections for the next seven days, scored separately for each sport that can finish level. This centre reads the same decisions as booking and does not qualify anything on its own.',
   daily_rollover: 'Selections whose kickoff is today. This centre reads the same decisions as booking and does not qualify anything on its own.',
 };
 

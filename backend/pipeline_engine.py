@@ -184,7 +184,7 @@ def enqueue_odds_refresh(connection, now=None, limit=80):
 def _feed_blocked(connection):
     row = connection.execute(
         """SELECT status, error FROM sports_ai_browser_jobs
-           WHERE url='https://www.sportybet.com/ng/sport/basketball'
+           WHERE url='https://www.sportybet.com/ng/sport/football'
            ORDER BY created_at DESC LIMIT 1""",
     ).fetchone()
     if not row or row['status'] != 'failed':
@@ -298,13 +298,13 @@ def build_autonomous_tickets(connection, actor, audit, now=None):
     if not autonomous_tickets_enabled(connection):
         return {'status': 'manual', 'tickets': 0, 'places_wager': False, 'reason': 'Autonomous ticket building is switched off.'}
     from accumulator_engine import generate_accumulators, load_opportunity_rows
-    rows = load_opportunity_rows(connection)
+    rows = load_opportunity_rows(connection, current)
     if not rows:
         return {
             'status': 'insufficient', 'tickets': 0, 'qualified_inputs': 0, 'places_wager': False,
             'reason': 'No current QUALIFIED selection has a linked qualified price.',
         }
-    identity = '|'.join(sorted(f"{row['opportunity_id']}:{row.get('decimal_odds')}" for row in rows))
+    identity = '|'.join(sorted(f"{row['fixture_id']}:{row['market']}" for row in rows))
     key = 'autonomous-tickets:v5:' + hashlib.sha256(identity.encode()).hexdigest()
     from accumulator_engine import TARGETS
     result = generate_accumulators(
@@ -364,6 +364,8 @@ def sync_ticket_lifecycle(connection, now=None):
     from qualification_engine import ticket_is_bookable
     phase = phase_at(current)
     window = publication_open(phase)
+    from accumulator_engine import retire_duplicate_tickets
+    retire_duplicate_tickets(connection, current)
     changed = 0
     states = {name: 0 for name in ('READY_FOR_WINDOW', 'BOOKING_PENDING', 'CODE_VERIFIED', 'FAILED', 'EXPIRED')}
     tickets = connection.execute('SELECT id, status, publication_state FROM sports_ai_accumulator_tickets').fetchall()

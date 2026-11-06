@@ -19,7 +19,9 @@ from accumulator_engine import (
     ticket_outcome,
 )
 from booking_schedule import WAT
+from display_policy import DRAW_PROBABILITY, above
 from draw_engine import list_fixtures
+from sport_support import GOAL_SPORTS, sql_in
 
 SIZES = (2, 5, 8, 10)
 SIMULATION_SIZES = {8, 10}
@@ -193,7 +195,8 @@ def load_candidates(connection, mode, now=None):
                   f.home, f.away, f.competition, f.starts_at, f.sport
            FROM sports_ai_qualification_decisions d
            JOIN sports_ai_fixtures f ON f.id=d.fixture_id
-           WHERE d.state='QUALIFIED' AND upper(d.market)='DRAW' AND f.sport='football'
+           WHERE d.state='QUALIFIED' AND upper(d.market)='DRAW'
+             AND f.sport IN (""" + sql_in(GOAL_SPORTS) + """)
              AND f.status IN ('scheduled','not_started')""",
     ).fetchall()
     eligible = []
@@ -217,12 +220,15 @@ def load_candidates(connection, mode, now=None):
         if row['fixture_id'] in seen or quote is None:
             excluded.append({'fixture_id': row['fixture_id'], 'fixture': identity, 'reason': 'No draw price inside the qualification window is stored.'})
             continue
+        if not above(quote['probability'], DRAW_PROBABILITY):
+            excluded.append({'fixture_id': row['fixture_id'], 'fixture': identity, 'reason': 'The stored draw probability is not above 60%.'})
+            continue
         seen.add(row['fixture_id'])
         evidence = json.loads(row['evidence_json'] or '{}')
         eligible.append({
             'opportunity_id': quote['opportunity_id'],
             'fixture_id': row['fixture_id'],
-            'sport': 'football',
+            'sport': row['sport'],
             'competition': row['competition'] or '',
             'home': row['home'],
             'away': row['away'],

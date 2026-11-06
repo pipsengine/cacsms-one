@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from booking_schedule import WAT
+from display_policy import LIVE_PROBABILITY, above
 
 MODES = ('FULL_ROLLOVER_SIMULATION', 'CAPITAL_CONTROLLED_SIMULATION')
 CALIBRATED = {
@@ -211,7 +212,6 @@ def load_candidates(connection, campaign, day, now=None):
     ).fetchall()
     eligible = []
     excluded = []
-    seen = set()
     for row in rows:
         market = str(row['market'] or '').upper()
         from market_registry import is_active
@@ -223,7 +223,9 @@ def load_candidates(connection, campaign, day, now=None):
             continue
         if row['fixture_status'] not in ('scheduled', 'not_started'):
             continue
-        if row['fixture_id'] in seen:
+        evidence = json.loads(row['evidence_json'] or '{}')
+        if not above(evidence.get('probability'), LIVE_PROBABILITY):
+            excluded.append({'fixture': identity, 'market': market, 'reason': 'The stored win probability is not above 80%.'})
             continue
         quote = _latest_quote(connection, row['fixture_id'], market, current, max_age)
         if quote is None:
@@ -233,10 +235,10 @@ def load_candidates(connection, campaign, day, now=None):
         if odds < float(campaign['odds_low']) or odds > float(campaign['odds_high']):
             excluded.append({'fixture': identity, 'market': market, 'reason': f'Stored odds {odds:.2f} are outside {campaign["odds_low"]:.2f}–{campaign["odds_high"]:.2f}.'})
             continue
-        seen.add(row['fixture_id'])
-        evidence = json.loads(row['evidence_json'] or '{}')
         eligible.append(_candidate(row, quote, evidence, campaign))
-    eligible.sort(key=lambda item: (-item['score'], item['starts_at'], item['fixture_id']))
+    from market_registry import choose_best
+    eligible = choose_best(eligible)
+    eligible.sort(key=lambda item: (-item['probability'], item['starts_at'], item['fixture_id']))
     return {'eligible': eligible, 'excluded': excluded[:40]}
 
 

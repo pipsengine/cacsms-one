@@ -119,6 +119,14 @@ class SportyBetResearchTests(unittest.TestCase):
     def test_market_mapping_keeps_lines_and_periods_distinct(self):
         self.assertEqual(map_market('football', '1X2', 'Home')['canonical_market'], 'HOME')
         self.assertEqual(map_market('football', 'Double Chance', '1X')['canonical_market'], 'DOUBLE_CHANCE_1X')
+        self.assertEqual(map_market('football', 'double chance', 'Home or Draw')['canonical_market'], 'DOUBLE_CHANCE_1X')
+        self.assertEqual(map_market('football', 'double chance', 'Home or Away')['canonical_market'], 'DOUBLE_CHANCE_12')
+        self.assertEqual(map_market('football', 'double chance', 'Draw or Away')['canonical_market'], 'DOUBLE_CHANCE_X2')
+        self.assertEqual(map_market('football', 'draw no bet', 'Home')['canonical_market'], 'DNB_HOME')
+        self.assertEqual(map_market('football', 'gg/ng', 'Yes')['canonical_market'], 'BTTS_YES')
+        self.assertEqual(map_market('football', 'gg/ng', 'No')['canonical_market'], 'BTTS_NO')
+        self.assertEqual(map_market('football', 'handicap 0:1', 'Home (0:1)')['canonical_market'], 'EUROPEAN_HOME_-1')
+        self.assertEqual(map_market('football', 'handicap 1:0', 'Away (1:0)')['canonical_market'], 'EUROPEAN_AWAY_1')
         self.assertEqual(map_market('football', 'Over/Under', 'Over 2.5')['canonical_market'], 'OVER_2.5')
         self.assertEqual(map_market('football', 'Over/Under', 'Under 3.5')['canonical_market'], 'UNDER_3.5')
         self.assertNotEqual(
@@ -129,7 +137,7 @@ class SportyBetResearchTests(unittest.TestCase):
         self.assertEqual(map_market('football', 'Both Teams to Score', 'Yes')['canonical_market'], 'BTTS_YES')
         handicap = map_market('football', 'Asian Handicap', 'Home -0.5')
         self.assertEqual(handicap['canonical_market'], 'HOME_HANDICAP_-0.5')
-        self.assertFalse(map_market('football', 'European Handicap', 'Home -1')['supported'])
+        self.assertEqual(map_market('football', 'European Handicap', 'Home -1')['canonical_market'], 'EUROPEAN_HOME_-1')
         self.assertEqual(map_market('basketball', 'Moneyline', 'Away')['canonical_market'], 'MONEYLINE_AWAY')
         self.assertEqual(map_market('basketball', 'Total Points', 'Over 219.5')['canonical_market'], 'OVER_219.5')
         self.assertEqual(map_market('basketball', 'Point Spread', 'Home -5.5')['canonical_market'], 'HOME_SPREAD_-5.5')

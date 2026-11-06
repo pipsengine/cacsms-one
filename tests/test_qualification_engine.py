@@ -43,6 +43,14 @@ class QualificationDecisionTests(unittest.TestCase):
         self.assertEqual(result['state'], 'QUALIFIED')
         self.assertIn('weekly_draw', result['products'])
 
+    def test_a_regulation_draw_in_any_goal_sport_is_a_weekly_draw(self):
+        hockey = decide(row(sport='ice_hockey', market='DRAW', probability=0.28, expected_edge=0.07), policy(), NOW)
+        virtual = decide(row(sport='vfootball', market='DRAW', probability=0.31, expected_edge=0.07), policy(), NOW)
+        tennis = decide(row(sport='tennis', market='MONEYLINE_HOME'), policy(), NOW)
+        self.assertIn('weekly_draw', hockey['products'])
+        self.assertIn('weekly_draw', virtual['products'])
+        self.assertNotIn('weekly_draw', tennis['products'])
+
     def test_same_day_kickoff_is_shared_with_daily_rollover(self):
         result = decide(row(starts_at=(NOW + timedelta(hours=5)).isoformat()), policy(), NOW)
         self.assertIn('daily_rollover', result['products'])

@@ -338,6 +338,7 @@ def next_ticket_id(connection, now):
                  AND (j.status IN ('QUEUED','PREPARING','CODE_GENERATED') OR j.updated_at>?)
              )
              AND COALESCE(json_extract(t.parameters_json, '$.tier_mode'), 'standard')!='simulation'
+             AND t.probability_basis='independent' AND t.joint_probability>0.70
              AND NOT EXISTS (
                SELECT 1 FROM sports_ai_accumulator_legs l
                WHERE l.ticket_id=t.id AND l.decimal_odds<1.3

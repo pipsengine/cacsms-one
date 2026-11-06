@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 from prediction_engine import calibration_metrics, market_probability
 from sport_adapters import UNSUPPORTED, probability as unsupported_probability
+from sport_support import ANALYSED_SPORTS, GOAL_SPORTS, WINNER_SPORTS, ensure_collected_sports
 
 MIN_SAMPLE = 30
 MAX_CALIBRATION_ERROR = 0.20
@@ -27,21 +28,67 @@ FOOTBALL_DERIVED = (
     ('BTTS_YES', 'Yes', None, 'Both teams score at least one goal.'),
     ('BTTS_NO', 'No', None, 'At least one team fails to score.'),
 )
-for _line in (0.5, 1.5, 2.5, 3.5, 4.5):
+for _line in (0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5):
     FOOTBALL_DERIVED += (
         (f'OVER_{_line:g}', f'Over {_line:g}', _line, 'Full-time goals over the line.'),
         (f'UNDER_{_line:g}', f'Under {_line:g}', _line, 'Full-time goals under the line.'),
     )
 for _side, _label in (('HOME', 'Home'), ('AWAY', 'Away')):
-    for _line in (0.5, 1.5):
+    for _line in (0.5, 1.5, 2.5, 3.5):
         FOOTBALL_DERIVED += (
             (f'{_side}_OVER_{_line:g}', f'{_label} over {_line:g}', _line, 'Team goals over the line.'),
             (f'{_side}_UNDER_{_line:g}', f'{_label} under {_line:g}', _line, 'Team goals under the line.'),
         )
 for _side, _label in (('HOME', 'Home'), ('AWAY', 'Away')):
-    for _line in (-1.5, -0.5, 0.5, 1.5):
+    for _line in (-2.5, -2, -1.5, -1, -0.5, 0, 0.5, 1, 1.5, 2, 2.5):
         FOOTBALL_DERIVED += (
             (f'{_side}_HANDICAP_{_line:g}', f'{_label} {_line:g}', _line, 'Asian handicap settled from the full-time margin.'),
+        )
+FOOTBALL_DERIVED += (
+    ('ODD_GOALS', 'Odd', None, 'Full-time goals are odd.'),
+    ('EVEN_GOALS', 'Even', None, 'Full-time goals are even.'),
+    ('CLEAN_SHEET_HOME', 'Home clean sheet', None, 'The away team scores zero.'),
+    ('CLEAN_SHEET_AWAY', 'Away clean sheet', None, 'The home team scores zero.'),
+    ('MARGIN_HOME_1', 'Home by 1', None, 'Home wins by one goal.'),
+    ('MARGIN_HOME_2', 'Home by 2', None, 'Home wins by two goals.'),
+    ('MARGIN_HOME_3PLUS', 'Home by 3 or more', None, 'Home wins by three or more goals.'),
+    ('MARGIN_AWAY_1', 'Away by 1', None, 'Away wins by one goal.'),
+    ('MARGIN_AWAY_2', 'Away by 2', None, 'Away wins by two goals.'),
+    ('MARGIN_AWAY_3PLUS', 'Away by 3 or more', None, 'Away wins by three or more goals.'),
+    ('EUROPEAN_HOME_0', 'Home 0', 0, 'Three-way handicap with no line.'),
+    ('EUROPEAN_DRAW_0', 'Draw 0', 0, 'Three-way handicap with no line.'),
+    ('EUROPEAN_AWAY_0', 'Away 0', 0, 'Three-way handicap with no line.'),
+    ('EUROPEAN_HOME_-1', 'Home -1', -1, 'Three-way handicap, home gives one goal.'),
+    ('EUROPEAN_DRAW_-1', 'Draw -1', -1, 'Three-way handicap, home gives one goal.'),
+    ('EUROPEAN_AWAY_-1', 'Away -1', -1, 'Three-way handicap, home gives one goal.'),
+)
+
+ICE_SCORE_DERIVED = (
+    ('BTTS_YES', 'Yes', None, 'Both teams score in the stored final score.'),
+    ('BTTS_NO', 'No', None, 'At least one team fails to score in the stored final score.'),
+    ('ODD_GOALS', 'Odd', None, 'Stored final goals are odd.'),
+    ('EVEN_GOALS', 'Even', None, 'Stored final goals are even.'),
+    ('MARGIN_HOME_1', 'Home by 1', None, 'Home wins the stored final score by one goal.'),
+    ('MARGIN_HOME_2', 'Home by 2', None, 'Home wins the stored final score by two goals.'),
+    ('MARGIN_HOME_3PLUS', 'Home by 3 or more', None, 'Home wins the stored final score by three or more.'),
+    ('MARGIN_AWAY_1', 'Away by 1', None, 'Away wins the stored final score by one goal.'),
+    ('MARGIN_AWAY_2', 'Away by 2', None, 'Away wins the stored final score by two goals.'),
+    ('MARGIN_AWAY_3PLUS', 'Away by 3 or more', None, 'Away wins the stored final score by three or more.'),
+)
+for _line in (3.5, 4.5, 5.5, 6.5, 7.5):
+    ICE_SCORE_DERIVED += (
+        (f'OVER_{_line:g}', f'Over {_line:g}', _line, 'Stored final goals over the line. A regulation total is a different market.'),
+        (f'UNDER_{_line:g}', f'Under {_line:g}', _line, 'Stored final goals under the line. A regulation total is a different market.'),
+    )
+for _side, _label in (('HOME', 'Home'), ('AWAY', 'Away')):
+    for _line in (1.5, 2.5, 3.5):
+        ICE_SCORE_DERIVED += (
+            (f'{_side}_OVER_{_line:g}', f'{_label} over {_line:g}', _line, 'Team goals from the stored final score.'),
+            (f'{_side}_UNDER_{_line:g}', f'{_label} under {_line:g}', _line, 'Team goals from the stored final score.'),
+        )
+    for _line in (-2.5, -1.5, 1.5, 2.5):
+        ICE_SCORE_DERIVED += (
+            (f'{_side}_HANDICAP_{_line:g}', f'{_label} puck line {_line:g}', _line, 'Puck line on the stored final-score margin.'),
         )
 
 BLOCKED = (
@@ -83,19 +130,32 @@ def assign_status(sample_size, calibration_error, quote_fixtures, *, blocked=Fal
 
 
 def choose_best(rows):
-    """One opportunity per fixture. The highest expected edge wins, not the highest probability."""
+    """One market per fixture. The highest win probability wins.
+
+    Model confidence breaks a tie. A missing probability cannot outrank a stored one.
+    """
     grouped = {}
     for row in rows:
         grouped.setdefault(row.get('fixture_id'), []).append(row)
     chosen = []
     for items in grouped.values():
         items.sort(key=lambda item: (
-            -float(item.get('expected_edge') or 0),
-            float(item.get('probability') or 1),
+            -_rank_number(item.get('probability')),
+            -_rank_number(item.get('confidence')),
             str(item.get('market') or ''),
         ))
         chosen.append(items[0])
     return chosen
+
+
+def _rank_number(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return -1.0
+    if number != number:
+        return -1.0
+    return number
 
 
 def active_keys(connection):
@@ -150,7 +210,7 @@ def refresh_market_registry(connection, now=None):
     current = now or utc_now()
     quote_counts = _quote_counts(connection)
     records = []
-    for sport in ('football', 'basketball', 'frauenfussball', 'ice_hockey'):
+    for sport in ANALYSED_SPORTS:
         model = connection.execute(
             """SELECT id, version, active, metrics_json, training_run_id, parameters_json
                FROM sports_ai_model_registry
@@ -167,8 +227,15 @@ def refresh_market_registry(connection, now=None):
                 rho = 0.0
         parent_active = bool(model and model['active'])
         version = None if not model else model['version']
-        if sport in ('football', 'frauenfussball', 'ice_hockey'):
+        if sport in GOAL_SPORTS:
             records.extend(_result_rows(sport, model, quote_counts, 'HOME', 'Home win', 'DRAW', 'Draw', 'AWAY', 'Away win'))
+            if sport == 'ice_hockey':
+                for record in records:
+                    if record['sport'] == 'ice_hockey' and record['market_key'] in ('HOME', 'DRAW', 'AWAY'):
+                        record['settlement_rule'] = 'Regulation 60-minute result. This is not the winner after overtime or a shootout.'
+                        record['evidence']['outcome_definition'] = 'regulation'
+                for key, selection, line, rule in ICE_SCORE_DERIVED:
+                    records.append(_derived_row(sport, key, selection, 'ft', line, rule, holdout, rho, quote_counts, parent_active, version))
             if sport == 'football':
                 for key, selection, line, rule in FOOTBALL_DERIVED:
                     records.append(_derived_row(sport, key, selection, 'ft', line, rule, holdout, rho, quote_counts, parent_active, version))
@@ -221,6 +288,24 @@ def refresh_market_registry(connection, now=None):
                 'none', None, 'unsupported',
                 {'adapter': 'sport_adapters.probability', 'probability': unsupported_market_probability(sport, key)},
             ))
+    from discovery_catalogue import catalogue_rows, ensure_reference_catalogue, ensure_starting_competitions, reference_market_rows
+    known = {(item['sport'], item['market_key']) for item in records}
+    records.extend(catalogue_rows(known))
+    known.update((item['sport'], item['market_key']) for item in records)
+    records.extend(reference_market_rows(known))
+    known.update((item['sport'], item['market_key']) for item in records)
+    for sport in WINNER_SPORTS:
+        for key, selection in (('MONEYLINE_HOME', 'Home or player 1'), ('MONEYLINE_AWAY', 'Away or player 2')):
+            if (sport, key) in known:
+                continue
+            records.append(_static(
+                sport, key, selection, 'ft', None,
+                'Match winner from the stored score. A draw is a push. Sets, games and points are not inferred.',
+                'A final score for this sport and a model trained on this sport’s own results.',
+                'catalogue', None, 'research',
+                {'probability': None, 'activated': False, 'kind': 'winner'},
+            ))
+            known.add((sport, key))
     _discover_quotes(records, quote_counts, _raw_families(connection))
     connection.execute('DELETE FROM sports_ai_market_registry')
     for record in records:
@@ -240,8 +325,11 @@ def refresh_market_registry(connection, now=None):
                 record['model_version'], record['status'], json.dumps(record['evidence']), current.isoformat(),
             ),
         )
+    ensure_collected_sports(connection)
     summary = list_registry(connection)
     summary['refreshed'] = len(records)
+    summary['catalogue'] = ensure_starting_competitions(connection, current)
+    summary['reference_catalogue'] = ensure_reference_catalogue(connection, current)
     return summary
 
 
@@ -267,7 +355,7 @@ def store_recommendations(connection, now=None):
             (
                 item['fixture_id'], item.get('prediction_id'), item['market'], item.get('probability'),
                 item.get('expected_edge'),
-                'Highest stored expected edge among qualified markets. Probability was not the ranking key.',
+                'Highest stored win probability on this fixture. Confidence is used only when probabilities are equal.',
                 current.isoformat(),
             ),
         )
@@ -446,7 +534,7 @@ def _book_key(market):
     return 'BOOK_' + (cleaned or 'UNKNOWN')[:40]
 
 
-def _extra_keys(sport, quote_counts, existing, limit=8):
+def _extra_keys(sport, quote_counts, existing, limit=16):
     from accumulator_engine import supported_market
     ranked = []
     for (row_sport, key), count in quote_counts.items():
@@ -468,7 +556,7 @@ def _raw_families(connection):
     return [(row['sport'], row['market'], int(row['fixtures'])) for row in rows]
 
 
-def _discover_quotes(records, quote_counts, raw_families, limit=40):
+def _discover_quotes(records, quote_counts, raw_families, limit=80):
     """Register bookmaker families that have no validated model. A quote does not activate them."""
     known = {(item['sport'], item['market_key']) for item in records}
     added = {}
@@ -507,10 +595,14 @@ def _quote_counts(connection):
 
 
 def _canonical(sport, market, outcome, line):
+    from sportybet_research import map_market
+    mapped = map_market(sport, market, outcome, line)
+    if mapped.get('supported') and mapped.get('canonical_market'):
+        return mapped['canonical_market']
     market = str(market or '').lower()
     outcome = str(outcome or '')
     if market == 'h2h':
-        goal = sport in ('football', 'frauenfussball', 'ice_hockey')
+        goal = sport in GOAL_SPORTS
         if outcome == 'draw':
             return 'DRAW' if goal else None
         if outcome == 'home':
