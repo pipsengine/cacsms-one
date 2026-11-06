@@ -4,7 +4,7 @@ import argparse
 import json
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from acquisition import CollectionError
 from acquisition_engine import run_collection
@@ -95,6 +95,7 @@ def tick():
     read completed matches. An unfinished kickoff does not hold the next cycle.
     """
     initialize()
+    _high_odds_booking_tick()
     _operator_booking()
     try:
         from autonomous_engine import ensure_running
@@ -362,6 +363,83 @@ def _booking_tick():
     except Exception as error:
         _observed('booking', {'status': 'failed'}, failed=True)
         _report('booking failed', error)
+
+
+_HIGHER_ODDS_KEY = 'high_odds_booking'
+_HIGHER_ODDS_INTERVAL = timedelta(minutes=30)
+
+
+def _higher_odds_due(now):
+    with connect() as connection:
+        row = connection.execute(
+            'SELECT value_json FROM sports_ai_settings WHERE key=?',
+            (_HIGHER_ODDS_KEY,),
+        ).fetchone()
+    if not row:
+        return True
+    try:
+        stored = json.loads(row['value_json'] or '{}')
+        last = datetime.fromisoformat(stored.get('last_run_at') or '')
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return True
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    return now - last >= _HIGHER_ODDS_INTERVAL
+
+
+def _remember_higher_odds_run(now, status):
+    with connect() as connection:
+        connection.execute(
+            """INSERT INTO sports_ai_settings(key,value_json,updated_at) VALUES(?,?,?)
+               ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at""",
+            (_HIGHER_ODDS_KEY, json.dumps({'last_run_at': now.isoformat(), 'status': status}), now.isoformat()),
+        )
+
+
+def _book_ready_tickets(bands):
+    """Store each ready ticket and request its code before the worker does anything else."""
+    import asyncio
+    from high_odds_board import prepare_high_odds_booking
+    from sportybet_booking import execute_job
+    seen = set()
+    status = 'waiting'
+    while True:
+        job_id = prepare_high_odds_booking(bands=bands)
+        if not job_id or job_id in seen:
+            if not seen:
+                print('high odds booking', 'waiting', 'places_wager', False)
+            return status
+        seen.add(job_id)
+        result = asyncio.run(execute_job(job_id))
+        status = result.get('status') or status
+        print(
+            'high odds booking', status,
+            result.get('code') or result.get('error') or '',
+            'places_wager', False,
+        )
+    return status
+
+
+def _high_odds_booking_tick():
+    """Store a ticket and request its SportyBet code in the same step.
+
+    The 1.95-and-below ticket is booked as soon as it is stored. Higher prices
+    are booked on the same step, then checked again every 30 minutes. A code is
+    written only when SportyBet displays it. No wager is placed.
+    """
+    now = datetime.now(timezone.utc)
+    try:
+        from high_odds_board import HIGHER_ODDS_BANDS
+        _book_ready_tickets(('to-1.95',))
+        if _higher_odds_due(now):
+            status = _book_ready_tickets(HIGHER_ODDS_BANDS)
+            _remember_higher_odds_run(now, status)
+    except Exception as error:
+        try:
+            _remember_higher_odds_run(now, 'failed')
+        except Exception:
+            pass
+        _report('high odds booking failed', error)
 
 
 def _reliability_tick():

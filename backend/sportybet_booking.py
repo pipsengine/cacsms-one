@@ -137,9 +137,10 @@ def qualified_selections(connection, now=None):
     return selections
 
 
-def create_job(connection, selections):
+def create_job(connection, selections, high_odds=False):
     from qualification_engine import require_bookable
-    require_bookable(connection, selections)
+    if not high_odds:
+        require_bookable(connection, selections)
     if not selections or len(selections) > 25:
         raise ValueError('A booking needs 1 to 25 qualified selections')
     sports = {item['sport'] for item in selections}
@@ -359,9 +360,89 @@ def next_ticket_id(connection, now):
     return row['id'] if row else None
 
 
+def _high_odds_ticket(connection, ticket_id):
+    row = connection.execute(
+        'SELECT parameters_json FROM sports_ai_accumulator_tickets WHERE id=?',
+        (ticket_id,),
+    ).fetchone()
+    if not row:
+        return False
+    try:
+        parameters = json.loads(row['parameters_json'] or '{}')
+    except json.JSONDecodeError:
+        return False
+    if parameters.get('product') != 'high_odds':
+        return False
+    legs = connection.execute(
+        'SELECT decimal_odds, probability, bookmaker FROM sports_ai_accumulator_legs WHERE ticket_id=?',
+        (ticket_id,),
+    ).fetchall()
+    prices = []
+    for leg in legs:
+        try:
+            odds = float(leg['decimal_odds'])
+            probability = float(leg['probability'])
+        except (TypeError, ValueError):
+            return False
+        if probability < 0.80 or leg['bookmaker'] != 'SportyBet':
+            return False
+        prices.append(odds)
+    count = len(prices)
+    if all(2 <= odds < 3 for odds in prices):
+        return count == 12
+    if all(3 <= odds < 4 for odds in prices):
+        return count == 10
+    if all(4 <= odds <= 5 for odds in prices):
+        return count == 8
+    product = 1.0
+    for odds in prices:
+        product *= odds
+    if all(1 < odds <= 1.95 for odds in prices):
+        return 15 <= count <= 30
+    if all(odds > 5 for odds in prices):
+        return 2 <= count <= 8 and product > 10000
+    return False
+
+
+def _apply_displayed_prices(connection, ticket_id, seen):
+    """Keep the ticket on the price SportyBet displayed. A code is not a price."""
+    product = 1.0
+    for item in seen:
+        try:
+            odds = float(item.get('page_odds'))
+        except (TypeError, ValueError):
+            continue
+        if not item.get('fixture_id') or odds <= 1:
+            continue
+        connection.execute(
+            'UPDATE sports_ai_accumulator_legs SET decimal_odds=? WHERE ticket_id=? AND fixture_id=?',
+            (odds, ticket_id, item['fixture_id']),
+        )
+    rows = connection.execute(
+        'SELECT decimal_odds FROM sports_ai_accumulator_legs WHERE ticket_id=?',
+        (ticket_id,),
+    ).fetchall()
+    for row in rows:
+        product *= float(row['decimal_odds'])
+    connection.execute(
+        'UPDATE sports_ai_accumulator_tickets SET combined_odds=? WHERE id=?',
+        (round(product, 2), ticket_id),
+    )
+
+
+def create_high_odds_job(connection, ticket_id):
+    """Queue one high-odds ticket. The qualified-slip rule does not apply. No wager is placed."""
+    if not _high_odds_ticket(connection, ticket_id):
+        raise ValueError('A high-odds booking needs selections at least 80% in one price band')
+    selections = ticket_selections(connection, ticket_id)
+    for item in selections:
+        item['ticket_id'] = ticket_id
+    return create_job(connection, selections, high_odds=True)
+
+
 def _store_displayed_code(connection, ticket_id, code, evidence):
     from qualification_engine import ticket_is_bookable
-    if not ticket_is_bookable(connection, ticket_id):
+    if not ticket_is_bookable(connection, ticket_id) and not _high_odds_ticket(connection, ticket_id):
         raise ValueError('A displayed code is stored only when every leg has a current QUALIFIED decision')
     moment = _now().isoformat()
     expiry = connection.execute(
@@ -379,16 +460,41 @@ def _store_displayed_code(connection, ticket_id, code, evidence):
     )
 
 
-FOCUS_MARKET = '''(family) => {
+FOCUS_MARKET = '''(args) => {
+  const family = args.family || '';
   const labels = family === 'handicap'
     ? ['2 Way Handicap', 'Handicap', 'Asian Handicap', 'Spread']
-    : ['O/U', 'Over/Under', 'Goals Over/Under', '2 Way & O/U'];
-  const nodes = [...document.querySelectorAll('button, a, span, div, li')];
+    : family === 'double'
+      ? ['Double Chance']
+      : ['O/U', 'Over/Under', 'Goals Over/Under', '2 Way & O/U', '3 Way & O/U'];
+  const fold = value => (value || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ');
+  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk']);
+  const tokens = value => {
+    const all = fold(value).split(' ').filter(Boolean);
+    const kept = all.filter(token => !skip.has(token) && token.length > 1);
+    return kept.length ? kept : all;
+  };
+  let scope = document;
+  if (args.home) {
+    const wanted = tokens(args.home);
+    const other = tokens(args.away);
+    const row = [...document.querySelectorAll('.match-row')].find(candidate => {
+      const blob = fold(candidate.innerText || '');
+      return wanted.every(token => blob.includes(token)) && other.every(token => blob.includes(token));
+    });
+    if (row) {
+      row.scrollIntoView({block: 'center', inline: 'nearest'});
+      let section = row.parentElement;
+      while (section && !section.querySelector('.market-item')) section = section.parentElement;
+      if (section) scope = section;
+    }
+  }
+  const nodes = [...scope.querySelectorAll('.market-item, button, a, span, div, li')];
   for (const label of labels) {
     const node = nodes.find(item => {
       const text = (item.innerText || '').trim();
       const box = item.getBoundingClientRect();
-      return text === label && box.width > 20 && box.width < 220 && box.height > 8 && box.top > 60 && box.top < 520;
+      return text === label && box.width > 20 && box.height > 8;
     });
     if (node) {
       node.click();
@@ -418,7 +524,9 @@ FIND_LINE = '''(args) => {
   const row = rows.find(candidate => candidate.querySelector('.af-select, .m-outcome')) || rows[0];
   if (!row) return {exact: 0, nearby: [], line_visible: null};
   const blob = row.innerText || '';
-  const lineVisible = !line || blob.includes(line);
+  const linePattern = line ? new RegExp('(?:^|[^\\d.])' + line.replace(/[.]/g, '\\.') + '(?:[^\\d.]|$)') : null;
+  const selectedLine = [...row.querySelectorAll('.af-select-input')].map(node => (node.innerText || '').trim()).find(Boolean) || '';
+  const lineVisible = !line || linePattern.test(selectedLine);
   const prices = [...row.querySelectorAll('.m-outcome, button, a, [role="button"]')].filter(node => {
     if (node.classList.contains('m-outcome--disabled') || node.classList.contains('m-outcome-odds')) return false;
     if (node.closest('.specifiers-select, .af-select')) return false;
@@ -430,7 +538,10 @@ FIND_LINE = '''(args) => {
   const nearby = prices.slice(0, 8).map(node => ({text: Number(node.innerText).toFixed(2)}));
   if (!lineVisible) return {exact: 0, nearby, line_visible: false};
   const total = args.side === 'over' || args.side === 'under';
-  const index = !total
+  const doubleIndex = { '1x': 0, '12': 1, 'x2': 2 }[args.side];
+  const index = doubleIndex !== undefined
+    ? doubleIndex
+    : !total
     ? (args.side === 'away' ? 1 : 0)
     : prices.length >= 5
       ? (args.side === 'over' ? prices.length - 2 : prices.length - 1)
@@ -439,15 +550,20 @@ FIND_LINE = '''(args) => {
         : (args.side === 'over' ? 0 : 1);
   const chosen = prices[index];
   if (!chosen) return {exact: 0, nearby, line_visible: true};
-  const shown = Number(chosen.innerText).toFixed(2);
-  if (shown !== price) return {exact: 0, nearby: [{text: shown}], line_visible: true};
+  const shown = Number(chosen.innerText);
+  const quoted = Number(args.odds);
+  if (!Number.isFinite(shown) || !quoted || Math.abs(shown - quoted) / quoted > 0.05) {
+    return {exact: 0, nearby: [{text: Number.isFinite(shown) ? shown.toFixed(2) : ''}], line_visible: true};
+  }
   chosen.setAttribute('data-sports-ai-pick', args.marker);
-  return {exact: 1, nearby, line_visible: true};
+  return {exact: 1, nearby, line_visible: true, shown: shown.toFixed(2)};
 }'''
 
 
 def _market_family(market):
     name = (market or '').upper()
+    if name.startswith('DOUBLE_CHANCE'):
+        return 'double'
     if 'SPREAD' in name or 'HANDICAP' in name:
         return 'handicap'
     if name.startswith(('OVER_', 'UNDER_')) or '_OVER_' in name or '_UNDER_' in name:
@@ -456,7 +572,7 @@ def _market_family(market):
 
 
 def _market_line(market):
-    if _market_family(market) == 'result':
+    if _market_family(market) in ('result', 'double'):
         return ''
     match = re.search(r'-?\d+(?:\.\d+)?$', market or '')
     return match.group(0) if match else ''
@@ -464,6 +580,8 @@ def _market_line(market):
 
 def _market_side(market):
     name = (market or '').upper()
+    if name.startswith('DOUBLE_CHANCE_'):
+        return name.split('_')[-1].lower()
     if name.startswith('UNDER') or '_UNDER_' in name:
         return 'under'
     if name.startswith('OVER') or '_OVER_' in name:
@@ -564,7 +682,12 @@ async def _reveal_fixture(page, item):
 
 SWITCH_LINE = '''(args) => {
   const fold = value => (value || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ');
-  const tokens = value => fold(value).split(' ').filter(token => token && !/^\\d+$/.test(token));
+  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk']);
+  const tokens = value => {
+    const all = fold(value).split(' ').filter(Boolean);
+    const kept = all.filter(token => !skip.has(token) && !/^\\d+$/.test(token));
+    return kept.length ? kept : all;
+  };
   const wanted = tokens(args.home);
   const other = tokens(args.away);
   const rows = [...document.querySelectorAll('.match-row')].filter(candidate => {
@@ -589,20 +712,39 @@ SWITCH_LINE = '''(args) => {
 
 PICK_LINE = '''(line) => {
   document.querySelectorAll('[data-sports-ai-line-option]').forEach(node => node.removeAttribute('data-sports-ai-line-option'));
+  const control = document.querySelector('[data-sports-ai-line="1"]');
+  const anchor = control ? control.getBoundingClientRect() : null;
   const lists = [...document.querySelectorAll('.af-select-list')].filter(list => {
     const box = list.getBoundingClientRect();
     return box.height > 8 && getComputedStyle(list).display !== 'none';
+  }).sort((left, right) => {
+    if (!anchor) return 0;
+    const distance = box => Math.abs(box.top - anchor.bottom) + Math.abs(box.left - anchor.left);
+    return distance(left.getBoundingClientRect()) - distance(right.getBoundingClientRect());
   });
-  const pool = lists.length ? lists.flatMap(list => [...list.querySelectorAll('.af-select-item, span, div')]) : [...document.querySelectorAll('.af-select-item')];
-  const node = pool.find(item => {
-    const text = (item.innerText || '').trim();
-    const box = item.getBoundingClientRect();
-    return text === line && box.width > 4 && box.height > 4;
-  });
-  if (!node) return false;
-  node.setAttribute('data-sports-ai-line-option', '1');
-  return true;
+  const pools = lists.length
+    ? lists.map(list => [...list.querySelectorAll('.af-select-item')])
+    : [[...document.querySelectorAll('.af-select-item')]];
+  for (const pool of pools) {
+    const node = pool.find(item => {
+      const text = (item.innerText || '').trim();
+      const box = item.getBoundingClientRect();
+      return text === line && box.width > 4 && box.height > 4;
+    });
+    if (!node) continue;
+    node.setAttribute('data-sports-ai-line-option', '1');
+    return true;
+  }
+  return false;
 }'''
+
+
+def _line_choices(line):
+    """SportyBet lists basketball spreads on the half point when the stored line is a whole number."""
+    choices = [line]
+    if re.fullmatch(r'-?\d+', line or ''):
+        choices.append(f'-{line[1:]}.5' if line.startswith('-') else f'{line}.5')
+    return choices
 
 
 async def _switch_line(page, item):
@@ -610,28 +752,51 @@ async def _switch_line(page, item):
     line = _market_line(item.get('market'))
     if not line:
         return False
+    choices = _line_choices(line)
+    for choice in choices:
+        state = await page.evaluate(SWITCH_LINE, {
+            'home': item.get('home') or '', 'away': item.get('away') or '', 'line': choice,
+        })
+        if state == 'shown':
+            item['_page_line'] = choice
+            return True
     state = await page.evaluate(SWITCH_LINE, {
-        'home': item.get('home') or '', 'away': item.get('away') or '', 'line': line,
+        'home': item.get('home') or '', 'away': item.get('away') or '', 'line': choices[0],
     })
     if state != 'open':
-        return state == 'shown'
+        return False
     control = page.locator('[data-sports-ai-line="1"]')
     await control.scroll_into_view_if_needed()
     await control.click(force=True)
-    for _ in range(4):
-        await page.wait_for_timeout(500)
-        if await page.evaluate(PICK_LINE, line):
-            await page.locator('[data-sports-ai-line-option="1"]').click()
+    for choice in choices:
+        for _ in range(4):
             await page.wait_for_timeout(500)
-            return True
+            if await page.evaluate(PICK_LINE, choice):
+                await page.locator('[data-sports-ai-line-option="1"]').click()
+                await page.wait_for_timeout(500)
+                shown = await page.evaluate(
+                    '''() => {
+                      const control = document.querySelector('[data-sports-ai-line="1"]');
+                      const input = control && control.querySelector('.af-select-input');
+                      return ((input && input.innerText) || '').trim();
+                    }'''
+                )
+                if shown == choice or shown.startswith(choice):
+                    item['_page_line'] = choice
+                    return True
     return False
 
 
-async def _focus_market(page, market):
+async def _focus_market(page, item):
+    market = item.get('market') if isinstance(item, dict) else item
     family = _market_family(market)
     if family == 'result':
         return ''
-    label = await page.evaluate(FOCUS_MARKET, family)
+    payload = {'family': family}
+    if isinstance(item, dict):
+        payload['home'] = item.get('home') or ''
+        payload['away'] = item.get('away') or ''
+    label = await page.evaluate(FOCUS_MARKET, payload)
     if label:
         await page.wait_for_timeout(800)
     return label
@@ -649,10 +814,11 @@ async def prepare_slip(page, selections, book=True):
         async def find_price():
             family = _market_family(item.get('market'))
             if family != 'result':
-                await _focus_market(page, item.get('market'))
+                await _focus_market(page, item)
                 return await page.evaluate(FIND_LINE, {
                     'home': item['home'], 'away': item['away'], 'odds': float(item['decimal_odds']),
-                    'line': _market_line(item.get('market')), 'side': _market_side(item.get('market')), 'marker': marker,
+                    'line': item.get('_page_line') or _market_line(item.get('market')),
+                    'side': _market_side(item.get('market')), 'marker': marker,
                 })
             return await page.evaluate(FIND_ODDS, {
                 'home': item['home'], 'away': item['away'], 'odds': float(item['decimal_odds']), 'marker': marker,
@@ -672,7 +838,7 @@ async def prepare_slip(page, selections, book=True):
                 raise RuntimeError(f"The price control is not an allowed selection: {item['home']} vs {item['away']}")
             seen.append({
                 'fixture_id': item['fixture_id'], 'stored_odds': item['decimal_odds'],
-                'page_odds': float(item['decimal_odds']), 'control': control,
+                'page_odds': float(hits.get('shown') or item['decimal_odds']), 'control': control,
             })
             await page.locator(f'[data-sports-ai-pick="{marker}"]').click()
             await page.wait_for_timeout(400)
@@ -802,6 +968,8 @@ async def execute_job(job_id, page_url=None):
             ticket_id = next((item.get('ticket_id') for item in selections if item.get('ticket_id')), None)
             if result['status'] == 'CODE_GENERATED':
                 _set_job(connection, job_id, 'CODE_GENERATED', code=result['code'], screenshot=str(shot), odds_json=json.dumps(result['seen']), reason_code='CODE_VERIFIED')
+                if ticket_id and _high_odds_ticket(connection, ticket_id):
+                    _apply_displayed_prices(connection, ticket_id, result.get('seen') or [])
                 if ticket_id:
                     _store_displayed_code(connection, ticket_id, result['code'], str(shot))
                     _record_diagnostic(connection, ticket_id, 'CODE_VERIFIED', 'SportyBet displayed one booking code and it matched the expected format.', _now())

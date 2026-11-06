@@ -378,26 +378,27 @@ function HighOdds({board}) {
   const days = board?.days || [];
   return <section className="ccx-card ccx-high-odds" aria-label="High odds tickets">
     <header><strong><Layers3 size={16}/>High Odds Tickets</strong></header>
-    <p className="ccx-high-note">{board?.note || 'Each selection is 30% or higher. The builder uses 85% probability and 80% confidence first, and spreads selections across sports and leagues that have a stored price.'}</p>
+    <p className="ccx-high-note">{board?.note || 'Every selection is at least 80%. Fifteen to thirty selections when each price is 1.95 or below. Prices above 5.00 use eight selections or fewer so the combined odds clear 10,000.'}</p>
     {days.map(day => <div key={day.day} className="ccx-high-day">
       <h3>{day.day}<small>{day.date}</small></h3>
       <div className="ccx-table-scroll ccx-card-scroll">
         <table className="ccx-table">
-          <thead><tr><th>Target</th><th>Combined odds</th><th>Selections</th><th>Joint probability</th><th>Confidence</th><th>How it was built</th></tr></thead>
+          <thead><tr><th>Ticket</th><th>Combined odds</th><th>Selections</th><th>Joint probability</th><th>Confidence</th><th>Booking code</th><th>How it was built</th></tr></thead>
           <tbody>
             {(day.tickets || []).map(ticket => {
-              const key = `${day.day}-${ticket.target}`;
+              const key = `${day.day}-${ticket.signature || ticket.target}`;
               const ready = ticket.status === 'ready';
               return <React.Fragment key={key}>
                 <tr role={ready ? 'button' : undefined} tabIndex={ready ? 0 : undefined} aria-expanded={ready ? open === key : undefined} onClick={() => ready && setOpen(open === key ? '' : key)}>
-                  <td><b>{ticket.label}</b></td>
+                  <td><b>{ticket.label}</b>{ticket.odds_band ? <small> · {ticket.odds_band}</small> : null}</td>
                   <td className="ccx-odds">{ticket.combined_odds == null ? '—' : Number(ticket.combined_odds).toLocaleString('en-US', {maximumFractionDigits: 2})}</td>
                   <td>{ready ? ticket.selection_count : '—'}</td>
                   <td>{ticket.joint_probability == null ? '—' : `${Number(ticket.joint_probability).toFixed(1)}%`}</td>
                   <td>{ticket.confidence == null ? '—' : `${Number(ticket.confidence).toFixed(1)}%`}</td>
-                  <td className="ccx-high-reason">{ready ? (ticket.preferred_only ? 'Every selection is at 85% probability and 80% confidence' : 'A selection below 85% probability or 80% confidence was added to reach the target') : ticket.reason}</td>
+                  <td className={ticket.booking_code ? 'ccx-odds' : 'ccx-high-reason'}>{ticket.booking_code || (ready ? (ticket.booking_note || 'Waiting for SportyBet.') : '—')}</td>
+                  <td className="ccx-high-reason">{ready ? `Every selection is at least 80% and priced ${ticket.odds_band}. A selection is not repeated unless its probability is 100%.` : ticket.reason}</td>
                 </tr>
-                {open === key && <tr className="ccx-high-legs"><td colSpan="6">{ticket.selections.map((leg, index) => <p key={`${leg.fixture}-${leg.market}`}><b>{index + 1}. {leg.fixture}</b><span>{leg.sport} · {leg.competition || 'League not stored'} · {leg.market} · {Number(leg.odds).toFixed(2)} · {Number(leg.probability).toFixed(1)}%{leg.confidence == null ? '' : ` · confidence ${Number(leg.confidence).toFixed(1)}%`} · {when(leg.starts_at)} WAT</span></p>)}</td></tr>}
+                {open === key && <tr className="ccx-high-legs"><td colSpan="7">{ticket.selections.map((leg, index) => <p key={`${leg.fixture}-${leg.market}`}><b>{index + 1}. {leg.fixture}</b><span>{leg.sport} · {leg.competition || 'League not stored'} · {leg.market} · {Number(leg.odds).toFixed(2)} · {Number(leg.probability).toFixed(1)}%{leg.confidence == null ? '' : ` · confidence ${Number(leg.confidence).toFixed(1)}%`} · {when(leg.starts_at)} WAT</span></p>)}</td></tr>}
               </React.Fragment>;
             })}
           </tbody>
