@@ -18,7 +18,7 @@ EVIDENCE = Path(__file__).resolve().parent / 'booking_evidence'
 
 FIND_ODDS = '''(args) => {
   const fold = value => (value || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ');
-  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk']);
+  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk','dsc','estac','rcd']);
   const tokens = value => {
     const all = fold(value).split(' ').map(token => token.replace(/\\./g, '')).filter(Boolean);
     const kept = all.filter(token => !skip.has(token) && !/^\\d+$/.test(token));
@@ -80,7 +80,7 @@ READ_CODES = '''() => {
 
 SLIP_CONTAINS = '''(args) => {
   const fold = value => (value || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ');
-  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk']);
+  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk','dsc','estac','rcd']);
   const tokens = value => {
     const all = fold(value).split(' ').map(token => token.replace(/\\./g, '')).filter(Boolean);
     const kept = all.filter(token => !skip.has(token) && !/^\\d+$/.test(token));
@@ -467,20 +467,32 @@ FOCUS_MARKET = '''(args) => {
     : family === 'double'
       ? ['Double Chance']
       : ['O/U', 'Over/Under', 'Goals Over/Under', '2 Way & O/U', '3 Way & O/U'];
-  const fold = value => (value || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ');
-  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk']);
+  const fold = value => (value || '').toLowerCase().replace(/ä/g, 'a').replace(/ö/g, 'o').replace(/ü/g, 'u').replace(/ß/g, 'ss').replace(/[^a-z0-9.]+/g, ' ');
+  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk','dsc','estac','rcd']);
+  const near = (token, word) => {
+    if (token === word) return true;
+    if (token.length < 6 || word.length < 6 || Math.abs(token.length - word.length) > 2) return false;
+    const rows = [Array.from({length: word.length + 1}, (_, index) => index)];
+    for (let i = 1; i <= token.length; i += 1) {
+      const next = [i];
+      for (let j = 1; j <= word.length; j += 1) next.push(Math.min(next[j - 1] + 1, rows[i - 1][j] + 1, rows[i - 1][j - 1] + (token[i - 1] === word[j - 1] ? 0 : 1)));
+      rows.push(next);
+    }
+    return rows[token.length][word.length] <= 2;
+  };
   const tokens = value => {
     const all = fold(value).split(' ').filter(Boolean);
     const kept = all.filter(token => !skip.has(token) && token.length > 1);
     return kept.length ? kept : all;
   };
+  const present = (blob, token) => blob.split(' ').some(word => near(token, word));
   let scope = document;
   if (args.home) {
     const wanted = tokens(args.home);
     const other = tokens(args.away);
     const row = [...document.querySelectorAll('.match-row')].find(candidate => {
       const blob = fold(candidate.innerText || '');
-      return wanted.every(token => blob.includes(token)) && other.every(token => blob.includes(token));
+      return wanted.every(token => present(blob, token)) && other.every(token => present(blob, token));
     });
     if (row) {
       row.scrollIntoView({block: 'center', inline: 'nearest'});
@@ -505,13 +517,25 @@ FOCUS_MARKET = '''(args) => {
 }'''
 
 FIND_LINE = '''(args) => {
-  const fold = value => (value || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ');
-  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk']);
+  const fold = value => (value || '').toLowerCase().replace(/ä/g, 'a').replace(/ö/g, 'o').replace(/ü/g, 'u').replace(/ß/g, 'ss').replace(/[^a-z0-9.]+/g, ' ');
+  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk','dsc','estac','rcd']);
+  const near = (token, word) => {
+    if (token === word) return true;
+    if (token.length < 6 || word.length < 6 || Math.abs(token.length - word.length) > 2) return false;
+    const rows = [Array.from({length: word.length + 1}, (_, index) => index)];
+    for (let i = 1; i <= token.length; i += 1) {
+      const next = [i];
+      for (let j = 1; j <= word.length; j += 1) next.push(Math.min(next[j - 1] + 1, rows[i - 1][j] + 1, rows[i - 1][j - 1] + (token[i - 1] === word[j - 1] ? 0 : 1)));
+      rows.push(next);
+    }
+    return rows[token.length][word.length] <= 2;
+  };
   const tokens = value => {
     const all = fold(value).split(' ').map(token => token.replace(/\\./g, '')).filter(Boolean);
     const kept = all.filter(token => !skip.has(token) && !/^\\d+$/.test(token));
     return kept.length ? kept : all;
   };
+  const present = (blob, token) => blob.split(' ').some(word => near(token, word));
   const wanted = tokens(args.home);
   const other = tokens(args.away);
   const price = Number(args.odds).toFixed(2);
@@ -519,7 +543,7 @@ FIND_LINE = '''(args) => {
   document.querySelectorAll('[data-sports-ai-pick]').forEach(node => node.removeAttribute('data-sports-ai-pick'));
   const rows = [...document.querySelectorAll('.match-row')].filter(candidate => {
     const blob = fold(candidate.innerText || '');
-    return wanted.every(token => blob.includes(token)) && other.every(token => blob.includes(token));
+    return wanted.every(token => present(blob, token)) && other.every(token => present(blob, token));
   }).sort((left, right) => (left.innerText || '').length - (right.innerText || '').length);
   const row = rows.find(candidate => candidate.querySelector('.af-select, .m-outcome')) || rows[0];
   if (!row) return {exact: 0, nearby: [], line_visible: null};
@@ -594,8 +618,20 @@ def _market_side(market):
 
 
 REVEAL_FIXTURE = '''(args) => {
-  const fold = value => (value || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ');
-  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk']);
+  const fold = value => (value || '').toLowerCase().replace(/ä/g, 'a').replace(/ö/g, 'o').replace(/ü/g, 'u').replace(/ß/g, 'ss').replace(/[^a-z0-9.]+/g, ' ');
+  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk','dsc','estac','rcd']);
+  const near = (token, word) => {
+    if (token === word) return true;
+    if (token.length < 6 || word.length < 6 || Math.abs(token.length - word.length) > 2) return false;
+    const rows = [Array.from({length: word.length + 1}, (_, index) => index)];
+    for (let i = 1; i <= token.length; i += 1) {
+      const next = [i];
+      for (let j = 1; j <= word.length; j += 1) next.push(Math.min(next[j - 1] + 1, rows[i - 1][j] + 1, rows[i - 1][j - 1] + (token[i - 1] === word[j - 1] ? 0 : 1)));
+      rows.push(next);
+    }
+    return rows[token.length][word.length] <= 2;
+  };
+  const present = (blob, token) => blob.split(' ').some(word => near(token, word));
   const tokens = value => {
     const all = fold(value).split(' ').map(token => token.replace(/\\./g, '')).filter(Boolean);
     const kept = all.filter(token => !skip.has(token) && token.length > 1 && !/^\\d+$/.test(token));
@@ -605,11 +641,11 @@ REVEAL_FIXTURE = '''(args) => {
   const other = tokens(args.away);
   const shown = [...document.querySelectorAll('.match-row, article, tr')].some(row => {
     const blob = fold(row.innerText || '');
-    return wanted.every(token => blob.includes(token)) && other.every(token => blob.includes(token));
+    return wanted.every(token => present(blob, token)) && other.every(token => present(blob, token));
   });
   if (shown) return {visible: true, clicked: ''};
   const rows = [...document.querySelectorAll('li.category-list-item, li.tournament-list-item, .tournament-list-item')];
-  const compTokens = fold(args.competition).split(' ').filter(word => word.length > 2 && !/^\\d+$/.test(word));
+  const compTokens = fold(args.competition).split(' ').filter(word => word && !/^\\d{3,}$/.test(word) && (word.length > 2 || /^\\d+\\.?$/.test(word)));
   const labelOf = item => {
     if (item.classList.contains('tournament-list-item')) {
       const named = item.querySelector(':scope > .tournament-name') || item.querySelector('.tournament-name');
@@ -633,7 +669,8 @@ REVEAL_FIXTURE = '''(args) => {
     if (!compTokens.includes('srl') && label.includes('srl')) continue;
     if (!compTokens.includes('simulated') && label.includes('simulated')) continue;
     const alias = {english: 'england', dutch: 'netherlands', french: 'france', german: 'germany'};
-    const same = (token, word) => token === word || alias[token] === word || alias[word] === token;
+    const bare = word => word.replace(/\\.$/, '');
+    const same = (token, word) => bare(token) === bare(word) || alias[token] === word || alias[word] === token;
     const hits = compTokens.filter(token => label.some(word => same(token, word))).length;
     const extras = label.filter(word => !compTokens.some(token => same(token, word))).length;
     const rank = hits * 20 - extras * 25 + (item.classList.contains('tournament-list-item') ? 6 : 0) + (box.top > 0 && box.top < 900 ? 1 : 0);
@@ -681,18 +718,30 @@ async def _reveal_fixture(page, item):
 
 
 SWITCH_LINE = '''(args) => {
-  const fold = value => (value || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ');
-  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk']);
+  const fold = value => (value || '').toLowerCase().replace(/ä/g, 'a').replace(/ö/g, 'o').replace(/ü/g, 'u').replace(/ß/g, 'ss').replace(/[^a-z0-9.]+/g, ' ');
+  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk','dsc','estac','rcd']);
+  const near = (token, word) => {
+    if (token === word) return true;
+    if (token.length < 6 || word.length < 6 || Math.abs(token.length - word.length) > 2) return false;
+    const rows = [Array.from({length: word.length + 1}, (_, index) => index)];
+    for (let i = 1; i <= token.length; i += 1) {
+      const next = [i];
+      for (let j = 1; j <= word.length; j += 1) next.push(Math.min(next[j - 1] + 1, rows[i - 1][j] + 1, rows[i - 1][j - 1] + (token[i - 1] === word[j - 1] ? 0 : 1)));
+      rows.push(next);
+    }
+    return rows[token.length][word.length] <= 2;
+  };
   const tokens = value => {
     const all = fold(value).split(' ').filter(Boolean);
     const kept = all.filter(token => !skip.has(token) && !/^\\d+$/.test(token));
     return kept.length ? kept : all;
   };
+  const present = (blob, token) => blob.split(' ').some(word => near(token, word));
   const wanted = tokens(args.home);
   const other = tokens(args.away);
   const rows = [...document.querySelectorAll('.match-row')].filter(candidate => {
     const blob = fold(candidate.innerText || '');
-    return wanted.every(token => blob.includes(token)) && other.every(token => blob.includes(token));
+    return wanted.every(token => present(blob, token)) && other.every(token => present(blob, token));
   }).sort((left, right) => (left.innerText || '').length - (right.innerText || '').length);
   const row = rows.find(candidate => {
     const control = candidate.querySelector('.af-select, .specifiers-select');
@@ -765,6 +814,16 @@ async def _switch_line(page, item):
     })
     if state != 'open':
         return False
+    await page.keyboard.press('Escape')
+    await page.wait_for_timeout(200)
+    state = await page.evaluate(SWITCH_LINE, {
+        'home': item.get('home') or '', 'away': item.get('away') or '', 'line': choices[0],
+    })
+    if state == 'shown':
+        item['_page_line'] = choices[0]
+        return True
+    if state != 'open':
+        return False
     control = page.locator('[data-sports-ai-line="1"]')
     await control.scroll_into_view_if_needed()
     await control.click(force=True)
@@ -772,8 +831,11 @@ async def _switch_line(page, item):
         for _ in range(4):
             await page.wait_for_timeout(500)
             if await page.evaluate(PICK_LINE, choice):
-                await page.locator('[data-sports-ai-line-option="1"]').click()
-                await page.wait_for_timeout(500)
+                await page.evaluate('''() => {
+                  const node = document.querySelector('[data-sports-ai-line-option="1"]');
+                  if (node) node.click();
+                }''')
+                await page.wait_for_timeout(700)
                 shown = await page.evaluate(
                     '''() => {
                       const control = document.querySelector('[data-sports-ai-line="1"]');
