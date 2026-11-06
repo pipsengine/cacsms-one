@@ -480,7 +480,7 @@ REVEAL_FIXTURE = '''(args) => {
   const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk']);
   const tokens = value => {
     const all = fold(value).split(' ').map(token => token.replace(/\\./g, '')).filter(Boolean);
-    const kept = all.filter(token => !skip.has(token) && !/^\\d+$/.test(token));
+    const kept = all.filter(token => !skip.has(token) && token.length > 1 && !/^\\d+$/.test(token));
     return kept.length ? kept : all;
   };
   const wanted = tokens(args.home);
@@ -490,12 +490,13 @@ REVEAL_FIXTURE = '''(args) => {
     return wanted.every(token => blob.includes(token)) && other.every(token => blob.includes(token));
   });
   if (shown) return {visible: true, clicked: ''};
-  const rows = [...document.querySelectorAll('li.category-list-item, li.tournament-list-item')];
+  const rows = [...document.querySelectorAll('li.category-list-item, li.tournament-list-item, .tournament-list-item')];
   const compTokens = fold(args.competition).split(' ').filter(word => word.length > 2 && !/^\\d+$/.test(word));
   const labelOf = item => {
     if (item.classList.contains('tournament-list-item')) {
       const named = item.querySelector(':scope > .tournament-name') || item.querySelector('.tournament-name');
-      return fold((named && named.textContent) || '').trim();
+      const raw = (named && named.textContent) || item.textContent || '';
+      return fold(raw).trim().split(' ').slice(0, 8).join(' ');
     }
     const span = item.querySelector(':scope > .category-item span');
     return fold((span && span.textContent) || '').trim();
@@ -505,7 +506,9 @@ REVEAL_FIXTURE = '''(args) => {
   let bestRank = 0;
   for (const item of rows) {
     const box = item.getBoundingClientRect();
-    if (box.left < 0 || box.left > 420 || box.width < 36 || box.width > 320 || box.height < 8 || box.height > 48) continue;
+    const tournament = item.classList.contains('tournament-list-item');
+    if (box.left < 0 || box.width < 36 || box.width > 420 || box.height < 8 || box.height > 64) continue;
+    if (!tournament && (box.left > 420 || box.width > 320)) continue;
     const text = labelOf(item);
     const label = text.split(' ').filter(word => word && !/^\\d+$/.test(word));
     if (!label.length) continue;

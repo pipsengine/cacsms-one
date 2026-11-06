@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from booking_schedule import WAT, opportunity_week
+from high_odds_board import high_odds_board
 from workflow_status import workflow_board
 from display_policy import DRAW_PROBABILITY, LIVE_LIMIT, LIVE_PROBABILITY, SLIP_PROBABILITY, confidence_from_metrics
 from sport_support import GOAL_SPORTS, sql_in
@@ -173,6 +174,7 @@ def command_view(connection, now=None):
             'average_odds': None if average is None else round(float(average), 2),
         },
         'alerts': alerts,
+        'high_odds': high_odds_board(connection, current),
         'workflow': workflow_board(
             connection, current,
             ready_slips=slip_count,
@@ -531,7 +533,7 @@ def _public_ticket(row, now, coded):
         'verification': _verification_label(row, now, coded, verified),
         'settlement': _settlement(row['ticket_status'], row['won'], row['lost'], row['pending'], leg_count),
         'selection_count': leg_count or None,
-        'odds': None if row['combined_odds'] is None else round(float(row['combined_odds']), 2),
+            'odds': None if row['combined_odds'] is None else round(float(row['combined_odds']), 2),
         'combined_odds': None if row['combined_odds'] is None else round(float(row['combined_odds']), 2),
         'starts_at': row['starts_at'],
         'probability': ticket_probability(row['probability_basis'], row['joint_probability']),
