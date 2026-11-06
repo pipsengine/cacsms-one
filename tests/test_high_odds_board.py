@@ -57,6 +57,37 @@ class HighOddsBoardTests(unittest.TestCase):
         self.assertGreaterEqual(product, 10)
         self.assertIn('c', [item['fixture_id'] for item in chosen])
 
+    def test_a_band_includes_a_second_sport_when_that_sport_has_a_price(self):
+        candidates = choose_one_per_fixture([
+            {**leg('a', 5.5, 0.90), 'sport': 'basketball', 'competition': 'NBA'},
+            {**leg('b', 5.4, 0.90), 'sport': 'basketball', 'competition': 'NBA'},
+            {**leg('c', 1.4, 0.90), 'sport': 'football', 'competition': 'Premier League'},
+        ])
+        chosen, product, _joint = build_band(candidates, 5)
+        sports = {item['sport'] for item in chosen}
+        self.assertGreaterEqual(product, 5)
+        self.assertEqual(sports, {'basketball', 'football'})
+
+    def test_tightening_keeps_the_second_sport(self):
+        candidates = choose_one_per_fixture([
+            {**leg('a', 5.5, 0.90), 'sport': 'basketball', 'competition': 'NBA'},
+            {**leg('b', 5.4, 0.90), 'sport': 'basketball', 'competition': 'NBA'},
+            {**leg('c', 1.4, 0.90), 'sport': 'football', 'competition': 'Premier League'},
+        ])
+        chosen, product, _joint = build_band(candidates, 20)
+        self.assertGreaterEqual(product, 20)
+        self.assertIn('football', {item['sport'] for item in chosen})
+
+    def test_a_band_includes_a_second_league_before_repeating_one(self):
+        candidates = choose_one_per_fixture([
+            {**leg('a', 2.2, 0.90), 'sport': 'football', 'competition': 'Bundesliga'},
+            {**leg('b', 2.1, 0.90), 'sport': 'football', 'competition': 'Bundesliga'},
+            {**leg('c', 1.3, 0.90), 'sport': 'football', 'competition': 'Ligue 1'},
+        ])
+        chosen, product, _joint = build_band(candidates, 2.5)
+        self.assertGreaterEqual(product, 2.5)
+        self.assertEqual({item['competition'] for item in chosen}, {'Bundesliga', 'Ligue 1'})
+
     def test_two_selections_are_required(self):
         candidates = choose_one_per_fixture([leg('a', 12, 0.91)])
         self.assertIsNone(build_band(candidates, 5))

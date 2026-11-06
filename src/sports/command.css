@@ -161,6 +161,17 @@
 .ccx-primary{display:grid;grid-template-columns:minmax(0,1.66fr) minmax(300px,.9fr);gap:9px;margin-bottom:11px}
 .ccx-secondary{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(220px,.9fr) minmax(240px,1fr);gap:9px;margin-bottom:11px}
 .ccx-bottom{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(180px,.75fr) minmax(220px,1fr);gap:9px}
+.ccx-high-odds{display:grid;gap:12px}
+.ccx-high-note{margin:0;color:#385384;font-size:12px;line-height:1.45}
+.ccx-high-day h3{display:flex;align-items:baseline;gap:8px;margin:0 0 6px;font-size:14px;color:#10295c}
+.ccx-high-day h3 small{font-weight:650;color:#5d7394}
+.ccx-high-odds .ccx-table{table-layout:fixed}
+.ccx-high-odds .ccx-table th,.ccx-high-odds .ccx-table td{white-space:normal}
+.ccx-high-odds .ccx-table-scroll{overflow-x:hidden}
+.ccx-high-reason{white-space:normal}
+.ccx-high-legs td{white-space:normal;background:#f7faff}
+.ccx-high-legs p{display:flex;flex-wrap:wrap;gap:6px 12px;margin:0 0 6px}
+.ccx-high-legs span{color:#385384}
 .ccx-card{background:#fff;border:1px solid #c9daf5;border-radius:13px;padding:11px;box-shadow:0 2px 3px #123a7d12;min-width:0}
 .ccx-card>header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}
 .ccx-card>header strong{display:flex;align-items:center;gap:7px;font-size:15px;letter-spacing:-.4px}
