@@ -257,6 +257,7 @@ def _openligadb_season(provider, league, season, limit, sport='football'):
             None,
         )
         observed = item.get('lastUpdateDateTime') or now
+        finished = bool(item.get('matchIsFinished'))
         fixtures.append(_record(
             provider['provider_key'], item.get('matchID'),
             sport, item.get('leagueName') or league,
@@ -264,9 +265,9 @@ def _openligadb_season(provider, league, season, limit, sport='football'):
             (item.get('team2') or {}).get('teamName'),
             item.get('matchDateTimeUTC') or item.get('matchDateTime'),
             observed, url,
-            'FINISHED' if item.get('matchIsFinished') else 'SCHEDULED',
-            final.get('pointsTeam1') if final else None,
-            final.get('pointsTeam2') if final else None,
+            'FINISHED' if finished else 'SCHEDULED',
+            final.get('pointsTeam1') if final and finished else None,
+            final.get('pointsTeam2') if final and finished else None,
             observed,
         ))
     return {'fixtures': fixtures, 'source_url': url}

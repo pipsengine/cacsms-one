@@ -209,6 +209,22 @@ class AcquisitionEngineTests(unittest.TestCase):
         self.assertEqual(batch['fixtures'][0]['away_score'],1)
         self.assertEqual(batch['fixtures'][0]['status'],'finished')
 
+    def test_openligadb_does_not_store_a_score_before_the_match_is_finished(self):
+        provider=self._provider(config={'league':'DEL2','season':2026})
+        payload=[{
+            'matchID':84149,'matchDateTimeUTC':'2026-10-23T17:30:00Z',
+            'lastUpdateDateTime':'2026-10-25T18:51:13.617',
+            'matchIsFinished':False,'leagueName':'DEL2 Hauptrunde',
+            'team1':{'teamName':'Dresdner Eislöwen'},'team2':{'teamName':'Starbulls Rosenheim'},
+            'matchResults':[{'resultName':'3.Drittel','pointsTeam1':0,
+                             'pointsTeam2':0,'resultTypeKind':'After90Minutes'}],
+        }]
+        with patch.object(acquisition_engine,'_json_body',return_value=(payload,{})):
+            batch=acquisition_engine._openligadb(provider,json.loads(provider['config_json']))
+        self.assertIsNone(batch['fixtures'][0].get('home_score'))
+        self.assertIsNone(batch['fixtures'][0].get('away_score'))
+        self.assertEqual(batch['fixtures'][0]['status'],'scheduled')
+
     def test_openfootball_normalizes_both_documented_score_shapes(self):
         provider=self._provider(provider_key='test-openfootball')
         payload={'name':'Test Competition','matches':[
