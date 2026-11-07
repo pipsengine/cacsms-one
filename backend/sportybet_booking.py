@@ -141,8 +141,9 @@ def create_job(connection, selections, high_odds=False):
     from qualification_engine import require_bookable
     if not high_odds:
         require_bookable(connection, selections)
-    if not selections or len(selections) > 25:
-        raise ValueError('A booking needs 1 to 25 qualified selections')
+    limit = 30 if high_odds else 25
+    if not selections or len(selections) > limit:
+        raise ValueError(f'A booking needs 1 to {limit} selections')
     sports = {item['sport'] for item in selections}
     if not sports:
         raise ValueError('A booking needs a sport on every selection')
@@ -1090,13 +1091,17 @@ async def _focus_market(page, item):
     return label
 
 
-async def prepare_slip(page, selections, book=True):
-    """Click the displayed price for each selection. Book only when asked. Never place a wager."""
+async def prepare_slip(page, selections, book=True, skip_unpriced=False):
+    """Click the displayed price for each selection. Book only when asked. Never place a wager.
+
+    A high-odds ticket can leave out a line SportyBet is not showing, then book the rest.
+    """
     await page.wait_for_selector('.match-row, article', timeout=20000)
     body = await page.locator('body').inner_text(timeout=8000)
     if blocked_page(body):
         raise RuntimeError('Page is blocked. No booking code was requested.')
     seen = []
+    skipped = []
     for index, item in enumerate(selections):
         marker = f'pick-{index}'
         async def find_price():
@@ -1142,6 +1147,9 @@ async def prepare_slip(page, selections, book=True):
             await page.locator(f'[data-sports-ai-pick="{marker}"]').click()
             await page.wait_for_timeout(400)
             continue
+        if skip_unpriced and hits.get('exact') != 1:
+            skipped.append(item)
+            continue
         if hits['exact'] == 0 and hits.get('line_visible') is False:
             seen.append({'fixture_id': item['fixture_id'], 'stored_odds': item['decimal_odds'], 'page_odds': None})
             offered = item.get('_offered_lines') or []
@@ -1163,8 +1171,11 @@ async def prepare_slip(page, selections, book=True):
         opened = revealed.get('clicked') or 'none'
         raise RuntimeError(f"Selection control missing or ambiguous: {item['home']} vs {item['away']} (league control: {opened})")
     if not book:
-        return {'status': 'SELECTED', 'seen': seen, 'code': None}
-    return await request_displayed_code(page, selections, seen)
+        return {'status': 'SELECTED', 'seen': seen, 'code': None, 'skipped': skipped}
+    booked = [item for item in selections if item not in skipped]
+    result = await request_displayed_code(page, booked, seen)
+    result['skipped'] = skipped
+    return result
 
 
 async def request_displayed_code(page, selections, seen):
@@ -1216,6 +1227,63 @@ async def _open_sport(page, sport, page_url=None, reuse=False):
         raise RuntimeError(f'HTTP {response.status}')
 
 
+def _flexible_high_odds(selections):
+    """The 1.95 band can be booked without a line SportyBet is not showing."""
+    ticket_id = next((item.get('ticket_id') for item in selections if item.get('ticket_id')), None)
+    if not ticket_id:
+        return False
+    with connect() as connection:
+        row = connection.execute(
+            'SELECT parameters_json FROM sports_ai_accumulator_tickets WHERE id=?',
+            (ticket_id,),
+        ).fetchone()
+    if not row:
+        return False
+    try:
+        parameters = json.loads(row['parameters_json'] or '{}')
+    except json.JSONDecodeError:
+        return False
+    return parameters.get('product') == 'high_odds' and parameters.get('band') == 'to-1.95'
+
+
+def _drop_unpriced_legs(connection, ticket_id, skipped):
+    """Keep the stored ticket on the selections SportyBet actually priced."""
+    from high_odds_board import _slip_signature
+    for item in skipped:
+        connection.execute(
+            """DELETE FROM sports_ai_accumulator_legs
+               WHERE ticket_id=? AND fixture_id=? AND upper(market)=upper(?)""",
+            (ticket_id, item.get('fixture_id'), item.get('market')),
+        )
+    legs = connection.execute(
+        'SELECT fixture_id, market, decimal_odds, probability FROM sports_ai_accumulator_legs WHERE ticket_id=?',
+        (ticket_id,),
+    ).fetchall()
+    if not legs:
+        return
+    product = 1.0
+    joint = 1.0
+    for leg in legs:
+        product *= float(leg['decimal_odds'])
+        joint *= float(leg['probability'])
+    row = connection.execute(
+        'SELECT parameters_json FROM sports_ai_accumulator_tickets WHERE id=?',
+        (ticket_id,),
+    ).fetchone()
+    try:
+        parameters = json.loads(row['parameters_json'] or '{}')
+    except json.JSONDecodeError:
+        parameters = {}
+    parameters['leg_count'] = len(legs)
+    signature = _slip_signature(parameters.get('day') or '', parameters.get('band') or '', legs)
+    connection.execute(
+        """UPDATE sports_ai_accumulator_tickets
+           SET combined_odds=?, joint_probability=?, leg_count=?, signature=?, parameters_json=?
+           WHERE id=?""",
+        (round(product, 2), joint, len(legs), signature, json.dumps(parameters), ticket_id),
+    )
+
+
 async def execute_job(job_id, page_url=None):
     from playwright.async_api import async_playwright
     session_id = None
@@ -1248,17 +1316,29 @@ async def execute_job(job_id, page_url=None):
                 context = await browser.new_context(viewport={'width': 1440, 'height': 900})
                 page = await context.new_page()
                 seen = []
+                skipped = []
                 result = None
+                flexible = _flexible_high_odds(selections)
                 for index, sport in enumerate(sports):
                     await _open_sport(page, sport, page_url if len(sports) == 1 else None, reuse=index > 0)
                     group = [item for item in selections if item.get('sport') == sport]
-                    part = await prepare_slip(page, group, book=False)
+                    part = await prepare_slip(page, group, book=False, skip_unpriced=flexible)
+                    skipped.extend(part.get('skipped') or [])
                     if part['status'] != 'SELECTED':
                         result = part
                         break
                     seen.extend(part['seen'])
                 if result is None:
-                    result = await request_displayed_code(page, selections, seen)
+                    clicked = {item.get('fixture_id') for item in seen}
+                    booked = [item for item in selections if item.get('fixture_id') in clicked]
+                    if flexible and len(booked) < 15:
+                        result = {
+                            'status': 'ODDS_CHANGED', 'seen': seen, 'code': None,
+                            'error': 'SportyBet is not showing enough of these lines to book the ticket.',
+                        }
+                    else:
+                        result = await request_displayed_code(page, booked, seen)
+                        result['skipped'] = [item for item in selections if item.get('fixture_id') not in clicked]
                 EVIDENCE.mkdir(parents=True, exist_ok=True)
                 shot = EVIDENCE / f'{job_id}.png'
                 await page.screenshot(path=str(shot), full_page=False)
@@ -1275,6 +1355,8 @@ async def execute_job(job_id, page_url=None):
         with connect() as connection:
             ticket_id = next((item.get('ticket_id') for item in selections if item.get('ticket_id')), None)
             if result['status'] == 'CODE_GENERATED':
+                if ticket_id and result.get('skipped'):
+                    _drop_unpriced_legs(connection, ticket_id, result['skipped'])
                 _set_job(connection, job_id, 'CODE_GENERATED', code=result['code'], screenshot=str(shot), odds_json=json.dumps(result['seen']), reason_code='CODE_VERIFIED')
                 if ticket_id and (_high_odds_ticket(connection, ticket_id) or _sure_odds_ticket(connection, ticket_id)):
                     _apply_displayed_prices(connection, ticket_id, result.get('seen') or [])

@@ -421,11 +421,21 @@ def link_stored_quotes(connection, now=None, limit=400):
         minutes = 15
     fresh_after = (current - timedelta(minutes=minutes)).isoformat()
     quotes = connection.execute(
-        """SELECT q.id, q.fixture_id, q.market, q.outcome, q.line, q.decimal_odds, f.sport, f.home, f.away
-           FROM sports_ai_odds_snapshots q
-           JOIN sports_ai_fixtures f ON f.id=q.fixture_id
-           WHERE q.bookmaker='SportyBet' AND q.observed_at>=? AND f.status='scheduled' AND f.starts_at>?
-           ORDER BY q.observed_at DESC
+        """SELECT id, fixture_id, market, outcome, line, decimal_odds, sport, home, away
+           FROM (
+             SELECT q.id, q.fixture_id, q.market, q.outcome, q.line, q.decimal_odds,
+                    f.sport, f.home, f.away, f.starts_at,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY q.fixture_id, q.market, q.outcome, IFNULL(q.line, -1)
+                      ORDER BY q.observed_at DESC
+                    ) AS rn
+             FROM sports_ai_odds_snapshots q
+             JOIN sports_ai_fixtures f ON f.id=q.fixture_id
+             WHERE q.bookmaker='SportyBet' AND q.observed_at>=? AND q.market='h2h'
+               AND f.status='scheduled' AND f.starts_at>?
+           ) AS priced
+           WHERE rn=1
+           ORDER BY starts_at
            LIMIT ?""",
         (fresh_after, current.isoformat(), max(1, limit)),
     ).fetchall()

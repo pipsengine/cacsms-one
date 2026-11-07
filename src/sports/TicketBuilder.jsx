@@ -76,6 +76,7 @@ function sportLabelFor(ticket) {
 }
 function statusFor(ticket, code) {
   if (ticket.parameters?.coverage === 'high_probability' && ticket.status === 'unverified_probability') return 'High probability';
+  if ((ticket.parameters?.product === 'sure_odds' || ticket.parameters?.product === 'high_odds') && ticket.status === 'unverified_probability') return 'Awaiting code';
   if (code) {
     if (code.status === 'verified' && code.verification_method === 'displayed') return 'Verified';
     if (code.status === 'expired') return 'Expired';
@@ -280,7 +281,11 @@ export default function TicketBuilder() {
       band: bandName(ticket.combined_odds),
       sportLabel: sportLabelFor(ticket),
     };
-  }).filter((row) => (row.legs || []).every((leg) => Number(leg.decimal_odds) >= 1.3)), [records, codeByTicket]);
+  }).filter((row) => {
+    const product = row.parameters?.product;
+    if (product === 'sure_odds' || product === 'high_odds' || row.parameters?.coverage === 'high_probability') return true;
+    return (row.legs || []).every((leg) => Number(leg.decimal_odds) >= 1.3);
+  }), [records, codeByTicket]);
 
   const scopeRows = useMemo(() => rows.filter((row) => (sport === 'All Sports' || row.sportLabel === sport)
     && (tier === 'All Tiers' || row.band === tier)

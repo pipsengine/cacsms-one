@@ -401,10 +401,12 @@ def qualified_decision_rows(connection, now):
            JOIN sports_ai_fixtures f ON f.id=d.fixture_id
            JOIN sports_ai_model_registry m ON m.id=p.model_id
            LEFT JOIN sports_ai_feature_snapshots s ON s.id=p.feature_id
-           LEFT JOIN sports_ai_value_opportunities o ON o.prediction_id=p.id
-             AND o.evaluated_at=(
-               SELECT MAX(o2.evaluated_at) FROM sports_ai_value_opportunities o2 WHERE o2.prediction_id=p.id
-             )
+           LEFT JOIN sports_ai_value_opportunities o ON o.id=(
+             SELECT o2.id FROM sports_ai_value_opportunities o2
+             JOIN sports_ai_odds_snapshots q2 ON q2.id=o2.odds_id
+             WHERE o2.prediction_id=p.id AND q2.bookmaker='SportyBet' AND q2.decimal_odds>1
+             ORDER BY q2.observed_at DESC LIMIT 1
+           )
            LEFT JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
            WHERE d.state='QUALIFIED' AND f.starts_at>?""",
         (moment,),
@@ -447,10 +449,12 @@ def candidate_rows(connection, now, limit=100):
            JOIN sports_ai_fixtures f ON f.id=p.fixture_id
            JOIN sports_ai_model_registry m ON m.id=p.model_id
            LEFT JOIN sports_ai_feature_snapshots s ON s.id=p.feature_id
-           LEFT JOIN sports_ai_value_opportunities o ON o.prediction_id=p.id
-             AND o.evaluated_at=(
-               SELECT MAX(o2.evaluated_at) FROM sports_ai_value_opportunities o2 WHERE o2.prediction_id=p.id
-             )
+           LEFT JOIN sports_ai_value_opportunities o ON o.id=(
+             SELECT o2.id FROM sports_ai_value_opportunities o2
+             JOIN sports_ai_odds_snapshots q2 ON q2.id=o2.odds_id
+             WHERE o2.prediction_id=p.id AND q2.bookmaker='SportyBet' AND q2.decimal_odds>1
+             ORDER BY q2.observed_at DESC LIMIT 1
+           )
            LEFT JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
            WHERE f.status='scheduled' AND f.starts_at>?
              AND EXISTS (
@@ -610,10 +614,12 @@ def rows_for_fixtures(connection, now, fixture_ids):
             JOIN sports_ai_fixtures f ON f.id=p.fixture_id
             JOIN sports_ai_model_registry m ON m.id=p.model_id
             LEFT JOIN sports_ai_feature_snapshots s ON s.id=p.feature_id
-            LEFT JOIN sports_ai_value_opportunities o ON o.prediction_id=p.id
-              AND o.evaluated_at=(
-                SELECT MAX(o2.evaluated_at) FROM sports_ai_value_opportunities o2 WHERE o2.prediction_id=p.id
-              )
+            LEFT JOIN sports_ai_value_opportunities o ON o.id=(
+              SELECT o2.id FROM sports_ai_value_opportunities o2
+              JOIN sports_ai_odds_snapshots q2 ON q2.id=o2.odds_id
+              WHERE o2.prediction_id=p.id AND q2.bookmaker='SportyBet' AND q2.decimal_odds>1
+              ORDER BY q2.observed_at DESC LIMIT 1
+            )
             LEFT JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
             WHERE f.id IN ({marks}) AND f.starts_at>?
               AND p.created_at=(

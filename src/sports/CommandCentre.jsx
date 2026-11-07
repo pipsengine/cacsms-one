@@ -377,8 +377,14 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
 }
 
 function HighOdds({board}) {
-  const [open, setOpen] = React.useState('');
+  const [open, setOpen] = React.useState(null);
   const days = board?.days || [];
+  React.useEffect(() => {
+    if (!open) return undefined;
+    function onKey(event) { if (event.key === 'Escape') setOpen(null); }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
   return <section className="ccx-card ccx-high-odds" aria-label="High odds tickets">
     <header><strong><Layers3 size={16}/>High Odds Tickets</strong></header>
     <p className="ccx-high-note">{board?.note || 'Every selection is at least 80%. Fifteen to thirty selections when each price is 1.95 or below. Prices above 5.00 use eight selections or fewer so the combined odds clear 10,000.'}</p>
@@ -391,8 +397,7 @@ function HighOdds({board}) {
             {(day.tickets || []).map(ticket => {
               const key = `${day.day}-${ticket.signature || ticket.target}`;
               const ready = ticket.status === 'ready';
-              return <React.Fragment key={key}>
-                <tr role={ready ? 'button' : undefined} tabIndex={ready ? 0 : undefined} aria-expanded={ready ? open === key : undefined} onClick={() => ready && setOpen(open === key ? '' : key)}>
+              return <tr key={key} role={ready ? 'button' : undefined} tabIndex={ready ? 0 : undefined} onClick={() => ready && setOpen({...ticket, day: day.day, date: day.date})} onKeyDown={event => { if (ready && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setOpen({...ticket, day: day.day, date: day.date}); } }}>
                   <td><b>{ticket.label}</b>{ticket.odds_band ? <small> · {ticket.odds_band}</small> : null}</td>
                   <td className="ccx-odds">{ticket.combined_odds == null ? '—' : Number(ticket.combined_odds).toLocaleString('en-US', {maximumFractionDigits: 2})}</td>
                   <td>{ready ? ticket.selection_count : '—'}</td>
@@ -400,15 +405,19 @@ function HighOdds({board}) {
                   <td>{ticket.confidence == null ? '—' : `${Number(ticket.confidence).toFixed(1)}%`}</td>
                   <td className={ticket.booking_code ? 'ccx-odds' : 'ccx-high-reason'}>{ticket.booking_code || (ready ? (ticket.booking_note || 'Waiting for SportyBet.') : '—')}</td>
                   <td className="ccx-high-reason">{ready ? `Every selection is at least 80% and priced ${ticket.odds_band}. A selection is not repeated unless its probability is 100%.` : ticket.reason}</td>
-                </tr>
-                {open === key && <tr className="ccx-high-legs"><td colSpan="7">{ticket.selections.map((leg, index) => <p key={`${leg.fixture}-${leg.market}`}><b>{index + 1}. {leg.fixture}</b><span>{leg.sport} · {leg.competition || 'League not stored'} · {leg.market} · {Number(leg.odds).toFixed(2)} · {Number(leg.probability).toFixed(1)}%{leg.confidence == null ? '' : ` · confidence ${Number(leg.confidence).toFixed(1)}%`} · {when(leg.starts_at)} WAT</span></p>)}</td></tr>}
-              </React.Fragment>;
+                </tr>;
             })}
           </tbody>
         </table>
       </div>
     </div>)}
     {!days.length && <p className="ccx-empty">Saturday and Sunday prices are not on this response yet.</p>}
+    {open && <div className="ccx-modal-back" onClick={() => setOpen(null)}><section className="ccx-modal ccx-high-modal" onClick={event => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="High odds ticket">
+      <header><div><span>{open.day} {open.date}</span><h2>{open.label}</h2></div><button type="button" onClick={() => setOpen(null)} aria-label="Close"><X size={16}/></button></header>
+      <p>{open.odds_band} · {open.selection_count} selections · combined odds {open.combined_odds == null ? '—' : Number(open.combined_odds).toLocaleString('en-US', {maximumFractionDigits: 2})} · joint probability {open.joint_probability == null ? '—' : `${Number(open.joint_probability).toFixed(1)}%`} · confidence {open.confidence == null ? '—' : `${Number(open.confidence).toFixed(1)}%`}</p>
+      <p>{open.booking_code ? `SportyBet booking code ${open.booking_code}` : (open.booking_note || 'Waiting for SportyBet.')} A code is stored only when SportyBet displays it.</p>
+      <div className="ccx-modal-legs">{(open.selections || []).map((leg, index) => <p key={`${leg.fixture}-${leg.market}-${index}`}><b>{index + 1}. {leg.fixture}</b><span>{leg.sport} · {leg.competition || 'League not stored'} · {leg.market} · {Number(leg.odds).toFixed(2)} · {Number(leg.probability).toFixed(1)}%{leg.confidence == null ? '' : ` · confidence ${Number(leg.confidence).toFixed(1)}%`} · {when(leg.starts_at)} WAT</span></p>)}</div>
+    </section></div>}
   </section>;
 }
 

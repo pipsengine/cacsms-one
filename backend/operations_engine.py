@@ -296,6 +296,20 @@ def recover_stuck_jobs(connection, now=None):
                 (available, job['id']),
             )
         recovered += 1
+    abandoned = connection.execute(
+        """SELECT id,attempt,max_attempts,job_kind,error FROM sports_ai_jobs
+           WHERE status='running' AND lease_expires_at IS NULL AND started_at<?""",
+        ((_now(now) - timedelta(minutes=10)).isoformat(),),
+    ).fetchall()
+    for job in abandoned:
+        connection.execute(
+            """UPDATE sports_ai_jobs
+               SET status='retry_pending', lease_owner=NULL, error_code='WORKER_STOPPED',
+                   error='The worker stopped before this job finished', available_at=?
+               WHERE id=?""",
+            (current, job['id']),
+        )
+        recovered += 1
     return recovered
 
 

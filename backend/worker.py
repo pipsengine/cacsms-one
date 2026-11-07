@@ -131,8 +131,39 @@ def tick():
         _touch_heartbeat()
 
 
+def _qualify_priced_board():
+    """Qualify selections that already have a fresh SportyBet price, then store the tickets."""
+    try:
+        from market_registry import link_stored_quotes
+        from qualification_engine import revalidate
+        with connect() as connection:
+            linked = link_stored_quotes(connection, limit=600)
+            result = revalidate(connection, 'sports-ai-worker', limit=600)
+        print(
+            'priced qualification', result.get('counts', {}).get('QUALIFIED', 0),
+            'linked', linked.get('qualified'),
+            'checked', linked.get('checked'),
+        )
+        _ticket_tick()
+    except Exception as error:
+        _report('priced qualification failed', error)
+
+
+def _release_stopped_jobs():
+    try:
+        from operations_engine import recover_stuck_jobs
+        with connect() as connection:
+            recovered = recover_stuck_jobs(connection)
+        if recovered:
+            print('recovered stopped jobs', recovered)
+    except Exception as error:
+        _report('job recovery failed', error)
+
+
 def _run_cycle():
+    _release_stopped_jobs()
     _high_odds_booking_tick()
+    _qualify_priced_board()
     _operator_booking()
     try:
         from autonomous_engine import ensure_running
@@ -285,6 +316,7 @@ def _process_browser_queue():
         print('sportybet feed', collected.get('status'), 'imported', collected.get('imported', 0), collected.get('error', ''))
         _observed('browser', collected)
         if collected.get('imported'):
+            _qualify_priced_board()
             _booking_tick()
             _high_odds_booking_tick()
     except Exception as error:
@@ -552,8 +584,8 @@ def _high_odds_booking_tick():
     now = datetime.now(timezone.utc)
     try:
         from high_odds_board import HIGHER_ODDS_BANDS
-        _book_sure_odds()
         _book_ready_tickets(('to-1.95',))
+        _book_sure_odds()
         if _higher_odds_due(now):
             status = _book_ready_tickets(HIGHER_ODDS_BANDS)
             _remember_higher_odds_run(now, status)

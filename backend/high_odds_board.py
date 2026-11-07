@@ -625,6 +625,68 @@ def _attach_booking(connection, days):
                 ticket['booking_note'] = 'Waiting for SportyBet.'
 
 
+def _coded_payload(connection, day, band_id):
+    """Show the ticket SportyBet already coded, with the selections that were on the page."""
+    row = connection.execute(
+        """SELECT t.id, t.signature FROM sports_ai_accumulator_tickets t
+           WHERE json_extract(t.parameters_json, '$.product')='high_odds'
+             AND json_extract(t.parameters_json, '$.day')=?
+             AND json_extract(t.parameters_json, '$.band')=?
+             AND t.status!='expired'
+             AND EXISTS (
+               SELECT 1 FROM sports_ai_booking_codes b
+               WHERE b.accumulator_ticket_id=t.id AND b.verification_method='displayed'
+                 AND TRIM(COALESCE(b.code, ''))<>''
+             )
+           ORDER BY t.created_at DESC LIMIT 1""",
+        (day.get('name') or day.get('day'), band_id),
+    ).fetchone()
+    if not row:
+        return None
+    code = connection.execute(
+        """SELECT code FROM sports_ai_booking_codes
+           WHERE accumulator_ticket_id=? AND verification_method='displayed'
+             AND TRIM(COALESCE(code, ''))<>''
+           ORDER BY verified_at DESC LIMIT 1""",
+        (row['id'],),
+    ).fetchone()
+    legs = connection.execute(
+        'SELECT * FROM sports_ai_accumulator_legs WHERE ticket_id=? ORDER BY starts_at',
+        (row['id'],),
+    ).fetchall()
+    if not legs or not code:
+        return None
+    band = next(item for item in ODDS_BANDS if item['id'] == band_id)
+    chosen = []
+    product = 1.0
+    joint = 1.0
+    for leg in legs:
+        confidence = leg['reliability']
+        chosen.append({
+            'home': leg['home'], 'away': leg['away'], 'sport': leg['sport'],
+            'competition': leg['competition'], 'market': leg['market'],
+            'decimal_odds': leg['decimal_odds'], 'probability': leg['probability'],
+            'confidence': confidence, 'preferred': False, 'starts_at': leg['starts_at'],
+            'fixture_id': leg['fixture_id'],
+        })
+        product *= float(leg['decimal_odds'])
+        joint *= float(leg['probability'])
+    payload = _ready_ticket(day, band, chosen, product, joint)
+    payload['signature'] = row['signature']
+    payload['booking_code'] = str(code['code']).strip()
+    payload['booking_note'] = None
+    return payload
+
+
+def _prefer_coded_ticket(connection, day, built):
+    for index, ticket in enumerate(list(built['tickets'])):
+        if ticket.get('status') != 'ready':
+            continue
+        coded = _coded_payload(connection, day, ticket.get('band'))
+        if coded:
+            built['tickets'][index] = coded
+
+
 def high_odds_board(connection, now):
     days = []
     sure = []
@@ -632,6 +694,7 @@ def high_odds_board(connection, now):
     for day in _day_window(now):
         candidates = _candidates(connection, day, now)
         built = build_day(candidates, day)
+        _prefer_coded_ticket(connection, day, built)
         days.append(built)
         if built['date'] == today:
             sure.extend(pack_sure_tickets(candidates, day))
@@ -807,9 +870,16 @@ def prepare_high_odds_booking(now=None, bands=None):
                     continue
                 if match['job_status'] == 'QUEUED' and match['job_id']:
                     return match['job_id']
-                if match['job_status'] in ('FAILED', 'ODDS_CHANGED') and not _quote_arrived_since(connection, match, moment):
+                if (
+                    match['job_status'] in ('FAILED', 'ODDS_CHANGED')
+                    and ticket.get('band') != 'to-1.95'
+                    and not _quote_arrived_since(connection, match, moment)
+                ):
                     continue
-                created = create_high_odds_job(connection, match['id'])
+                try:
+                    created = create_high_odds_job(connection, match['id'])
+                except ValueError:
+                    continue
                 if not created.get('duplicate'):
                     return created['id']
     return None

@@ -454,6 +454,7 @@ def _tickets(connection, now=None):
              AND (
                status='qualified'
                OR (status='unverified_probability' AND json_extract(parameters_json,'$.coverage')='high_probability')
+               OR (status='unverified_probability' AND json_extract(parameters_json,'$.product') IN ('sure_odds','high_odds'))
              )
            ORDER BY created_at DESC""",
         (0.70,),
