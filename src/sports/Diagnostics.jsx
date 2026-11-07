@@ -1,4 +1,5 @@
 import React, {useEffect, useState} from 'react';
+import {useLiveReload} from './live';
 import {AlertCircle, RefreshCw} from 'lucide-react';
 import {get, post} from './api';
 
@@ -15,8 +16,8 @@ export default function Diagnostics({tab = 0}) {
   const [loading, setLoading] = useState(true);
   const [adminKey, setAdminKey] = useState('');
 
-  async function load() {
-    setLoading(true);
+  async function load(silent = false) {
+    if (!silent) setLoading(true);
     setError('');
     try {
       setReport(await get('/operations/diagnostics'));
@@ -29,6 +30,7 @@ export default function Diagnostics({tab = 0}) {
   }
 
   useEffect(() => { load(); }, []);
+  useLiveReload(() => load(true));
 
   async function collect(providerId) {
     setMessage('');
@@ -69,7 +71,7 @@ export default function Diagnostics({tab = 0}) {
             <h3>Live data mode</h3>
             <p>{report.prediction_note}</p>
           </div>
-          <button className="sp-secondary" onClick={load}><RefreshCw size={16} />{loading ? 'Refreshing…' : 'Refresh Data'}</button>
+          <button className="sp-secondary" onClick={() => load()}><RefreshCw size={16} />{loading ? 'Refreshing…' : 'Refresh Data'}</button>
         </div>
         {error && <p className="sp-ops-error"><AlertCircle size={16} />{error}</p>}
         {message && <p role="status">{message}</p>}

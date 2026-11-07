@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useLiveReload } from './live';
 import { AlertTriangle, CheckCircle2, Clock3, Eye, Globe2, Pause, Play, Plus, RefreshCw, RotateCw, Save, ShieldCheck, XCircle } from 'lucide-react';
 import { get, post, put } from './api';
 import { parseCsv } from './Intelligence';
@@ -297,6 +298,7 @@ function BrowserSessions({ reload }) {
   useEffect(() => {
     refresh().catch((requestError) => setError(requestError.message));
   }, [reload]);
+  useLiveReload(() => refresh());
 
   async function retry(session) {
     try {
@@ -386,6 +388,7 @@ function DataQuality() {
     }
   }
   useEffect(() => { refresh(); }, []);
+  useLiveReload(() => refresh());
   async function resolve(issue) {
     try {
       await post(`/acquisition/quality/${issue.id}/resolve`, {});
@@ -407,12 +410,13 @@ function CollectionScheduler({ reload }) {
   const [intervals, setIntervals] = useState({});
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
-  async function refresh() {
+  async function refresh(resetIntervals = false) {
     const items = await get('/acquisition/providers');
     setSources(items.filter((source) => source.adapter !== 'browser'));
-    setIntervals(Object.fromEntries(items.map((source) => [source.id, source.interval_minutes])));
+    if (resetIntervals) setIntervals(Object.fromEntries(items.map((source) => [source.id, source.interval_minutes])));
   }
-  useEffect(() => { refresh().catch((requestError) => setError(requestError.message)); }, [reload]);
+  useEffect(() => { refresh(true).catch((requestError) => setError(requestError.message)); }, [reload]);
+  useLiveReload(() => refresh(false));
   async function save(source) {
     try {
       await put(`/acquisition/sources/${source.id}`, {
@@ -452,6 +456,7 @@ function CollectionHistory({ reload }) {
     }
   }
   useEffect(() => { refresh(); }, [reload]);
+  useLiveReload(() => refresh());
   async function viewLogs(job) {
     try {
       setLogs(await get(`/acquisition/jobs/${job.id}/logs`));
@@ -494,6 +499,7 @@ function SourcePermissions() {
     }
   }
   useEffect(() => { refresh(); }, []);
+  useLiveReload(() => refresh());
   async function submit(event) {
     event.preventDefault();
     try {

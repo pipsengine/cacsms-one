@@ -1,7 +1,7 @@
 import React,{useEffect,useMemo,useState}from'react';
 import {useLocation,useNavigate,useSearchParams} from 'react-router-dom';
-import {ArrowLeft,BarChart3,CalendarDays,CheckCircle2,Clock3,Database,Home,Info,Play,Target,Trophy,Users} from 'lucide-react';
-import {get,post} from './api';
+import {ArrowLeft,BarChart3,CalendarDays,CheckCircle2,Clock3,Database,Home,Info,Target,Trophy,Users} from 'lucide-react';
+import {get} from './api';
 import './match-analysis.css';
 
 const FOOTBALL_TABS=['Pre-Match Intelligence','Goals & Poisson','Market Probabilities','Model Evidence','Value & Verdict'];
@@ -89,7 +89,7 @@ function TeamCard({profile,away=false,sport='football'}){
   </section>;
 }
 
-export default function MatchAnalysis({sport='football',fixtures=[],runToken=0,onRunState}){
+export default function MatchAnalysis({sport='football',fixtures=[]}){
   const [params]=useSearchParams();
   const location=useLocation();
   const navigate=useNavigate();
@@ -105,7 +105,6 @@ export default function MatchAnalysis({sport='football',fixtures=[],runToken=0,o
   const [team,setTeam]=useState('');
   const [report,setReport]=useState(null);
   const [error,setError]=useState('');
-  const [busy,setBusy]=useState(false);
   useEffect(()=>{
     setTab((basketball?BASKETBALL_TABS:FOOTBALL_TABS)[0]);
     setCompetition('');
@@ -145,19 +144,26 @@ export default function MatchAnalysis({sport='football',fixtures=[],runToken=0,o
   useEffect(()=>{if(!fixtureId&&matches[0])setFixtureId(matches[0].id)},[matches,fixtureId]);
   useEffect(()=>{
     if(!fixtureId){setReport(null);return undefined}
-    let cancel=false;
-    setError('');
-    get(`/fixtures/${encodeURIComponent(fixtureId)}/match-analysis`).then(value=>{if(!cancel)setReport(value)}).catch(requestError=>{if(!cancel)setError(requestError.message)});
-    return ()=>{cancel=true};
-  },[fixtureId]);
-  async function run(){
-    if(!fixtureId)return;
-    setBusy(true);setError('');onRunState?.(true);
-    try{setReport(await post(`/fixtures/${encodeURIComponent(fixtureId)}/analyze`,{}))}
-    catch(requestError){setError(requestError.message)}
-    finally{setBusy(false);onRunState?.(false)}
-  }
-  useEffect(()=>{if(runToken)run()},[runToken]);
+    let stopped=false;
+    let reads=0;
+    const run=async()=>{
+      while(!stopped){
+        try{
+          const value=await get(`/fixtures/${encodeURIComponent(fixtureId)}/match-analysis`);
+          if(!stopped){setReport(value);setError('')}
+          reads+=1;
+          if(reads%15===1){
+            const list=await get(`/fixtures?sport=${sport}&window=upcoming&page_size=100`);
+            if(!stopped)setCatalog(list.items||[]);
+          }
+        }catch(requestError){if(!stopped)setError(requestError.message)}
+        if(stopped)return;
+        await new Promise(resolve=>setTimeout(resolve,1000));
+      }
+    };
+    run();
+    return ()=>{stopped=true};
+  },[fixtureId,sport]);
   const fixture=allMatches.find(item=>item.id===fixtureId)||(report?.home?{home:report.home,away:report.away,competition:report.competition,kickoff_at:report.kickoff_at,provider_name:report.provider}:null);
   const when=clock(fixture?.kickoff_at||fixture?.starts_at||report?.kickoff_at);
   const stored=report&&report.stored_status!==null&&report.home;
@@ -169,7 +175,7 @@ export default function MatchAnalysis({sport='football',fixtures=[],runToken=0,o
   const qualified=(report?.markets||[]).filter(row=>row.value_status==='qualified'&&Number(row.expected_edge)>0);
   return <div className="ma">
     <div className="ma-heading"><div className="ma-title"><span className="ma-ball">{basketball?'🏀':'⚽'}</span><div><div className="ma-eyebrow">CACSMS ONE / SPORTS AI</div><h1>Match Analysis</h1><p>Dedicated intelligence workspace with auditable records and model transparency.</p></div></div>
-      <div className="ma-buttons"><button className="ma-btn" onClick={()=>navigate('/hub')}><ArrowLeft size={16}/>Central Hub</button><button className="ma-btn primary" disabled={busy||!fixtureId} onClick={run}><Play size={16}/>{busy?'Analysing…':'Run Analysis'}</button></div>
+      <div className="ma-buttons"><button className="ma-btn" onClick={()=>navigate('/hub')}><ArrowLeft size={16}/>Central Hub</button></div>
     </div>
     <div className="ma-tabs" role="tablist">{tabs.map(name=><button key={name} role="tab" aria-selected={tab===name} className={tab===name?'ma-tab active':'ma-tab'} onClick={()=>setTab(name)}>{name}</button>)}</div>
     {error&&<p className="ma-error" role="alert">{error}</p>}
@@ -184,7 +190,7 @@ export default function MatchAnalysis({sport='football',fixtures=[],runToken=0,o
         <div className="ma-stages">{STAGES.map(([key,label])=>{const stage=(report?.stages||[]).find(item=>item.name===key);const state=stage?.status||'not run';return <div className={'ma-stage '+state} key={key}><CheckCircle2 size={23}/><div><b>{label}</b><strong>{state}</strong></div></div>})}</div>
       </>:<div className="ma-empty">No upcoming {sport} fixture is stored for this filter.</div>}
     </section>
-    {!stored&&<div className="ma-note"><Info size={17}/><span>{(report?.missing||['No match analysis is stored for this fixture. Run Analysis uses the stored history and does not invent probabilities.'])[0]}</span></div>}
+    {!stored&&<div className="ma-note"><Info size={17}/><span>{(report?.missing||['The worker is writing this match report from stored history. This page updates when that report is stored.'])[0]}</span></div>}
     {stored&&tab==='Pre-Match Intelligence'&&<>
       <TeamCard profile={report.home_profile} sport={sport}/>
       <TeamCard profile={report.away_profile} sport={sport} away/>

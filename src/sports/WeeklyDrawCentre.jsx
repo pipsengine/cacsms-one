@@ -135,6 +135,7 @@ function Overview() {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   useEffect(() => { get('/weekly-draw/overview').then(setData).catch(requestError => setError(requestError.message)); }, []);
+  useLiveReload(() => get('/weekly-draw/overview').then(setData));
   const schedule = data?.schedule || {};
   return <div className="sp-ops-stack">
     <p className="sp-muted">WEEKLY covers Monday through Sunday in West Africa Time. SATURDAY_ONLY covers Saturday kickoffs. A ticket is stored only when that exact number of qualified, ranked full-time draws is available.</p>
@@ -158,6 +159,7 @@ function PredictionBoard({mode}) {
   useEffect(() => {
     get(`/weekly-draw/candidates?mode=${mode}`).then(setPayload).catch(requestError => setError(requestError.message));
   }, [mode]);
+  useLiveReload(() => get(`/weekly-draw/candidates?mode=${mode}`).then(setPayload));
   return <div className="sp-ops-stack">
     <p className="sp-muted">{mode === 'SATURDAY_ONLY' ? 'Saturday kickoffs that are both qualified and ranked.' : 'Monday through Sunday kickoffs that are both qualified and ranked.'} Historical draw rate is not the selection rule.</p>
     {error && <p className="sp-ops-error" role="alert">{error}</p>}
@@ -172,6 +174,7 @@ function PredictionBoard({mode}) {
 function SaturdayBoard() {
   const [watch, setWatch] = useState([]);
   useEffect(() => { get('/weekly-draw/watchlist').then(value => setWatch(value.items || [])).catch(() => setWatch([])); }, []);
+  useLiveReload(() => get('/weekly-draw/watchlist').then(value => setWatch(value.items || [])));
   return <div className="sp-ops-stack">
     <PredictionBoard mode="SATURDAY_ONLY" />
     <section className="sp-panel"><h3>Friday watchlist</h3><p className="sp-muted">Prepared on Friday from qualified Saturday draws. An empty watchlist stays empty.</p><div className="sp-table-scroll"><table className="sp-table"><thead><tr>{['Fixture', 'Kickoff', 'State'].map(heading => <th key={heading}>{heading}</th>)}</tr></thead><tbody>
@@ -193,6 +196,7 @@ function TicketBuilder() {
       .then(([summary, list]) => { setOverview(summary); setTickets(list.items || []); });
   }
   useEffect(() => { load().catch(requestError => setError(requestError.message)); }, [mode]);
+  useLiveReload(() => load());
   async function build() {
     setBusy(true);
     setError('');
@@ -228,6 +232,7 @@ function BookingCodes() {
   const [items, setItems] = useState([]);
   const [error, setError] = useState('');
   useEffect(() => { get('/weekly-draw/codes').then(value => setItems(value.items || [])).catch(requestError => setError(requestError.message)); }, []);
+  useLiveReload(() => get('/weekly-draw/codes').then(value => setItems(value.items || [])));
   return <div className="sp-ops-stack">
     <p className="sp-muted">A code appears here only after the SportyBet page displays it during a publication window. Eight- and ten-pick simulation tickets are not sent to the betslip.</p>
     {error && <p className="sp-ops-error" role="alert">{error}</p>}
@@ -242,6 +247,7 @@ function Performance() {
   const [items, setItems] = useState([]);
   const [error, setError] = useState('');
   useEffect(() => { get('/weekly-draw/performance').then(value => setItems(value.items || [])).catch(requestError => setError(requestError.message)); }, []);
+  useLiveReload(() => get('/weekly-draw/performance').then(value => setItems(value.items || [])));
   return <div className="sp-ops-stack">
     <p className="sp-muted">Draw accuracy counts settled selections. Ticket win rate counts settled tickets in which every selection won. The two figures stay separate for each pick size and mode.</p>
     {error && <p className="sp-ops-error" role="alert">{error}</p>}

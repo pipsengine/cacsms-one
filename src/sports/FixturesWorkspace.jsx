@@ -1,7 +1,7 @@
 import React,{useEffect,useState}from'react';
 import {useNavigate}from'react-router-dom';
-import {BarChart3,CalendarDays,Check,Clock3,Play,RefreshCw,Settings,Target,Ticket,Trophy,Zap}from'lucide-react';
-import {get,post}from'./api';
+import {BarChart3,CalendarDays,Check,Clock3,Settings,Target,Ticket,Trophy,Zap}from'lucide-react';
+import {get}from'./api';
 import './fixtures.css';
 
 const LAGOS='Africa/Lagos';
@@ -62,25 +62,35 @@ export default function FixturesWorkspace({sport}){
   const [board,setBoard]=useState(null);
   const [error,setError]=useState('');
   const [loading,setLoading]=useState(true);
-  const [selected,setSelected]=useState([]);
   const [detail,setDetail]=useState(null);
-  const [auto,setAuto]=useState(true);
-  const [busy,setBusy]=useState('');
+  useEffect(()=>{const timer=setTimeout(()=>setApplied(draft),300);return ()=>clearTimeout(timer)},[draft]);
 
-  const load=(silent=false)=>{
-    const params=new URLSearchParams({sport,view,page:String(page),page_size:String(pageSize),analysis:applied.analysis});
-    if(applied.team)params.set('team',applied.team);
-    if(applied.competition)params.set('competition',applied.competition);
-    if(applied.from)params.set('starts_after',applied.from);
-    if(applied.to)params.set('starts_before',applied.to);
-    if(!silent)setLoading(true);
-    get('/fixtures/board?'+params.toString())
-      .then(value=>{setBoard(value);setError('')})
-      .catch(requestError=>setError(requestError.message))
-      .finally(()=>setLoading(false));
-  };
-  useEffect(()=>{load()},[sport,view,page,pageSize,applied]);
-  useEffect(()=>{if(!auto)return undefined;const timer=setInterval(()=>load(true),10000);return ()=>clearInterval(timer)},[auto,sport,view,page,pageSize,applied]);
+  useEffect(()=>{
+    let stopped=false;
+    const pull=async()=>{
+      const params=new URLSearchParams({sport,view,page:String(page),page_size:String(pageSize),analysis:applied.analysis});
+      if(applied.team)params.set('team',applied.team);
+      if(applied.competition)params.set('competition',applied.competition);
+      if(applied.from)params.set('starts_after',applied.from);
+      if(applied.to)params.set('starts_before',applied.to);
+      const value=await get('/fixtures/board?'+params.toString());
+      if(stopped)return;
+      setBoard(value);
+      setError('');
+      setLoading(false);
+    };
+    const run=async()=>{
+      while(!stopped){
+        try{await pull()}
+        catch(requestError){if(!stopped){setError(requestError.message);setLoading(false)}}
+        if(stopped)return;
+        await new Promise(resolve=>setTimeout(resolve,1000));
+      }
+    };
+    setLoading(true);
+    run();
+    return ()=>{stopped=true};
+  },[sport,view,page,pageSize,applied]);
 
   const summary=board?.summary||{};
   const engine=board?.engine||{};
@@ -91,9 +101,9 @@ export default function FixturesWorkspace({sport}){
   const analysedShare=summary.total?`${((summary.analysed/summary.total)*100).toFixed(1)}%`:'—';
   const stages=[
     ['Discover fixtures',summary.total?`${count(summary.total)} stored`:'None stored',summary.total>0],
-    ['Collect odds',summary.odds?`${count(summary.odds)} prices`:'No price stored',summary.odds>0],
+    ['Collect odds',summary.odds?`${count(summary.odds)} prices`:(items.some(row=>row.odds_home||row.odds_draw||row.odds_away)?'Prices stored':'No price stored'),summary.odds>0||items.some(row=>row.odds_home||row.odds_draw||row.odds_away)],
     ['Analyse matches',summary.analysed?`${count(summary.analysed)} analysed`:'None analysed',summary.analysed>0],
-    ['Detect value',summary.opportunities?`${count(summary.opportunities)} qualified`:'None qualified',summary.opportunities>0],
+    ['Detect value',summary.opportunities?`${count(summary.opportunities)} qualified`:(summary.opportunities==null?'Reading stored edges':'None qualified'),summary.opportunities>0],
     ['Build tickets',summary.tickets?`${count(summary.tickets)} stored`:'None stored',summary.tickets>0],
     ['Monitor',engine.running?'Scheduler running':'Scheduler idle',!!engine.running],
   ];
@@ -111,18 +121,6 @@ export default function FixturesWorkspace({sport}){
     try{setDetail({row,report:await get(`/fixtures/${row.id}/match-analysis`),error:''})}
     catch(requestError){setDetail({row,report:null,error:requestError.message})}
   };
-  const analyseSelected=async()=>{
-    const ids=selected.slice(0,8);
-    if(!ids.length){setError('Select a stored fixture first.');return}
-    setBusy('Analysing');
-    setError('');
-    try{
-      for(const id of ids)await post(`/fixtures/${id}/analyze`,{});
-      setSelected([]);
-      load();
-    }catch(requestError){setError(requestError.message)}
-    finally{setBusy('')}
-  };
   const exportRows=()=>{
     const header=['fixture','competition','kickoff_wat','odds_home','odds_draw','odds_away','market','probability','edge','status'];
     const lines=items.map(row=>{
@@ -136,7 +134,6 @@ export default function FixturesWorkspace({sport}){
     link.click();
     URL.revokeObjectURL(link.href);
   };
-  const toggle=(id,checked)=>setSelected(current=>checked?[...current,id]:current.filter(item=>item!==id));
   const viewTitle=VIEWS.find(([id])=>id===view)?.[1]||'Fixtures';
 
   return <section className="fx">
@@ -145,15 +142,8 @@ export default function FixturesWorkspace({sport}){
         <div className="fx-ball">{sport==='basketball'?'🏀':'⚽'}</div>
         <div>
           <h1>Fixtures & Statistics <span className={engine.running?'fx-badge':'fx-badge idle'}>{engine.running?'Fully Autonomous':'Scheduler idle'}</span></h1>
-          <p>Stored fixtures, SportyBet prices and model output. Kickoff times are West Africa Time (Nigeria, UTC+1).</p>
+          <p>Stored fixtures, SportyBet prices and model output. This page follows the worker every second. Kickoff times are West Africa Time (Nigeria, UTC+1).</p>
         </div>
-      </div>
-      <div className="fx-head-actions">
-        <div className="fx-mode" role="group" aria-label="Scheduler state">
-          <button type="button" className={engine.running?'':'on'} onClick={load}>Manual Mode</button>
-          <button type="button" className={engine.running?'on':''} onClick={load}><Zap size={14}/>Autonomous Mode</button>
-        </div>
-        <button className={engine.running?'fx-run':'fx-run idle'} type="button" onClick={load}><Play size={16}/>{engine.running?'Running':'Scheduler idle'}</button>
       </div>
     </div>
     {error&&<p className="fx-error" role="alert">{error}</p>}
@@ -168,7 +158,7 @@ export default function FixturesWorkspace({sport}){
         ['Auto tickets',summary.tickets,'Stored',false],
       ].map(([label,value,note,green],index)=>{
         const Icon=icons[index];
-        return <article className="fx-kpi" key={label}><div className="fx-ico" style={{background:colors[index],color:ink[index]}}><Icon size={16}/></div><div><span>{label}</span><strong>{board?count(value):'—'}</strong><em className={green?'':'mute'}>{note}</em></div></article>;
+        return <article className="fx-kpi" key={label}><div className="fx-ico" style={{background:colors[index],color:ink[index]}}><Icon size={16}/></div><div><span>{label}</span><strong>{!board||value==null?'—':count(value)}</strong><em className={green?'':'mute'}>{note}</em></div></article>;
       })}
     </div>
     <div className="fx-pipe">
@@ -178,15 +168,13 @@ export default function FixturesWorkspace({sport}){
       </div>
     </div>
     <div className="fx-tabs" role="tablist">
-      {VIEWS.map(([id,label])=><button key={id} type="button" role="tab" aria-selected={view===id} className={view===id?'on':''} onClick={()=>{setView(id);setPage(1);setSelected([])}}>{label}{id==='opportunities'&&<em>{count(summary.opportunities)}</em>}{id==='tickets'&&<em>{count(summary.tickets)}</em>}</button>)}
+      {VIEWS.map(([id,label])=><button key={id} type="button" role="tab" aria-selected={view===id} className={view===id?'on':''} onClick={()=>{setView(id);setPage(1)}}>{label}{id==='opportunities'&&summary.opportunities!=null&&<em>{count(summary.opportunities)}</em>}{id==='tickets'&&<em>{count(summary.tickets)}</em>}</button>)}
     </div>
     <div className="fx-grid">
       <div className="fx-card">
         <div className="fx-card-head">
-          <div><h2>{viewTitle} <span className="fx-note">{count(total)}</span></h2><p>{loading?'Loading stored records…':'Records already stored. Prices appear only where SportyBet published them.'}</p></div>
+          <div><h2>{viewTitle} <span className="fx-note">{loading&&!board?'…':count(total)}</span></h2><p>{loading&&!board?'Loading stored records…':'Records already stored. Prices appear only where SportyBet published them. The worker updates this list.'}</p></div>
           <div className="fx-tools">
-            <label className="fx-switch"><input type="checkbox" checked={auto} onChange={event=>setAuto(event.target.checked)}/> Auto-refresh (10 s)</label>
-            <button type="button" onClick={load}><RefreshCw size={14}/> Refresh</button>
             <button type="button" onClick={exportRows} disabled={!items.length}>Export</button>
             <button type="button" onClick={()=>navigate('/sports/settings')}><Settings size={14}/></button>
           </div>
@@ -197,19 +185,18 @@ export default function FixturesWorkspace({sport}){
             <label>Competition<select value={draft.competition} onChange={event=>setDraft({...draft,competition:event.target.value})}><option value="">All competitions</option>{(board?.competitions||[]).map(name=><option key={name}>{name}</option>)}</select></label>
             <label>Team<input value={draft.team} onChange={event=>setDraft({...draft,team:event.target.value})} placeholder="Search team"/></label>
             <label>Analysis<select value={draft.analysis} onChange={event=>setDraft({...draft,analysis:event.target.value})}><option value="all">All</option><option value="analysed">Analysed</option><option value="pending">Not analysed</option></select></label>
-            <div className="fx-apply"><button className="fx-primary" type="button" onClick={()=>{setApplied({...draft});setPage(1)}}>Apply filters</button></div>
+            <div className="fx-apply"><span className="fx-note">Filters follow the stored records.</span></div>
           </div>
           <div className="fx-table-scroll">
             <table>
-              <thead><tr><th></th><th>Fixture</th><th>Competition</th><th>Kickoff (WAT)</th><th>Odds (1X2)</th><th>AI probability</th><th>AI edge</th><th>Status</th><th></th></tr></thead>
+              <thead><tr><th>Fixture</th><th>Competition</th><th>Kickoff (WAT)</th><th>Odds (1X2)</th><th>AI probability</th><th>AI edge</th><th>Status</th><th></th></tr></thead>
               <tbody>
                 {items.map(row=>{
                   const qualified=row.expected_edge!=null;
                   const clock=kickoff(row);
                   const pick=selection(row);
                   const probabilities=[row.probability_home,row.probability_draw,row.probability_away].filter(value=>value!=null).sort((left,right)=>right-left);
-                  return <tr key={row.id} className={selected.includes(row.id)?'pick':''}>
-                    <td><input type="checkbox" checked={selected.includes(row.id)} onChange={event=>toggle(row.id,event.target.checked)} aria-label={`Select ${row.home}`}/></td>
+                  return <tr key={row.id}>
                     <td><button className="fx-fixture" type="button" onClick={()=>openFixture(row)}><span className="fx-mark">{mark(row.home)}</span><span><strong className={pick?.side==='home'?'fx-fav':''}>{row.home}</strong><small>vs <b className={pick?.side==='away'?'fx-fav':''}>{row.away}</b></small></span><span className="fx-mark away">{mark(row.away)}</span></button></td>
                     <td className="fx-comp">{row.competition||'—'}</td>
                     <td className="fx-kick"><small>{clock.date}</small><b>{clock.time}</b></td>
@@ -217,16 +204,13 @@ export default function FixturesWorkspace({sport}){
                     <td><div className="fx-prob">{pick?<b>{pick.label}</b>:'—'}<span>{probabilities[0]==null?'':percent(probabilities[0])}</span></div></td>
                     <td>{qualified?<span className="fx-edge">{percent(row.expected_edge)}</span>:'—'}</td>
                     <td><span className={qualified?'fx-pill ok':row.analysed?'fx-pill info':'fx-pill wait'}>{qualified?'Opportunity':row.analysed?'Analysed':'Pending'}</span></td>
-                    <td><button className="fx-icon" type="button" onClick={()=>showDetail(row)} aria-label="Details"><Play size={14}/></button></td>
+                    <td><button className="fx-icon" type="button" onClick={()=>showDetail(row)}>View</button></td>
                   </tr>;
                 })}
               </tbody>
             </table>
           </div>
           {!loading&&!items.length&&<div className="fx-empty">No stored fixture matches these filters.</div>}
-          <div className="fx-tools" style={{marginTop:8}}>
-            <button className="fx-primary" type="button" onClick={analyseSelected} disabled={!selected.length||!!busy}>{busy||'Analyse selected'}</button>
-          </div>
         </>}
         {view==='standings'&&<Table empty="No standings snapshot is stored for this sport." headers={['Competition','Team','Pos','P','W','D','L','Pts','Observed (WAT)']} rows={items.map(row=>[row.competition,row.team,row.position??'—',row.played??'—',row.won??'—',row.drawn??'—',row.lost??'—',row.points??'—',when(row.observed_at)])}/>}
         {view==='opportunities'&&<><p className="fx-note">Qualified opportunities: {count(summary.opportunities)}. Rows below are stored evaluations. Edge stays blank unless a qualified edge was stored.</p><Table empty="No evaluated opportunity is stored." headers={['Fixture','Market','Probability','Status','Edge','Reason']} rows={items.map(row=>[`${row.home} vs ${row.away}`,row.market,percent(row.probability),row.status,row.expected_edge==null?'—':percent(row.expected_edge),row.reason||'—'])}/></>}

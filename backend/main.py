@@ -638,53 +638,64 @@ def fixtures(
         )
         return {'items': rows, 'total': total, 'page': page, 'page_size': page_size}
 
-def _clock_names(left, right):
-    from sportybet_research import _tokens
-    first, second = _tokens(left), _tokens(right)
-    if not first or not second:
-        return False
-    if first <= second or second <= first:
-        return True
-    short, long = (first, second) if len(first) <= len(second) else (second, first)
-
-    def hit(token):
-        return any(
-            token == other or other.endswith(token) or token.endswith(other)
-            or (len(token) >= 3 and other.startswith(token))
-            or (len(other) >= 3 and token.startswith(other))
-            for other in long
-        )
-
-    return all(hit(token) for token in short)
+_BOARD_EXTRA = {}
+_BOARD_EXTRA_LOCK = threading.Lock()
+_SUMMARY_CACHE = {}
+_SUMMARY_LOCK = threading.Lock()
 
 
-def _attach_display_clock(connection, items):
-    """Prefer a stored SportyBet start, then show that instant on the Nigeria clock in the UI."""
-    dated = [item for item in items if item.get('starts_at') and item.get('home')]
-    if not dated:
-        return
-    start = min(item['starts_at'] for item in dated)[:10]
-    end = max(item['starts_at'] for item in dated)[:10]
-    observed = connection.execute(
-        """SELECT home, away, starts_at FROM sports_ai_sportybet_observations
-           WHERE starts_at IS NOT NULL AND date(starts_at) BETWEEN date(?, '-1 day') AND date(?, '+1 day')
-           GROUP BY home, away, starts_at""",
-        (start, end),
-    ).fetchall()
-    for item in dated:
-        linked = connection.execute(
-            """SELECT starts_at FROM sports_ai_sportybet_observations
-               WHERE fixture_id=? AND starts_at IS NOT NULL ORDER BY observed_at DESC LIMIT 1""",
-            (item.get('id'),),
-        ).fetchone()
-        if linked:
-            item['quoted_starts_at'] = linked['starts_at']
-            continue
-        times = {
-            row['starts_at'] for row in observed
-            if _clock_names(row['home'], item['home']) and _clock_names(row['away'], item['away'])
-        }
-        item['quoted_starts_at'] = next(iter(times)) if len(times) == 1 else None
+def _board_extra(sport):
+    """Full price and settlement counts take several seconds. Serve the last one and refresh it off the request."""
+    now = time.monotonic()
+    with _BOARD_EXTRA_LOCK:
+        hit = _BOARD_EXTRA.get(sport)
+        if hit and (now - hit[0] < 45 or hit[2]):
+            return hit[1]
+        _BOARD_EXTRA[sport] = (now, None if not hit else hit[1], True)
+    previous = None if not hit else hit[1]
+
+    def work():
+        value = previous
+        try:
+            with connect() as connection:
+                opportunities = connection.execute(
+                    """SELECT COUNT(*) FROM sports_ai_value_opportunities o
+                       JOIN sports_ai_engine_predictions p ON p.id=o.prediction_id
+                       JOIN sports_ai_fixtures f ON f.id=p.fixture_id
+                       WHERE f.sport=? AND o.status='qualified'""",
+                    (sport,),
+                ).fetchone()[0]
+                settled = connection.execute(
+                    """SELECT
+                         SUM(CASE WHEN (p.market IN ('HOME','MONEYLINE_HOME') AND r.home_score>r.away_score)
+                                    OR (p.market IN ('AWAY','MONEYLINE_AWAY') AND r.away_score>r.home_score)
+                                    OR (p.market='DRAW' AND r.home_score=r.away_score) THEN 1 ELSE 0 END) AS won,
+                         SUM(CASE WHEN (p.market IN ('HOME','MONEYLINE_HOME') AND r.home_score<r.away_score)
+                                    OR (p.market IN ('AWAY','MONEYLINE_AWAY') AND r.away_score<r.home_score)
+                                    OR (p.market='DRAW' AND r.home_score!=r.away_score) THEN 1 ELSE 0 END) AS lost
+                       FROM sports_ai_engine_predictions p
+                       JOIN sports_ai_fixtures f ON f.id=p.fixture_id
+                       JOIN sports_ai_results r ON r.fixture_id=f.id AND r.status='final'
+                       WHERE f.sport=? AND p.market IN ('HOME','DRAW','AWAY','MONEYLINE_HOME','MONEYLINE_AWAY')
+                         AND p.created_at<f.starts_at""",
+                    (sport,),
+                ).fetchone()
+                won, lost = (settled['won'] or 0), (settled['lost'] or 0)
+                value = {
+                    'opportunities': opportunities,
+                    'performance': {
+                        'won': won, 'lost': lost, 'settled': won + lost,
+                        'accuracy': None if won + lost == 0 else round(won / (won + lost), 4),
+                        'roi': None,
+                    },
+                }
+        except Exception:
+            value = previous
+        with _BOARD_EXTRA_LOCK:
+            _BOARD_EXTRA[sport] = (time.monotonic(), value, False)
+
+    threading.Thread(target=work, daemon=True).start()
+    return previous
 
 
 @router.get('/fixtures/board')
@@ -725,20 +736,11 @@ def fixtures_board(
                    JOIN sports_ai_fixtures f ON f.id=a.fixture_id WHERE f.sport=?""",
                 (sport,),
             ).fetchone()[0],
-            'opportunities': connection.execute(
-                """SELECT COUNT(*) FROM sports_ai_value_opportunities o
-                   JOIN sports_ai_engine_predictions p ON p.id=o.prediction_id
-                   JOIN sports_ai_fixtures f ON f.id=p.fixture_id
-                   WHERE f.sport=? AND o.status='qualified'""",
-                (sport,),
-            ).fetchone()[0],
             'tickets': connection.execute('SELECT COUNT(*) FROM sports_ai_accumulator_tickets').fetchone()[0],
-            'odds': connection.execute(
-                """SELECT COUNT(*) FROM sports_ai_odds_snapshots q
-                   JOIN sports_ai_fixtures f ON f.id=q.fixture_id WHERE f.sport=?""",
-                (sport,),
-            ).fetchone()[0],
         }
+        extra = _board_extra(sport) or {}
+        summary['odds'] = None
+        summary['opportunities'] = extra.get('opportunities')
         leader = connection.execute("SELECT heartbeat_at FROM sports_ai_worker_leases WHERE id='scheduler-leader'").fetchone()
         heartbeat = None if not leader else leader['heartbeat_at']
         fresh = False
@@ -748,27 +750,7 @@ def fixtures_board(
                 fresh = (now - seen).total_seconds() < 120
             except ValueError:
                 fresh = False
-        last_odds = connection.execute(
-            """SELECT MAX(q.observed_at) FROM sports_ai_odds_snapshots q
-               JOIN sports_ai_fixtures f ON f.id=q.fixture_id WHERE f.sport=?""",
-            (sport,),
-        ).fetchone()[0]
-        settled = connection.execute(
-            """SELECT
-                 SUM(CASE WHEN (p.market IN ('HOME','MONEYLINE_HOME') AND r.home_score>r.away_score)
-                            OR (p.market IN ('AWAY','MONEYLINE_AWAY') AND r.away_score>r.home_score)
-                            OR (p.market='DRAW' AND r.home_score=r.away_score) THEN 1 ELSE 0 END) AS won,
-                 SUM(CASE WHEN (p.market IN ('HOME','MONEYLINE_HOME') AND r.home_score<r.away_score)
-                            OR (p.market IN ('AWAY','MONEYLINE_AWAY') AND r.away_score<r.home_score)
-                            OR (p.market='DRAW' AND r.home_score!=r.away_score) THEN 1 ELSE 0 END) AS lost
-               FROM sports_ai_engine_predictions p
-               JOIN sports_ai_fixtures f ON f.id=p.fixture_id
-               JOIN sports_ai_results r ON r.fixture_id=f.id AND r.status='final'
-               WHERE f.sport=? AND p.market IN ('HOME','DRAW','AWAY','MONEYLINE_HOME','MONEYLINE_AWAY')
-                 AND p.created_at<f.starts_at""",
-            (sport,),
-        ).fetchone()
-        won, lost = (settled['won'] or 0), (settled['lost'] or 0)
+        last_odds = None
         competitions = [row['competition'] for row in connection.execute(
             "SELECT DISTINCT competition FROM sports_ai_fixtures WHERE sport=? AND competition<>'' ORDER BY competition LIMIT 300",
             (sport,),
@@ -890,15 +872,11 @@ def fixtures_board(
                 (page_size, (page - 1) * page_size),
             )
             total = summary['tickets']
-        if any(item.get('home') for item in items):
-            _attach_display_clock(connection, items)
     return {
         'summary': summary,
         'engine': {'running': fresh, 'heartbeat_at': heartbeat, 'last_odds_at': last_odds, 'places_wager': False},
-        'performance': {
-            'won': won, 'lost': lost, 'settled': won + lost,
-            'accuracy': None if won + lost == 0 else round(won / (won + lost), 4),
-            'roi': None,
+        'performance': extra.get('performance') or {
+            'won': 0, 'lost': 0, 'settled': 0, 'accuracy': None, 'roi': None,
         },
         'competitions': competitions,
         'logs': logs,
@@ -1316,7 +1294,7 @@ def stored_match_analysis(fixture_id:str,user=Depends(auth)):
         if not c.execute('SELECT 1 FROM sports_ai_fixtures WHERE id=?',(fixture_id,)).fetchone():
             raise HTTPException(404,'Fixture not found')
         report=latest_report(c,fixture_id)
-    return report or {'fixture_id':fixture_id,'stored_status':None,'missing':['No match analysis has been run for this fixture.']}
+    return report or {'fixture_id':fixture_id,'stored_status':None,'missing':['The worker is writing this match report from stored history. This page updates when that report is stored.']}
 
 @router.post('/fixtures/{fixture_id}/analyze')
 def run_match_analysis(fixture_id:str,user=Depends(auth)):
@@ -1416,8 +1394,37 @@ def _prediction_filters(sport, market_group, market, team, competition, status, 
         args.append(status)
     return market_sql, ' AND '.join(filters), args
 
+def _store_prediction_summary(key, sport, market_group):
+    payload = None
+    try:
+        payload = _build_prediction_summary(sport, market_group)
+    except Exception:
+        payload = None
+    with _SUMMARY_LOCK:
+        previous = _SUMMARY_CACHE.get(key)
+        stored = payload if payload is not None else (None if not previous else previous[1])
+        _SUMMARY_CACHE[key] = (time.monotonic(), stored, False)
+
+
 @router.get('/predictions/summary')
 def prediction_summary(sport: Literal['football', 'basketball'], market_group: str | None = None, user=Depends(auth)):
+    key = (sport, market_group or '')
+    with _SUMMARY_LOCK:
+        hit = _SUMMARY_CACHE.get(key)
+        running = bool(hit and hit[2])
+        stale = hit is None or time.monotonic() - hit[0] >= 15
+        if stale and not running:
+            _SUMMARY_CACHE[key] = (time.monotonic() if not hit else hit[0], None if not hit else hit[1], True)
+            threading.Thread(
+                target=_store_prediction_summary, args=(key, sport, market_group), daemon=True,
+            ).start()
+        payload = None if not hit else hit[1]
+    if payload:
+        return payload
+    return {'sport': sport, 'pending': True, 'places_wager': False}
+
+
+def _build_prediction_summary(sport, market_group):
     now = datetime.now(timezone.utc)
     market_sql = _prediction_market_sql(market_group, None)
     families = (
@@ -1621,7 +1628,14 @@ def predictions(
                 )
                 LEFT JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
                 WHERE {where}"""
-            total = c.execute(f"SELECT COUNT(*) {joined}", args).fetchone()[0]
+            total = c.execute(
+                f"""SELECT COUNT(*) FROM sports_ai_fixtures f
+                    WHERE {where} AND EXISTS (
+                      SELECT 1 FROM sports_ai_engine_predictions p2
+                      WHERE p2.fixture_id=f.id AND {market_sql}
+                    )""",
+                args,
+            ).fetchone()[0]
             rows = allrows(c, f"""
                 SELECT f.id AS fixture_id, f.sport, f.competition, f.home, f.away, f.starts_at, f.status AS fixture_status,
                        m.model_name, m.version AS model_version, m.status AS model_status, m.active AS model_active,
@@ -1636,16 +1650,7 @@ def predictions(
                 {joined}
                 ORDER BY {upcoming_order_sql('f')}
                 LIMIT ? OFFSET ?""", args + [page_size, (page - 1) * page_size])
-            from suitability import record_from_evidence, sync_lifecycles
-            sync_lifecycles(c)
             for row in rows:
-                if row.get('suitability_rank') is None and row.get('prediction_id'):
-                    assessment = record_from_evidence(
-                        c, row['prediction_id'], row['sport'], row['market'],
-                        row.get('explanation_json'), row.get('lifecycle'),
-                    )
-                    row['suitability_rank'] = assessment['rank_score']
-                    row['booking_ready'] = assessment['booking_ready']
                 row.pop('explanation_json', None)
                 row['booking_ready'] = bool(row.get('booking_ready'))
             return {'items': rows, 'total': total, 'page': page, 'page_size': page_size}

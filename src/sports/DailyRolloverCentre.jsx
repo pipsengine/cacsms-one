@@ -105,6 +105,10 @@ function Qualification({campaignId}) {
     if (!campaignId) return;
     get(`/rollover/campaigns/${campaignId}/candidates`).then(setPayload).catch(requestError => setError(requestError.message));
   }, [campaignId]);
+  useLiveReload(() => {
+    if (!campaignId) return undefined;
+    return get(`/rollover/campaigns/${campaignId}/candidates`).then(setPayload);
+  });
   if (!campaignId) return <p className="sp-muted">Create a campaign to see today’s qualified singles.</p>;
   return <>
     <p className="sp-muted">Candidates are qualified by the central service, priced inside this campaign’s odds range, and limited to one selection for the West Africa Time date. Other sports and markets stay out until they have a calibrated model.</p>
@@ -142,6 +146,7 @@ function Simulation({campaignId, onRan}) {
     return get(`/rollover/campaigns/${campaignId}`).then(setDetail);
   }
   useEffect(() => { load().catch(requestError => setError(requestError.message)); }, [campaignId]);
+  useLiveReload(() => load());
   async function run() {
     setBusy(true);
     setError('');

@@ -1,4 +1,5 @@
 import React,{useEffect,useMemo,useState}from'react';
+import {useLiveReload} from './live';
 import {useLocation,useSearchParams} from 'react-router-dom';
 import{Activity,AlertCircle,BrainCircuit,Download,Play,RefreshCw,ShieldCheck}from'lucide-react';
 import{get,post,put}from'./api';
@@ -38,13 +39,14 @@ export function OpportunityPage({sport:initialSport}){
     }
     return params.toString();
   },[filters]);
-  async function refresh(){
-    setLoading(true);setError('');
+  async function refresh(quiet){
+    if(quiet!==true)setLoading(true);setError('');
     try{setRows(await get(`/opportunities${query?`?${query}`:''}`))}
     catch(requestError){setError(requestError.message)}
     finally{setLoading(false)}
   }
   useEffect(()=>{refresh()},[query]);
+  useLiveReload(()=>refresh(true));
   const ordered=[...rows].sort((a,b)=>{
     const left=a[sort.key]??'',right=b[sort.key]??'';
     const comparison=typeof left==='number'&&typeof right==='number'?left-right:String(left).localeCompare(String(right));
@@ -55,7 +57,7 @@ export function OpportunityPage({sport:initialSport}){
   }
   return <div className="sp-intelligence-stack">
     <section className="sp-panel">
-      <div className="sp-panel-head"><div><h3>Opportunity Intelligence</h3><p>Only source-backed quotes and stored model evidence. Positive edge is an estimate, never a guarantee.</p></div><div className="sp-intel-actions"><button className="sp-secondary" onClick={()=>saveCsv(ordered)} disabled={!rows.length}><Download size={15}/>Export CSV</button><button className="sp-secondary" onClick={refresh} disabled={loading}><RefreshCw size={15}/>{loading?'Loading…':'Refresh'}</button></div></div>
+      <div className="sp-panel-head"><div><h3>Opportunity Intelligence</h3><p>Only source-backed quotes and stored model evidence. Positive edge is an estimate, never a guarantee.</p></div><div className="sp-intel-actions"><button className="sp-secondary" onClick={()=>saveCsv(ordered)} disabled={!rows.length}><Download size={15}/>Export CSV</button><button className="sp-secondary" onClick={()=>refresh()} disabled={loading}><RefreshCw size={15}/>{loading?'Loading…':'Refresh'}</button></div></div>
       <div className="sp-intel-filters">
         <label>Sport<select value={filters.sport} onChange={event=>setFilters({...filters,sport:event.target.value})}><option value="">Mixed</option><option value="football">Football</option><option value="basketball">Basketball</option></select></label>
         <label>Status<select value={filters.status} onChange={event=>setFilters({...filters,status:event.target.value})}><option value="">All statuses</option>{STATUSES.map(value=><option key={value} value={value}>{value.replaceAll('_',' ')}</option>)}</select></label>
@@ -272,13 +274,14 @@ export function FixtureAnalysis({fixtures,sport,tab=0,runToken=0,onRunState}){
 
 export function OddsIntelligence(){
   const[data,setData]=useState(null),[error,setError]=useState(''),[loading,setLoading]=useState(false);
-  async function refresh(){
-    setLoading(true);setError('');
+  async function refresh(quiet){
+    if(quiet!==true)setLoading(true);setError('');
     try{setData(await get('/odds/intelligence'))}
     catch(requestError){setError(requestError.message)}
     finally{setLoading(false)}
   }
   useEffect(()=>{refresh()},[]);
+  useLiveReload(()=>refresh(true));
   const quotes=data?.quotes||[];
-  return <div className="sp-intelligence-stack"><section className="sp-panel"><div className="sp-panel-head"><div><h3>Odds intelligence</h3><p>Imported quotes only. Opening and current prices come from stored snapshots. Nothing is filled in when a provider has no price.</p></div><button className="sp-secondary" onClick={refresh} disabled={loading}><RefreshCw size={15}/>{loading?'Loading…':'Refresh'}</button></div>{error&&<p className="sp-ops-error" role="alert">{error}</p>}<div className="sp-intel-metrics">{(data?.providers||[]).map(provider=><span key={provider.id}>{provider.display_name} <strong>{provider.status}</strong><small>{provider.last_success_at?date(provider.last_success_at):'No successful collection'}</small></span>)}</div></section><section className="sp-panel"><h3>Current quotes</h3><div className="sp-table-scroll"><table className="sp-table"><thead><tr><th>Fixture</th><th>Bookmaker</th><th>Market</th><th>Opening</th><th>Current</th><th>Implied probability</th><th>Age</th></tr></thead><tbody>{quotes.map(quote=>{const age=Number(quote.age_minutes);const fresh=Number.isFinite(age)&&age>=0&&age<=15;return <tr key={quote.id}><td>{quote.home} vs {quote.away}<small className="sp-intel-subline">{quote.competition}</small></td><td>{quote.bookmaker}</td><td>{quote.market} · {quote.outcome}{quote.line==null?'':` ${quote.line}`}</td><td>{number(quote.opening_decimal_odds)}</td><td>{number(quote.decimal_odds)}</td><td>{percent(1/quote.decimal_odds)}</td><td><span className={`sp-status ${fresh?'success':'warning'}`}>{Number.isFinite(age)?`${Math.max(0,age).toFixed(0)}m`:'—'}</span></td></tr>})}{!quotes.length&&<tr><td className="sp-empty" colSpan="7">No permitted odds snapshots are stored.</td></tr>}</tbody></table></div>{!!data?.conflicting_duplicates?.length&&<><h3>Conflicting duplicates</h3><pre className="sp-intel-json">{JSON.stringify(data.conflicting_duplicates,null,2)}</pre></>}</section></div>;
+  return <div className="sp-intelligence-stack"><section className="sp-panel"><div className="sp-panel-head"><div><h3>Odds intelligence</h3><p>Imported quotes only. Opening and current prices come from stored snapshots. Nothing is filled in when a provider has no price.</p></div><button className="sp-secondary" onClick={()=>refresh()} disabled={loading}><RefreshCw size={15}/>{loading?'Loading…':'Refresh'}</button></div>{error&&<p className="sp-ops-error" role="alert">{error}</p>}<div className="sp-intel-metrics">{(data?.providers||[]).map(provider=><span key={provider.id}>{provider.display_name} <strong>{provider.status}</strong><small>{provider.last_success_at?date(provider.last_success_at):'No successful collection'}</small></span>)}</div></section><section className="sp-panel"><h3>Current quotes</h3><div className="sp-table-scroll"><table className="sp-table"><thead><tr><th>Fixture</th><th>Bookmaker</th><th>Market</th><th>Opening</th><th>Current</th><th>Implied probability</th><th>Age</th></tr></thead><tbody>{quotes.map(quote=>{const age=Number(quote.age_minutes);const fresh=Number.isFinite(age)&&age>=0&&age<=15;return <tr key={quote.id}><td>{quote.home} vs {quote.away}<small className="sp-intel-subline">{quote.competition}</small></td><td>{quote.bookmaker}</td><td>{quote.market} · {quote.outcome}{quote.line==null?'':` ${quote.line}`}</td><td>{number(quote.opening_decimal_odds)}</td><td>{number(quote.decimal_odds)}</td><td>{percent(1/quote.decimal_odds)}</td><td><span className={`sp-status ${fresh?'success':'warning'}`}>{Number.isFinite(age)?`${Math.max(0,age).toFixed(0)}m`:'—'}</span></td></tr>})}{!quotes.length&&<tr><td className="sp-empty" colSpan="7">No permitted odds snapshots are stored.</td></tr>}</tbody></table></div>{!!data?.conflicting_duplicates?.length&&<><h3>Conflicting duplicates</h3><pre className="sp-intel-json">{JSON.stringify(data.conflicting_duplicates,null,2)}</pre></>}</section></div>;
 }

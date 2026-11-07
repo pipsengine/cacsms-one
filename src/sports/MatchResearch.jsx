@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useLiveReload } from './live';
 import { AlertCircle, BrainCircuit, RefreshCw, Search, ShieldCheck } from 'lucide-react';
 import { get, post } from './api';
 
@@ -104,6 +105,7 @@ export default function MatchResearch() {
     if (selectedId) loadMatch(selectedId);
     else setMatch(null);
   }, [selectedId]);
+  useLiveReload(() => refreshAll());
 
   const fixture = match?.match?.fixture;
   const formRows = useMemo(() => Object.entries(match?.team_form || {}).flatMap(([team, games]) =>

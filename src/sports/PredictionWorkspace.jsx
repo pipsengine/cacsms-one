@@ -1,7 +1,6 @@
 import React, {useEffect, useState} from 'react';
-import {useLiveReload} from './live';
 import {useNavigate} from 'react-router-dom';
-import {BarChart3, BrainCircuit, CalendarDays, CheckCircle2, Clock3, Database, Download, Eye, Play, RefreshCw, ShieldCheck, Target, Ticket, TrendingUp, Trophy} from 'lucide-react';
+import {BarChart3, BrainCircuit, CalendarDays, CheckCircle2, Clock3, Database, Download, Eye, ShieldCheck, Target, Ticket, TrendingUp, Trophy} from 'lucide-react';
 import {get} from './api';
 import './predictions.css';
 
@@ -103,7 +102,7 @@ function Chart({series}) {
   </>;
 }
 
-export default function PredictionWorkspace({sport, run, loading}) {
+export default function PredictionWorkspace({sport}) {
   const navigate = useNavigate();
   const tabs = TABS[sport];
   const [tab, setTab] = useState(0);
@@ -122,30 +121,46 @@ export default function PredictionWorkspace({sport, run, loading}) {
   const [detail, setDetail] = useState([]);
   const [error, setError] = useState('');
   const [clock, setClock] = useState(Date.now());
-  const [revision, setRevision] = useState(0);
-  useLiveReload(() => setRevision(value => value + 1));
+  const [loaded, setLoaded] = useState(false);
   const group = tabs[tab][1];
   useEffect(() => { const timer = setTimeout(() => setAppliedTeam(team), 300); return () => clearTimeout(timer); }, [team]);
   useEffect(() => { const timer = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(timer); }, []);
   useEffect(() => { setPage(1); }, [sport, tab, pageSize, competition, market, status, appliedTeam, startsAfter, startsBefore]);
   useEffect(() => {
-    let cancel = false;
-    get(`/predictions/summary?sport=${sport}&market_group=${encodeURIComponent(group)}`).then(value => { if (!cancel) setSummary(value); }).catch(reason => { if (!cancel) setError(reason.message); });
-    return () => { cancel = true; };
-  }, [sport, group, revision]);
-  useEffect(() => {
-    let cancel = false;
-    const params = new URLSearchParams({group: 'fixture', sport, page: String(page), page_size: String(pageSize)});
-    if (group) params.set('market_group', group);
-    if (market) params.set('market', market);
-    if (competition) params.set('competition', competition);
-    if (status) params.set('status', status);
-    if (appliedTeam) params.set('team', appliedTeam);
-    if (startsAfter) params.set('starts_after', startsAfter);
-    if (startsBefore) params.set('starts_before', startsBefore);
-    get('/predictions?' + params.toString()).then(value => { if (!cancel) setPayload(value); }).catch(reason => { if (!cancel) setError(reason.message); });
-    return () => { cancel = true; };
-  }, [sport, group, page, pageSize, market, competition, status, appliedTeam, startsAfter, startsBefore, revision]);
+    let stopped = false;
+    const pull = async () => {
+      const params = new URLSearchParams({group: 'fixture', sport, page: String(page), page_size: String(pageSize)});
+      if (group) params.set('market_group', group);
+      if (market) params.set('market', market);
+      if (competition) params.set('competition', competition);
+      if (status) params.set('status', status);
+      if (appliedTeam) params.set('team', appliedTeam);
+      if (startsAfter) params.set('starts_after', startsAfter);
+      if (startsBefore) params.set('starts_before', startsBefore);
+      const [summaryResult, listResult] = await Promise.allSettled([
+        get(`/predictions/summary?sport=${sport}&market_group=${encodeURIComponent(group)}`),
+        get('/predictions?' + params.toString()),
+      ]);
+      if (stopped) return;
+      if (summaryResult.status === 'fulfilled') {
+        if (!summaryResult.value.pending) setSummary(summaryResult.value);
+      } else setError(summaryResult.reason.message);
+      if (listResult.status === 'fulfilled') {
+        setPayload(listResult.value);
+        setLoaded(true);
+      } else setError(listResult.reason.message);
+    };
+    const run = async () => {
+      while (!stopped) {
+        try { await pull(); } catch (reason) { if (!stopped) setError(reason.message); }
+        if (stopped) return;
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    };
+    setLoaded(false);
+    run();
+    return () => { stopped = true; };
+  }, [sport, group, page, pageSize, market, competition, status, appliedTeam, startsAfter, startsBefore]);
   async function open(row) {
     setSelected(row);
     setDetail([]);
@@ -183,7 +198,8 @@ export default function PredictionWorkspace({sport, run, loading}) {
   const bandTotal = bands.total || 0;
   const highShare = bandTotal ? bands.high / bandTotal * 100 : 0;
   const mediumShare = bandTotal ? bands.medium / bandTotal * 100 : 0;
-  const analysed = summary?.fixtures_analysed || 0;
+  const ready = summary && !summary.pending;
+  const analysed = ready ? summary.fixtures_analysed || 0 : 0;
   const model = summary?.model;
   return <div className={`pw ${sport}`}>
     {error && <p className="pw-error">{error}</p>}
@@ -191,23 +207,20 @@ export default function PredictionWorkspace({sport, run, loading}) {
       <div className="pw-title"><div className={`pw-ball ${sport}`}>{sport === 'basketball' ? '🏀' : '⚽'}</div><div>
         <div className="pw-kicker">CACSMS ONE / SPORTS AI</div>
         <h1>{sport === 'basketball' ? 'Basketball Predictions' : 'Football Predictions'}</h1>
-        <p>Stored {sport} probabilities, displayed prices and value checks for upcoming matches. A blank figure has not been calculated.</p>
+        <p>Stored {sport} probabilities, displayed prices and value checks for upcoming matches. This page follows the worker every second. A blank figure has not been calculated.</p>
       </div></div>
       <div className="pw-actions">
         <button className="pw-outline" onClick={() => window.location.assign(import.meta.env.VITE_CACSMS_HUB_URL || '/hub')}>Central Hub</button>
-        <button className="pw-primary" onClick={run} disabled={loading}><Play size={16}/>{loading ? 'Running…' : 'Run Analysis'}</button>
       </div>
     </div>
     <div className="pw-kpis">
-      {[[CalendarDays, 'c0', 'Fixtures Analysed', count(summary?.fixtures_analysed), 'Upcoming', false], [Database, 'c1', 'Predictions Generated', count(summary?.predictions_stored), 'Stored rows', false], [Target, 'c2', 'Value Opportunities', count(summary?.qualified), summary?.qualified ? 'Qualified' : 'None qualified', Boolean(summary?.qualified)], [Trophy, 'c3', 'Prediction Accuracy', summary?.accuracy == null ? '—' : `${summary.accuracy}%`, summary?.settled ? 'Settled picks' : 'No settled results', summary?.accuracy != null], [TrendingUp, 'c4', 'Model Edge (Avg)', summary?.average_edge == null ? '—' : `+${summary.average_edge}%`, summary?.average_edge == null ? 'No qualified edge' : 'Qualified picks', summary?.average_edge != null], [Ticket, 'c5', 'Tickets Generated', count(summary?.tickets), summary?.tickets ? 'Stored' : 'None stored', Boolean(summary?.tickets)]].map(([Icon, tone, label, value, note, positive]) => <article className="pw-kpi" key={label}><div className={`pw-kicon ${tone}`}><Icon size={22}/></div><div><label>{label}</label><strong>{value}</strong><em className={positive ? 'up' : 'flat'}>{note}</em></div></article>)}
+      {[[CalendarDays, 'c0', 'Fixtures Analysed', ready ? count(summary.fixtures_analysed) : '—', 'Upcoming', false], [Database, 'c1', 'Predictions Generated', ready ? count(summary.predictions_stored) : '—', 'Stored rows', false], [Target, 'c2', 'Value Opportunities', ready ? count(summary.qualified) : '—', ready && summary.qualified ? 'Qualified' : 'None qualified', Boolean(ready && summary.qualified)], [Trophy, 'c3', 'Prediction Accuracy', !ready || summary.accuracy == null ? '—' : `${summary.accuracy}%`, ready && summary.settled ? 'Settled picks' : 'No settled results', ready && summary.accuracy != null], [TrendingUp, 'c4', 'Model Edge (Avg)', !ready || summary.average_edge == null ? '—' : `+${summary.average_edge}%`, !ready || summary.average_edge == null ? 'No qualified edge' : 'Qualified picks', ready && summary.average_edge != null], [Ticket, 'c5', 'Tickets Generated', ready ? count(summary.tickets) : '—', ready && summary.tickets ? 'Stored' : 'None stored', Boolean(ready && summary.tickets)]].map(([Icon, tone, label, value, note, positive]) => <article className="pw-kpi" key={label}><div className={`pw-kicon ${tone}`}><Icon size={22}/></div><div><label>{label}</label><strong>{value}</strong><em className={positive ? 'up' : 'flat'}>{note}</em></div></article>)}
     </div>
     <div className="pw-tabs" role="tablist">{tabs.map(([label], index) => <button key={label} className={tab === index ? 'on' : ''} aria-selected={tab === index} onClick={() => setTab(index)}>{label}</button>)}</div>
     <article className="pw-panel">
       <div className="pw-head"><div><h2>Predictions</h2><p>Each row shows the stored market with the highest AI Probability in this group. A booking uses the qualified market with the highest expected edge, which can be a different selection.</p></div>
         <div className="pw-tools">
-          <button className="pw-outline" onClick={() => setRevision(value => value + 1)}><RefreshCw size={15}/> Refresh</button>
           <button className="pw-outline" onClick={exportCsv}><Download size={15}/> Export</button>
-          <button className="pw-primary" onClick={run} disabled={loading}><Play size={14}/> Run Analysis</button>
         </div>
       </div>
       <div className="pw-filters">
@@ -224,7 +237,7 @@ export default function PredictionWorkspace({sport, run, loading}) {
           const edge = edgeLabel(row.edge);
           return <tr key={row.fixture_id}><td>{(page - 1) * pageSize + index + 1}</td><td><b>{sport === 'basketball' ? '🏀' : '⚽'} {row.home} <span className="vs">vs</span> {row.away}</b></td><td>{row.competition || '—'}</td><td>{tipLabel(row)}</td><td><b>{(Number(row.probability) * 100).toFixed(1)}%</b></td><td>{row.odds == null ? <span className="pw-blank">Awaiting odds</span> : Number(row.odds).toFixed(2)}</td><td>{edge ? <span className={edge.down ? 'pw-edge down' : 'pw-edge'}>{edge.text}</span> : <span className="pw-blank">—</span>}</td><td><span className={`pw-conf ${tone[0]}`}>{tone[1]}</span></td><td>{row.analysis_status ? <span className="pw-ok"><CheckCircle2 size={13}/>{row.analysis_status}</span> : <span className="pw-blank">Stored prediction</span>}</td><td><span className={`pw-status ${row.opportunity_status || ''}`}>{STATUS_LABEL[row.opportunity_status] || 'Not assessed'}</span></td><td><button className="pw-view" onClick={() => open(row)}><Eye size={13}/> View</button></td></tr>;
         })}
-        {!items.length && <tr><td className="pw-blank" colSpan="11">No upcoming fixture has a stored prediction for this filter.</td></tr>}
+        {!items.length && <tr><td className="pw-blank" colSpan="11">{loaded ? 'No upcoming fixture has a stored prediction for this filter.' : 'Loading stored predictions…'}</td></tr>}
       </tbody></table></div>
       <div className="pw-pager"><span>{total ? (page - 1) * pageSize + 1 : 0}–{Math.min(total, page * pageSize)} of {count(total)}</span><div><button className="pw-outline" disabled={page <= 1} onClick={() => setPage(page - 1)}>Previous</button><span>Page {page} of {pages}</span><button className="pw-outline" disabled={page >= pages} onClick={() => setPage(page + 1)}>Next</button></div></div>
     </article>
@@ -237,7 +250,7 @@ export default function PredictionWorkspace({sport, run, loading}) {
         <p className="pw-note">Share of upcoming analysed fixtures that have a stored market in each group.</p>
       </article>
       <article className="pw-panel"><h3><Target size={18}/> Probability Distribution</h3>
-        <div className="pw-donut-row"><div className="pw-donut" style={{background: bandTotal ? `conic-gradient(#109a30 0 ${highShare}%, #0985f5 ${highShare}% ${highShare + mediumShare}%, #ffc225 ${highShare + mediumShare}% 100%)` : '#e2e5e9'}}><b>{count(bandTotal)}</b><small>Predictions</small></div>
+        <div className="pw-donut-row"><div className="pw-donut" style={{background: bandTotal ? `conic-gradient(#109a30 0 ${highShare}%, #0985f5 ${highShare}% ${highShare + mediumShare}%, #ffc225 ${highShare + mediumShare}% 100%)` : '#e2e5e9'}}><b>{ready ? count(bandTotal) : '—'}</b><small>Predictions</small></div>
           <div className="pw-legend"><p><i style={{background: '#109a30'}}/> High (≥65%) {count(bands.high)}</p><p><i style={{background: '#0985f5'}}/> Medium (55–64%) {count(bands.medium)}</p><p><i style={{background: '#ffc225'}}/> Low (&lt;55%) {count(bands.low)}</p></div>
         </div>
         <p className="pw-note">Bands describe the stored model probability. They are not a separate confidence score.</p>

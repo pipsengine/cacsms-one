@@ -154,6 +154,7 @@ def _run_cycle():
     _odds_refresh_tick()
     _history_tick()
     _coverage_tick()
+    _match_report_tick()
     _draw_tick()
     _weekly_draw_tick()
     _reliability_tick()
@@ -398,6 +399,17 @@ def _coverage_tick():
     except Exception as error:
         _observed('analyse', {'status': 'failed'}, failed=True)
         _report('coverage analysis failed', error)
+
+
+def _match_report_tick():
+    """Store match reports for the next upcoming fixtures. The pages read these rows; they do not start a job."""
+    try:
+        from match_analysis import analyse_upcoming_batch
+        with connect() as connection:
+            result = analyse_upcoming_batch(connection, 'sports-ai-worker', _audit, limit=2)
+        print('match reports', result.get('attempted'), 'stored', len(result.get('results') or []))
+    except Exception as error:
+        _report('match reports failed', error)
 
 
 def _operator_booking():

@@ -1,4 +1,5 @@
 import React, {useEffect, useMemo, useState} from 'react';
+import {useLiveReload} from './live';
 import {useNavigate} from 'react-router-dom';
 import {AlertCircle, Download, Pause, Play, RefreshCw, RotateCcw} from 'lucide-react';
 import {get, post, put} from './api';
@@ -82,8 +83,8 @@ export default function OperationsCentre({page, tab = 0}) {
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(true);
 
-  async function load() {
-    setLoading(true);
+  async function load(silent = false) {
+    if (!silent) setLoading(true);
     setError('');
     try {
       if (page === 'monitor') {
@@ -124,6 +125,7 @@ export default function OperationsCentre({page, tab = 0}) {
   }
 
   useEffect(() => { load(); }, [page]);
+  useLiveReload(() => load(true));
 
   const needle = query.trim().toLowerCase();
   const visible = rows => rows.filter(row => !needle || JSON.stringify(row).toLowerCase().includes(needle));
@@ -172,7 +174,7 @@ export default function OperationsCentre({page, tab = 0}) {
             <p>Times below are shown in this browser’s time zone. Schedules are stored in UTC. {command?.hit_rate_note || evaluations.note}</p>
           </div>
           <div className="sp-intel-actions">
-            <button className="sp-secondary" onClick={load}><RefreshCw size={16} />{loading ? 'Loading…' : 'Refresh'}</button>
+            <button className="sp-secondary" onClick={() => load()}><RefreshCw size={16} />{loading ? 'Loading…' : 'Refresh'}</button>
           </div>
         </div>
         <div className="sp-intel-filters">
