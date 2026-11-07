@@ -408,11 +408,23 @@ def build_acquisition_router(auth_dependency):
                  else 'acquisition.website.permission.revoked',
                  json.dumps({'hostname':hostname,'terms_url':payload.terms_url})),
             )
-            if hostname == 'www.betexplorer.com':
+            history_key = {
+                'www.betexplorer.com': 'betexplorer',
+                'ng.soccerway.com': 'soccerway',
+                'www.soccerway.com': 'soccerway',
+            }.get(hostname)
+            if history_key and payload.approved:
                 connection.execute(
-                    """UPDATE sports_ai_provider_registry SET terms_reviewed=?,
-                       enabled=0,status='disabled' WHERE adapter='browser'""",
-                    (int(payload.approved),),
+                    """UPDATE sports_ai_provider_registry SET terms_reviewed=1
+                       WHERE provider_key=?""",
+                    (history_key,),
+                )
+            elif history_key:
+                connection.execute(
+                    """UPDATE sports_ai_provider_registry
+                       SET terms_reviewed=0, enabled=0, status='disabled'
+                       WHERE provider_key=?""",
+                    (history_key,),
                 )
         return {'hostname':hostname,'approved':payload.approved}
 

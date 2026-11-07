@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
 import {
-  BrainCircuit, ChartNoAxesColumnIncreasing, CheckCircle2, ChevronRight, Clock3, Code2, Database,
-  GitBranch, Globe2, Layers, Network, RefreshCw, ShieldCheck, Target, Ticket,
+  BrainCircuit, ChartNoAxesColumnIncreasing, CheckCircle2, ChevronRight, Clock3, Database,
+  GitBranch, Globe2, Layers, Network, RefreshCw, ShieldCheck, SlidersHorizontal, Target, Ticket,
 } from 'lucide-react';
 
-const ICONS = [Globe2, Database, ShieldCheck, ChartNoAxesColumnIncreasing, Target, Ticket, RefreshCw, Code2, CheckCircle2, BrainCircuit];
-const COLORS = ['blue', 'purple', 'sky', 'green', 'orange', 'pink', 'violet', 'blue', 'teal', 'violet'];
+const ICONS = [Globe2, Database, ShieldCheck, ChartNoAxesColumnIncreasing, Target, Ticket, CheckCircle2, BrainCircuit, SlidersHorizontal];
+const COLORS = ['blue', 'purple', 'sky', 'green', 'orange', 'pink', 'teal', 'violet', 'blue'];
 
 function statusClass(status) {
   return String(status || 'waiting').toLowerCase().replace(/\s+/g, '-');
@@ -23,7 +23,7 @@ export default function WorkflowBoard({ workflow, nav }) {
   return <section className="ccx-card ccx-flow" aria-label="Autonomous execution pipeline">
     <header className="ccx-flow-head">
       <div>
-        <strong><Network size={16}/>Autonomous Execution Pipeline <small>(10 Stages)</small></strong>
+        <strong><Network size={16}/>Autonomous Execution Pipeline <small>(9 Stages)</small></strong>
         <p>{workflow.note}</p>
       </div>
       <div className="ccx-flow-toggle" role="group" aria-label="Pipeline layout">
@@ -50,12 +50,13 @@ export default function WorkflowBoard({ workflow, nav }) {
         </React.Fragment>;
       })}
     </div>
+    {workflow.parallel && <p className="ccx-flow-parallel"><RefreshCw size={14}/><span><b>{workflow.parallel.name}.</b> {workflow.parallel.explanation}</span><em>{workflow.parallel.count}</em></p>}
     {current && <div className="ccx-flow-detail">
       <div><b>Stage {selected + 1}: {current.name}</b><span>{current.explanation}</span></div>
       <button type="button" onClick={() => nav(current.route)}>Open workspace</button>
     </div>}
     <footer className="ccx-flow-foot">
-      <div className="ccx-flow-progress"><Layers size={16}/><div><span>Workflow progress</span><i><b style={{width: `${workflow.progress || 0}%`}}/></i></div><strong>{workflow.completed} of 10 completed</strong></div>
+      <div className="ccx-flow-progress"><Layers size={16}/><div><span>Workflow progress</span><i><b style={{width: `${workflow.progress || 0}%`}}/></i></div><strong>{workflow.completed} of {stages.length} completed</strong></div>
       <div><span>Next cycle</span><b>{workflow.next_cycle}</b></div>
       <div><span>Update frequency</span><b>{workflow.frequency}</b></div>
       <div><span>Active data sources</span><b>{workflow.sources}</b></div>

@@ -357,7 +357,7 @@ export default function TicketBuilder() {
     <div className="tb-top">
       <div>
         <h1>Ticket Builder <span>(Autonomous)</span></h1>
-        <p>Discover • Analyze • Qualify • Build Tickets • Generate Codes • Register when SportyBet displays a code • Track • Settle</p>
+        <p>Discover • Analyse • Qualify • Stage 6 finalizes the ticket and then registers a code when SportyBet displays it • Settle. Rollover runs separately.</p>
       </div>
       <div className="tb-top-right">
         <span className="tb-date"><CalendarDays size={16} />{lagosStamp(now, true)} WAT</span>

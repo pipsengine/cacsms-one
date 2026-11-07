@@ -1,7 +1,7 @@
 """West Africa Time windows for discovery, qualification and booking-code publication.
 
-WAT is UTC+1 with no daylight-saving change. A code is requested only inside a
-publication window. Other hours stay event-driven and do not open a betslip.
+WAT is UTC+1 with no daylight-saving change. During the testing period a code
+may be requested every 15 minutes. A code is stored only when SportyBet displays it.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -46,29 +46,52 @@ def phase_at(now):
     return 'event'
 
 
+PUBLICATION_EVERY = timedelta(minutes=15)
+
+
 def publication_open(phase):
     return phase in {window['id'] for window in WINDOWS if window['publishes']}
 
 
-def next_publication(now):
+def last_publication_at(connection):
+    """When the latest queued, preparing, or displayed-code request was stored."""
+    row = connection.execute(
+        """SELECT MAX(created_at) AS created_at FROM sports_ai_booking_jobs
+           WHERE status IN ('QUEUED','PREPARING','CODE_GENERATED')""",
+    ).fetchone()
+    if not row or not row['created_at']:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(row['created_at']).replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def publication_due(now, last_attempt=None):
+    """Testing period: one code request every 15 minutes, including outside the named windows."""
+    if last_attempt is None:
+        return True
+    current = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    previous = last_attempt if last_attempt.tzinfo else last_attempt.replace(tzinfo=timezone.utc)
+    return current - previous >= PUBLICATION_EVERY
+
+
+def next_publication(now, last_attempt=None):
     """The next Africa/Lagos minute when a booking code may be requested."""
     current = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
     local = current.astimezone(WAT).replace(second=0, microsecond=0)
-    if publication_open(phase_at(current)):
+    if last_attempt is not None and last_attempt.tzinfo is None:
+        last_attempt = last_attempt.replace(tzinfo=timezone.utc)
+    if publication_due(current, last_attempt):
         return local.isoformat(timespec='minutes')
-    start = local.replace(hour=0, minute=0)
-    for day in (0, 1):
-        for window in WINDOWS:
-            if not window['publishes']:
-                continue
-            hour, minute = (int(part) for part in window['start'].split(':'))
-            moment = start + timedelta(days=day, hours=hour, minutes=minute)
-            if moment > local:
-                return moment.isoformat(timespec='minutes')
-    return None
+    due = (last_attempt.astimezone(WAT) + PUBLICATION_EVERY).replace(second=0, microsecond=0)
+    return due.isoformat(timespec='minutes')
 
 
-def describe(now):
+def describe(now, last_attempt=None):
     phase = phase_at(now)
     current = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
     local = current.astimezone(WAT)
@@ -77,13 +100,13 @@ def describe(now):
         'offset': '+01:00',
         'local_time': local.isoformat(timespec='minutes'),
         'phase': phase,
-        'publishes': publication_open(phase),
-        'next_publication_at': next_publication(current),
+        'publishes': publication_due(current, last_attempt),
+        'next_publication_at': next_publication(current, last_attempt),
         'places_wager': False,
         'windows': WINDOWS,
+        'publication_every_minutes': int(PUBLICATION_EVERY.total_seconds() // 60),
         'note': (
-            'Booking codes are requested only from 07:00–08:00, 12:00–13:00 and 17:00–18:00 WAT, '
-            'and only for tickets that are already qualified. A code is stored only when SportyBet displays it. '
-            'Hours outside the named windows update qualification and expiry without opening a betslip.'
+            'Testing period: a booking code is requested every 15 minutes. '
+            'A code is stored only when SportyBet displays it. No wager is placed.'
         ),
     }

@@ -2,6 +2,8 @@
 
 import argparse
 import json
+import os
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -87,14 +89,49 @@ def _observed(stage, result, failed=False):
         _report('cycle record failed', error)
 
 
+def _leader_name():
+    return f'worker:{os.getpid()}'
+
+
+def _touch_heartbeat():
+    """Refresh the scheduler lease while this process is inside a long stage.
+
+    A restarted worker takes the lease when the previous one has expired.
+    The update is one short write, so a price import can commit and let it through.
+    """
+    try:
+        from operations_engine import keep_leader
+        with connect(busy_timeout_ms=60000) as connection:
+            keep_leader(connection, _leader_name())
+    except Exception as error:
+        _report('heartbeat failed', error)
+
+
+def _beat_until(stop):
+    while not stop.wait(20):
+        _touch_heartbeat()
+
+
 def tick():
     """One cycle. Upcoming fixtures and completed matches move on separate lanes.
 
-    Discover, odds, validation, analysis, qualification, tickets, rollover and
-    booking read what is already stored for upcoming fixtures. Settle and learn
-    read completed matches. An unfinished kickoff does not hold the next cycle.
+    Stage 6 finalizes qualified tickets and then requests a displayed code in
+    the same pass. Rollover runs after settlement and does not sit between a
+    ticket and its code. An unfinished kickoff does not hold the next cycle.
     """
     initialize()
+    stop = threading.Event()
+    beater = threading.Thread(target=_beat_until, args=(stop,), daemon=True)
+    _touch_heartbeat()
+    beater.start()
+    try:
+        _run_cycle()
+    finally:
+        stop.set()
+        _touch_heartbeat()
+
+
+def _run_cycle():
     _high_odds_booking_tick()
     _operator_booking()
     try:
@@ -109,31 +146,38 @@ def tick():
         monitor=_monitor_accumulators,
     )
     print('orchestrator', result.get('status'), result.get('reason', ''))
+    _touch_heartbeat()
     _catalog_tick()
     _qualification_tick()
+    _stage_six()
     _process_browser_queue()
     _odds_refresh_tick()
+    _history_tick()
     _coverage_tick()
-    _ticket_tick()
     _draw_tick()
     _weekly_draw_tick()
-    _rollover_tick()
-    _learning_tick()
-    _booking_tick()
     _reliability_tick()
+    _learning_tick()
+    _govern_cycle()
+    _rollover_tick()
     _publication_tick()
     _pipeline_snapshot_tick()
-    _govern_cycle()
 
 
 def _qualification_tick():
     try:
         from market_registry import link_stored_quotes, refresh_market_registry, store_recommendations
+        from prediction_engine import refresh_score_dependence
         from qualification_engine import revalidate
         with connect() as connection:
+            dependence = refresh_score_dependence(connection)
+        with connect() as connection:
             registry = refresh_market_registry(connection)
+        with connect() as connection:
             linked = link_stored_quotes(connection)
+        with connect() as connection:
             result = revalidate(connection, 'sports-ai-worker')
+        with connect() as connection:
             recommended = store_recommendations(connection)
         print(
             'qualification', result.get('counts', {}).get('QUALIFIED', 0),
@@ -141,6 +185,8 @@ def _qualification_tick():
             'markets', registry.get('counts'),
             'linked', linked.get('qualified'),
             'recommended', recommended.get('fixtures'),
+            'score_dependence', dependence.get('score_dependence', ''),
+            dependence.get('status', ''),
         )
         _observed('qualification', result)
     except Exception as error:
@@ -238,7 +284,8 @@ def _process_browser_queue():
         print('sportybet feed', collected.get('status'), 'imported', collected.get('imported', 0), collected.get('error', ''))
         _observed('browser', collected)
         if collected.get('imported'):
-            _operator_booking()
+            _booking_tick()
+            _high_odds_booking_tick()
     except Exception as error:
         _observed('browser', {'status': 'failed'}, failed=True)
         _report('browser queue failed', error)
@@ -269,6 +316,16 @@ def _odds_refresh_tick():
         _report('odds refresh failed', error)
 
 
+def _stage_six():
+    """Store finalized tickets, then register one displayed code for a finalized ticket.
+
+    The code request does not start until the ticket write has committed. It
+    does not invent a code, and it does not place a wager. Rollover is not called.
+    """
+    _ticket_tick()
+    _booking_tick()
+
+
 def _ticket_tick():
     try:
         from accumulator_engine import build_bookable_cross_tickets, build_high_probability_tickets
@@ -292,23 +349,52 @@ def _ticket_tick():
             'places_wager', False,
         )
         _observed('tickets', result)
+        return result
     except Exception as error:
         _observed('tickets', {'status': 'failed'}, failed=True)
         _report('autonomous tickets failed', error)
+        return None
+
+
+def _history_tick():
+    """Read displayed finals from BetExplorer and Soccerway before the next analysis."""
+    try:
+        from history_browser import collect_match_history
+        result = collect_match_history()
+        print(
+            'match history', result.get('status'),
+            'saved', result.get('saved', 0),
+            'pages', result.get('pages', 0),
+            (result.get('error') or '')[:180],
+        )
+    except Exception as error:
+        _report('match history failed', error)
 
 
 def _coverage_tick():
     try:
-        from prediction_engine import run_analysis
+        from prediction_engine import record_result_gaps, run_analysis
         with connect() as connection:
-            result = run_analysis(connection, 'sports-ai-worker', _audit, coverage=True, limit=24)
+            gaps = record_result_gaps(connection)
+        totals = {'fixtures': 0, 'predictions': 0, 'skipped': {}}
+        for _ in range(10):
+            _touch_heartbeat()
+            with connect() as connection:
+                result = run_analysis(connection, 'sports-ai-worker', _audit, coverage=True, limit=8)
+            totals['fixtures'] += result.get('fixtures') or 0
+            totals['predictions'] += result.get('predictions') or 0
+            for key, value in (result.get('skipped') or {}).items():
+                totals['skipped'][key] = totals['skipped'].get(key, 0) + value
+            if not result.get('fixtures'):
+                break
         print(
             'coverage analysis',
-            'fixtures', result.get('fixtures'),
-            'predictions', result.get('predictions'),
-            'skipped', result.get('skipped'),
+            'fixtures', totals['fixtures'],
+            'predictions', totals['predictions'],
+            'skipped', totals['skipped'],
+            'leagues_waiting_for_results', gaps.get('waiting'),
         )
-        _observed('analyse', result)
+        _observed('analyse', totals)
     except Exception as error:
         _observed('analyse', {'status': 'failed'}, failed=True)
         _report('coverage analysis failed', error)
@@ -359,9 +445,9 @@ def _booking_tick():
         from sportybet_booking import process_booking_queue
         booked = process_booking_queue()
         print('sportybet booking', booked.get('status'), 'qualified', booked.get('qualified', ''), 'restored', (booked.get('examined') or {}).get('restored', 0), 'places_wager', booked.get('places_wager'))
-        _observed('booking', booked)
+        _observed('tickets_booking', booked)
     except Exception as error:
-        _observed('booking', {'status': 'failed'}, failed=True)
+        _observed('tickets_booking', {'status': 'failed'}, failed=True)
         _report('booking failed', error)
 
 
@@ -515,7 +601,9 @@ def _govern_cycle():
             'qualification', qualification.get('counts', {}).get('QUALIFIED', 0),
             priced.get('reason', ''),
         )
+        _observed('optimize', {'status': 'complete', 'qualified': qualification.get('counts', {}).get('QUALIFIED', 0)})
     except Exception as error:
+        _observed('optimize', {'status': 'failed'}, failed=True)
         _report('governance failed', error)
 
 

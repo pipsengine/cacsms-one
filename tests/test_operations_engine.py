@@ -19,6 +19,7 @@ from operations_engine import (
     cron_is_due,
     enqueue_job,
     evaluate_models,
+    keep_leader,
     evaluate_retraining,
     fail_job,
     orchestrate_once,
@@ -152,7 +153,9 @@ class OperationsEngineTests(unittest.TestCase):
         with db.connect() as connection:
             self.assertTrue(acquire_leader(connection, 'worker-a', self.now))
             self.assertFalse(acquire_leader(connection, 'worker-b', self.now))
-            self.assertTrue(acquire_leader(connection, 'worker-b', self.now + timedelta(seconds=41)))
+            self.assertTrue(keep_leader(connection, 'worker-a', self.now + timedelta(seconds=10)))
+            self.assertFalse(keep_leader(connection, 'worker-b', self.now + timedelta(seconds=10)))
+            self.assertTrue(keep_leader(connection, 'worker-c', self.now + timedelta(seconds=120)))
             first = enqueue_job(connection, 'model_evaluation', 'same-key', now=self.now, max_attempts=3)
             second = enqueue_job(connection, 'model_evaluation', 'same-key', now=self.now, max_attempts=3)
             self.assertFalse(second['created'])

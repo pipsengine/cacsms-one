@@ -241,6 +241,26 @@ def sync_workflows(connection, now=None, limit=200):
     return {'fixtures': len(fixtures), 'transitions': moved}
 
 
+def renew_leader(connection, owner, now=None, ttl_seconds=90):
+    """Keep the scheduler lease fresh while a long stage is still this worker's."""
+    current = _now(now)
+    cursor = connection.execute(
+        """UPDATE sports_ai_worker_leases
+           SET heartbeat_at=?, expires_at=?
+           WHERE id=? AND owner=?""",
+        (current.isoformat(), (current + timedelta(seconds=ttl_seconds)).isoformat(), LEADER_ID, owner),
+    )
+    return cursor.rowcount == 1
+
+
+def keep_leader(connection, owner, now=None, ttl_seconds=90):
+    """Renew this worker's lease, or take it once the previous lease has expired."""
+    current = _now(now)
+    if renew_leader(connection, owner, current, ttl_seconds):
+        return True
+    return acquire_leader(connection, owner, current, ttl_seconds)
+
+
 def acquire_leader(connection, owner, now=None, ttl_seconds=40):
     current = _now(now)
     until = (current + timedelta(seconds=ttl_seconds)).isoformat()
@@ -437,6 +457,7 @@ def run_due_schedules(connection, audit, now=None):
                 'UPDATE sports_ai_schedules SET last_run_at=?, next_run_at=? WHERE id=?',
                 (current.isoformat(), (current + timedelta(minutes=int(schedule['interval_minutes']))).isoformat(), schedule['id']),
             )
+            connection.commit()
             connection.execute(
                 """INSERT INTO sports_ai_job_history (id,schedule_id,status,finished_at,details_json)
                    VALUES(?,?,'complete',?,?)""",
@@ -477,7 +498,7 @@ def _execute_kind(connection, kind, audit, idempotency_key, now):
         return enqueue_authorized_jobs(connection)
     if kind == 'booking_queue':
         from booking_schedule import describe
-        return {'status': 'deferred', 'places_wager': False, 'schedule': describe(now), 'reason': 'Booking runs in the worker after this transaction, and only inside a WAT publication window'}
+        return {'status': 'deferred', 'places_wager': False, 'schedule': describe(now), 'reason': 'Booking runs in the worker after this transaction, every 15 minutes during testing'}
     if kind == 'wat_window':
         from booking_schedule import describe
         return {'status': 'observed', 'places_wager': False, **describe(now)}
@@ -511,7 +532,8 @@ def browser_research_status(connection):
         'approved_sources': count,
         'reason': (
             'Browser research runs only for an administrator-approved host from the acquisition centre. '
-            'BetExplorer stays manual. This scheduler does not bypass access controls.'
+            'BetExplorer and Soccerway match history is collected on its own pass, and a score is stored only when the page displays it. '
+            'This scheduler does not bypass access controls.'
         ),
     }
 
@@ -556,6 +578,7 @@ def refresh_provider_health(connection, now=None):
 def evaluate_models(connection, now=None):
     """Score stored predictions only when the result was recorded after kickoff."""
     current = _now(now)
+    connection.commit()
     rows = connection.execute(
         """SELECT p.model_id,p.market,p.probability,p.created_at,f.sport,f.starts_at,
                   r.home_score,r.away_score,r.settled_at,m.version
@@ -578,7 +601,7 @@ def evaluate_models(connection, now=None):
         key = (row['model_id'], row['sport'], row['market'])
         groups.setdefault(key, []).append((float(row['probability']), 1 if outcome == 'won' else 0))
     written = []
-    for (model_id, sport, market), pairs in groups.items():
+    for index, ((model_id, sport, market), pairs) in enumerate(groups.items(), start=1):
         metrics = _score(pairs)
         connection.execute(
             """INSERT INTO sports_ai_model_evaluations
@@ -597,6 +620,8 @@ def evaluate_models(connection, now=None):
                  json.dumps({'note': 'Drift is a monitoring signal. The active model was not changed.'}), current.isoformat()),
             )
         written.append({'model_id': model_id, 'sport': sport, 'market': market, **metrics, 'hit_rate_is_not_expected_return': True})
+        if index % 20 == 0:
+            connection.commit()
     return {'status': 'complete', 'evaluations': written, 'excluded': excluded, 'promoted': False}
 
 

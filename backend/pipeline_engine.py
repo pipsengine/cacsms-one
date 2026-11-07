@@ -9,7 +9,7 @@ import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from booking_schedule import next_publication, phase_at, publication_open
+from booking_schedule import last_publication_at, next_publication, phase_at, publication_due
 
 STAGES = (
     'DISCOVERED', 'DATA_READY', 'PREDICTED', 'ODDS_AVAILABLE', 'ODDS_FRESH',
@@ -178,7 +178,49 @@ def enqueue_odds_refresh(connection, now=None, limit=80):
             (row['fixture_id'], priority, reason, current.isoformat()),
         )
         queued += 1
+    queued += _enqueue_validated_prices(connection, current, fresh_after, limit)
     return {'queued': queued, 'places_wager': False, 'odds_invented': 0}
+
+
+def _enqueue_validated_prices(connection, current, fresh_after, limit):
+    """Queue an analysed fixture whose own passing market has no fresh SportyBet price."""
+    from prediction_engine import upcoming_fixture_sql
+    rows = connection.execute(
+        f"""SELECT f.id AS fixture_id, f.starts_at
+            FROM sports_ai_fixtures f
+            JOIN sports_ai_feature_snapshots s ON s.fixture_id=f.id
+            JOIN sports_ai_engine_predictions p ON p.fixture_id=f.id
+            JOIN sports_ai_market_registry r ON r.sport=f.sport AND r.market_key=p.market
+              AND r.status IN ('active','validated')
+            WHERE {upcoming_fixture_sql('f')}
+              AND NOT EXISTS (
+                SELECT 1 FROM sports_ai_odds_snapshots q
+                WHERE q.fixture_id=f.id AND q.bookmaker='SportyBet' AND q.observed_at>=?
+                  AND (
+                    UPPER(q.market)=p.market
+                    OR UPPER(q.outcome)=p.market
+                  )
+              )
+            GROUP BY f.id
+            ORDER BY f.starts_at
+            LIMIT ?""",
+        (fresh_after, max(1, int(limit))),
+    ).fetchall()
+    queued = 0
+    for row in rows:
+        connection.execute(
+            """INSERT INTO sports_ai_odds_refresh_queue
+               (fixture_id,priority,status,attempt,next_attempt_at,last_error,reason,updated_at)
+               VALUES(?,?,'queued',0,NULL,NULL,?,?)
+               ON CONFLICT(fixture_id) DO UPDATE SET
+                 priority=excluded.priority, status='queued', reason=excluded.reason, updated_at=excluded.updated_at
+               WHERE sports_ai_odds_refresh_queue.status!='deferred'
+                  OR sports_ai_odds_refresh_queue.next_attempt_at IS NULL
+                  OR sports_ai_odds_refresh_queue.next_attempt_at<=excluded.updated_at""",
+            (row['fixture_id'], 40, 'validated_market_price', current.isoformat()),
+        )
+        queued += 1
+    return queued
 
 
 def _feed_blocked(connection):
@@ -195,13 +237,18 @@ def _feed_blocked(connection):
 
 def _fresh_quotes(connection, fixture_id, fresh_after):
     chosen = {}
+    fixture = connection.execute(
+        'SELECT sport, home, away FROM sports_ai_fixtures WHERE id=?',
+        (fixture_id,),
+    ).fetchone()
     rows = connection.execute(
-        """SELECT id, market, outcome, decimal_odds, observed_at
+        """SELECT id, market, outcome, line, decimal_odds, observed_at
            FROM sports_ai_odds_snapshots
            WHERE fixture_id=? AND bookmaker='SportyBet' AND observed_at>=?
            ORDER BY observed_at DESC""",
         (fixture_id, fresh_after),
     ).fetchall()
+    from sportybet_research import map_market
     for row in rows:
         market = (row['market'] or '').upper()
         outcome = (row['outcome'] or '').lower()
@@ -210,6 +257,12 @@ def _fresh_quotes(connection, fixture_id, fresh_after):
                 continue
             if market == canonical or (market == 'H2H' and outcome == expected):
                 chosen[canonical] = row
+        if not fixture:
+            continue
+        mapped = map_market(fixture['sport'], row['market'], row['outcome'], row['line'], fixture['home'], fixture['away'])
+        canonical = mapped.get('canonical_market') if mapped.get('supported') else None
+        if canonical and canonical not in chosen:
+            chosen[canonical] = row
     return chosen
 
 
@@ -363,7 +416,7 @@ def sync_ticket_lifecycle(connection, now=None):
     current = _now(now) or datetime.now(timezone.utc)
     from qualification_engine import ticket_is_bookable
     phase = phase_at(current)
-    window = publication_open(phase)
+    window = publication_due(current, last_publication_at(connection))
     from accumulator_engine import retire_duplicate_tickets
     retire_duplicate_tickets(connection, current)
     changed = 0
@@ -516,11 +569,16 @@ def measure_pipeline(connection, now=None):
     if odds_fresh == 0 and predicted:
         blockers.append({'stage': 'ODDS_FRESH', 'reason': f'No SportyBet price for a predicted fixture is inside {minutes} minutes.'})
     if qualified == 0:
-        blockers.append({'stage': 'QUALIFIED', 'reason': 'No selection currently clears the stored qualification rule.'})
+        top = reasons[0]['reason_code'] if reasons else None
+        detail = 'No selection currently clears the stored qualification rule.'
+        if top:
+            detail = f'{detail} The most common stored decision is {top}.'
+        blockers.append({'stage': 'QUALIFIED', 'reason': detail})
     if ticket_ready == 0:
         blockers.append({'stage': 'TICKET_READY', 'reason': 'No ticket has every leg still QUALIFIED with a current price.'})
-    if not publication_open(phase_at(current)):
-        blockers.append({'stage': 'BOOKING_PENDING', 'reason': 'Outside an Africa/Lagos publication window. Analysis can continue. No code is requested.'})
+    last_request = last_publication_at(connection)
+    if not publication_due(current, last_request):
+        blockers.append({'stage': 'BOOKING_PENDING', 'reason': 'A booking code was requested within the last 15 minutes. The next request waits for that gap.'})
     return {
         'stages': [{'stage': name, 'count': counts[name]} for name in STAGES],
         'counts': counts,
@@ -540,7 +598,7 @@ def measure_pipeline(connection, now=None):
         'rollover': rollover,
         'worker': {'heartbeat_at': heartbeat['heartbeat_at'] if heartbeat else None},
         'phase': phase_at(current),
-        'next_publication_at': next_publication(current),
+        'next_publication_at': next_publication(current, last_request),
         'booking_diagnostics': [
             dict(row) for row in connection.execute(
                 """SELECT reason_code, COUNT(*) AS total, MAX(created_at) AS created_at,

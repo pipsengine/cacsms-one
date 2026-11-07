@@ -325,11 +325,11 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
       </section>
     </div>
     <div className="ccx-secondary">
-      <section className="ccx-card">
-        <header><strong><Goal size={16}/>Draw Games Opportunities <small>(This Week)</small></strong><button className="ccx-link" onClick={() => nav('weekly-draw')}>View All</button></header>
-        <div className="ccx-table-scroll ccx-card-scroll"><table className="ccx-table compact"><thead><tr><th>#</th><th>Fixture</th><th>Sport</th><th>League</th><th>AI Probability</th><th>Odds</th><th>Status</th></tr></thead><tbody>
-          {(view.draws || []).map((row, index) => <tr key={`${row.sport}-${row.fixture}-${row.starts_at}`}><td>{index + 1}</td><td><b>{row.fixture}</b><small className="ccx-wat">{wat(row.starts_at)}{row.starts_at ? ' WAT' : ''}</small></td><td>{row.sport_label}</td><td>{row.competition || '—'}</td><td><ProbBar value={row.probability}/></td><td className="ccx-odds">{row.odds == null ? '—' : Number(row.odds).toFixed(2)}</td><td><span className={`ccx-pill ${pillClass(row.status)}`}>{row.status}</span></td></tr>)}
-          {!(view.draws || []).length && <tr><td colSpan="7">No draw above 60% is stored for this week.</td></tr>}
+      <section className="ccx-card ccx-sure">
+        <header><strong><Goal size={16}/>Sure Odds For (Today) <small>{view.sure_odds_date || 'Today'}</small></strong><button className="ccx-link" onClick={() => nav('tickets')}>View All</button></header>
+        <div className="ccx-table-scroll ccx-card-scroll"><table className="ccx-table compact"><colgroup><col className="ccx-sure-num"/><col className="ccx-sure-fixture"/><col className="ccx-sure-league"/><col className="ccx-sure-code"/><col className="ccx-sure-time"/><col className="ccx-sure-price"/><col className="ccx-sure-confidence"/></colgroup><thead><tr><th>#</th><th>Fixture</th><th>League</th><th>Booking code</th><th>Match Date/time</th><th>Odds</th><th>AI Confidence</th></tr></thead><tbody>
+          {(view.sure_odds || []).map((row, index) => <tr key={`${row.fixture}-${row.starts_at}`}><td>{index + 1}</td><td className="ccx-sure-match"><b>{row.fixture}</b><small>{row.selection || 'Selection not stored'}</small></td><td>{row.league || row.competition || '—'}</td><td>{row.code || '—'}</td><td>{wat(row.starts_at)}{row.starts_at ? <small className="ccx-wat">WAT</small> : null}</td><td className="ccx-odds">{row.odds == null ? '—' : Number(row.odds).toFixed(2)}</td><td><ProbBar value={row.confidence}/></td></tr>)}
+          {!(view.sure_odds || []).length && <tr><td colSpan="7">No selection priced from 1.50 to 3.00 is still to play today.</td></tr>}
         </tbody></table></div>
       </section>
       <section className="ccx-card">

@@ -163,6 +163,21 @@ def map_market(sport, market_label, selection_label, line=None, home=None, away=
             if pick in {'no', 'ng', 'btts no'}:
                 return {'supported': True, 'canonical_market': 'BTTS_NO', 'line': None, 'provider_market': 'btts', 'provider_outcome': 'no'}
         totals = re.search(r'\b(over|under)\b', selection.casefold())
+        folded_market = market.casefold()
+        team_market = any(phrase in folded_market for phrase in (
+            'home team', 'away team', 'team total', 'team goals', 'home total', 'away total',
+            'home goals', 'away goals',
+        ))
+        if team_market and totals and parsed_line is not None and 'handicap' not in combined and 'spread' not in combined:
+            side = 'HOME' if 'home' in folded_market else 'AWAY' if 'away' in folded_market else None
+            if side:
+                return {
+                    'supported': True,
+                    'canonical_market': f'{side}_{totals.group(1).upper()}_{parsed_line:g}',
+                    'line': parsed_line,
+                    'provider_market': 'team_totals',
+                    'provider_outcome': f'{side}_{totals.group(1).upper()}_{parsed_line:g}',
+                }
         if totals and parsed_line is not None and 'handicap' not in combined and 'spread' not in combined:
             side = totals.group(1).upper()
             return {
@@ -400,6 +415,8 @@ def store_observations(connection, session_id, rows, source_url, observed_at):
             duplicates.append(row)
             continue
         saved.append(observation_id)
+        if len(saved) % 80 == 0:
+            connection.commit()
     return {'saved': saved, 'duplicates': len(duplicates)}
 
 
@@ -705,7 +722,7 @@ def accept_displayed_quotes(connection, observation_ids, actor, now=None):
         for token in _tokens(fixture['home']) | _tokens(fixture['away']):
             by_token.setdefault(token, []).append(fixture)
     imported, skipped = 0, 0
-    for observation_id in observation_ids:
+    for index, observation_id in enumerate(observation_ids, start=1):
         row = dict(_observation(connection, observation_id))
         pool = {}
         for token in _tokens(row['home']) | _tokens(row['away']):
@@ -716,11 +733,15 @@ def accept_displayed_quotes(connection, observation_ids, actor, now=None):
         names_match = bool(best) and not best.get('swapped') and best['confidence'] >= 0.55
         if ranked.get('ambiguous') or (best and best.get('swapped')) or (names_match and best['confidence'] < 0.7):
             skipped += 1
+            if index % 15 == 0:
+                connection.commit()
             continue
         if not names_match:
             created = _ensure_displayed_fixture(connection, row, now)
             if not created:
                 skipped += 1
+                if index % 15 == 0:
+                    connection.commit()
                 continue
             for token in _tokens(created['home']) | _tokens(created['away']):
                 by_token.setdefault(token, []).append(created)
@@ -735,6 +756,8 @@ def accept_displayed_quotes(connection, observation_ids, actor, now=None):
             kickoff = observed = None
         if not kickoff or not observed or abs((kickoff - observed).total_seconds()) > 6 * 3600:
             skipped += 1
+            if index % 15 == 0:
+                connection.commit()
             continue
         try:
             connection.execute(
@@ -753,6 +776,8 @@ def accept_displayed_quotes(connection, observation_ids, actor, now=None):
             imported += 1
         except (ValueError, LookupError, sqlite3.IntegrityError):
             skipped += 1
+        if index % 15 == 0:
+            connection.commit()
     return {'imported': imported, 'skipped': skipped}
 
 

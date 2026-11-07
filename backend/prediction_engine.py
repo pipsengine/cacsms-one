@@ -477,6 +477,8 @@ def build_features(connection, fixture):
         def side_rates(team, games, all_games, venue):
             if len(games) >= MIN_TEAM_GAMES:
                 return all_games, games, history
+            if not history and league_key(fixture['competition']) not in (DOMESTIC_KEYS | EUROPEAN_KEYS):
+                return None, None, None
             pools = [('stored league matches', DOMESTIC_KEYS, True)]
             if league_key(fixture['competition']) in EUROPEAN_KEYS:
                 pools.insert(0, ('European club matches', EUROPEAN_KEYS, False))
@@ -790,24 +792,95 @@ def _football_score_grid(features, rho=0.0):
     return grid
 
 
-def football_market(features, market, rho=0.0):
-    grid = _football_score_grid(features, rho)
+def _match_outcome(home, away):
+    if home > away:
+        return 'HOME'
+    if home < away:
+        return 'AWAY'
+    return 'DRAW'
+
+
+def _scale_outcome_mass(grid, temperature):
+    """Move scoreline mass so Home, Draw and Away match temperature scaling.
+
+    Lines inside one result keep their relative weight. A temperature of 1
+    leaves the grid unchanged.
+    """
+    try:
+        temperature = float(temperature)
+    except (TypeError, ValueError):
+        return grid
+    if not grid or not math.isfinite(temperature) or temperature <= 0 or abs(temperature - 1.0) < 1e-9:
+        return grid
+    totals = {'HOME': 0.0, 'DRAW': 0.0, 'AWAY': 0.0}
+    for home, away, probability in grid:
+        totals[_match_outcome(home, away)] += probability
+    raw = [totals['HOME'], totals['DRAW'], totals['AWAY']]
+    if any(value <= 0 for value in raw):
+        return grid
+    target = _temperature(raw, temperature)
+    names = ('HOME', 'DRAW', 'AWAY')
+    scaled = []
+    for home, away, probability in grid:
+        name = _match_outcome(home, away)
+        scaled.append((home, away, probability * target[names.index(name)] / totals[name]))
+    total = sum(item[2] for item in scaled)
+    if not total:
+        return grid
+    return [(home, away, probability / total) for home, away, probability in scaled]
+
+
+def _reweight_both_score(grid, dependence):
+    """Change both-teams-to-score mass inside each result. The result totals stay put."""
+    try:
+        tau = float(dependence)
+    except (TypeError, ValueError):
+        return grid
+    if not grid or not math.isfinite(tau) or tau <= 0 or abs(tau - 1.0) < 1e-9:
+        return grid
+    grouped = {'HOME': [], 'DRAW': [], 'AWAY': []}
+    for home, away, probability in grid:
+        grouped[_match_outcome(home, away)].append((home, away, probability))
+    adjusted = []
+    for rows in grouped.values():
+        weighted = [
+            (home, away, probability * (tau if home > 0 and away > 0 else 1.0))
+            for home, away, probability in rows
+        ]
+        total = sum(item[2] for item in weighted)
+        share = sum(item[2] for item in rows)
+        if not total or share <= 0:
+            adjusted.extend(rows)
+            continue
+        adjusted.extend((home, away, probability / total * share) for home, away, probability in weighted)
+    return adjusted
+
+
+def _prepared_grid(features, rho=0.0, temperature=1.0, dependence=1.0):
+    return _reweight_both_score(
+        _scale_outcome_mass(_football_score_grid(features, rho), temperature),
+        dependence,
+    )
+
+
+def football_market(features, market, rho=0.0, temperature=1.0, dependence=1.0):
+    grid = _prepared_grid(features, rho, temperature, dependence)
     market = market.upper()
     matcher = re.fullmatch(r'(OVER|UNDER)_(\d+(?:\.\d+)?)', market)
     team_total = re.fullmatch(r'(HOME|AWAY)_(OVER|UNDER)_(\d+(?:\.\d+)?)', market)
     handicap = re.fullmatch(r'(HOME|AWAY)_(?:HANDICAP|SPREAD)_(-?\d+(?:\.\d+)?)', market)
 
     def selection(h, a):
-        if market == 'HOME': return int(h > a)
-        if market == 'DRAW': return int(h == a)
-        if market == 'AWAY': return int(h < a)
-        if market == 'DOUBLE_CHANCE_1X': return int(h >= a)
-        if market == 'DOUBLE_CHANCE_12': return int(h != a)
-        if market == 'DOUBLE_CHANCE_X2': return int(h <= a)
+        if market == 'HOME': return 1 if h > a else -1
+        if market == 'DRAW': return 1 if h == a else -1
+        if market == 'AWAY': return 1 if h < a else -1
+        if market == 'DOUBLE_CHANCE_1X': return 1 if h >= a else -1
+        if market == 'DOUBLE_CHANCE_12': return 1 if h != a else -1
+        if market == 'DOUBLE_CHANCE_X2': return 1 if h <= a else -1
         if market == 'DNB_HOME': return 0 if h == a else (1 if h > a else -1)
         if market == 'DNB_AWAY': return 0 if h == a else (1 if h < a else -1)
-        if market == 'BTTS_YES': return int(h > 0 and a > 0)
-        if market == 'BTTS_NO': return int(h == 0 or a == 0)
+        if market == 'BTTS_YES': return 1 if h > 0 and a > 0 else -1
+        if market == 'BTTS_NO': return 1 if h == 0 or a == 0 else -1
         if matcher:
             return _line_settlement(h + a, float(matcher.group(2)), matcher.group(1) == 'OVER')
         if team_total:
@@ -828,9 +901,9 @@ def football_market(features, market, rho=0.0):
         if european:
             adjusted = h + float(european.group(2))
             if european.group(1) == 'HOME':
-                return 1 if adjusted > a else 0 if adjusted == a else -1
+                return 1 if adjusted > a else -1
             if european.group(1) == 'AWAY':
-                return 1 if adjusted < a else 0 if adjusted == a else -1
+                return 1 if adjusted < a else -1
             return 1 if adjusted == a else -1
         margin_band = re.fullmatch(r'MARGIN_(HOME|AWAY)_(1|2|3PLUS)', market)
         if margin_band:
@@ -909,9 +982,9 @@ def basketball_market(features, market):
     return {'p_win': probability, 'p_half_win': 0, 'p_push': 0, 'p_half_loss': 0, 'p_loss': 1 - probability}
 
 
-def market_probability(sport, market, features, rho=0.0):
+def market_probability(sport, market, features, rho=0.0, temperature=1.0, dependence=1.0):
     if sport in GOAL_SPORTS:
-        return football_market(features, market, rho)
+        return football_market(features, market, rho, temperature, dependence)
     if sport == 'basketball':
         return basketball_market(features, market)
     return None
@@ -986,6 +1059,102 @@ def _fit_dixon_coles_rho(rows):
         if loss < best_loss:
             best_rho, best_loss = rho, loss
     return best_rho
+
+
+def fit_score_dependence(rows, rho, temperature):
+    """Fit both-teams scoring on the calibration rows. The holdout is not used here."""
+    if not rows:
+        return 1.0
+    best_tau, best_loss = 1.0, float('inf')
+    for step in range(25, 401, 5):
+        tau = step / 100
+        loss = 0.0
+        used = 0
+        for features, home_score, away_score in rows:
+            settlement = football_market(features, 'BTTS_YES', rho, temperature, tau)
+            if not settlement:
+                continue
+            outcome = 1.0 if int(home_score) > 0 and int(away_score) > 0 else 0.0
+            probability = min(1 - 1e-15, max(1e-15, float(settlement['p_win'])))
+            loss -= outcome * math.log(probability) + (1 - outcome) * math.log(1 - probability)
+            used += 1
+        if used and loss < best_loss:
+            best_tau, best_loss = tau, loss
+    return best_tau
+
+
+def refresh_score_dependence(connection):
+    """Store a both-teams weight when the match-result holdout stays at or below 0.20.
+
+    The weight is fit on the calibration split of the active football model.
+    A result that would push the match-result holdout above 0.20 is not stored.
+    """
+    model = connection.execute(
+        """SELECT id, training_run_id, parameters_json
+           FROM sports_ai_model_registry
+           WHERE sport='football' AND active=1 AND status='active'
+           ORDER BY created_at DESC LIMIT 1""",
+    ).fetchone()
+    if not model:
+        return {'status': 'no_model', 'stored': False}
+    try:
+        parameters = json.loads(model['parameters_json'] or '{}')
+    except json.JSONDecodeError:
+        parameters = {}
+    if parameters.get('score_dependence_run') == model['training_run_id'] and parameters.get('score_dependence') is not None:
+        return {
+            'status': 'stored', 'stored': False,
+            'score_dependence': parameters.get('score_dependence'),
+            'holdout_error': parameters.get('score_dependence_holdout_error'),
+        }
+    rho = float(parameters.get('dixon_coles_rho') or 0.0)
+    temperature = float(parameters.get('temperature') or 1.0)
+
+    def rows_for(split):
+        parsed = []
+        for row in connection.execute(
+            """SELECT features_json, label_json FROM sports_ai_training_datasets
+               WHERE training_run_id=? AND split=? ORDER BY kickoff_at""",
+            (model['training_run_id'], split),
+        ):
+            try:
+                features = json.loads(row['features_json'])
+                label = json.loads(row['label_json'])
+                parsed.append((features, int(label['home_score']), int(label['away_score'])))
+            except (TypeError, ValueError, json.JSONDecodeError, KeyError):
+                continue
+        return parsed
+
+    calibration_rows = rows_for('calibration') or rows_for('train')
+    holdout_rows = rows_for('holdout')
+    if len(calibration_rows) < MIN_VALIDATION_FIXTURES or len(holdout_rows) < 10:
+        return {'status': 'insufficient', 'stored': False, 'calibration_rows': len(calibration_rows), 'holdout_rows': len(holdout_rows)}
+    tau = fit_score_dependence(calibration_rows, rho, temperature)
+    samples = []
+    for features, home_score, away_score in holdout_rows:
+        probabilities = []
+        for name in ('HOME', 'DRAW', 'AWAY'):
+            settlement = football_market(features, name, rho, temperature, tau)
+            if not settlement:
+                probabilities = None
+                break
+            probabilities.append(float(settlement['p_win']))
+        if not probabilities:
+            continue
+        actual = 0 if home_score > away_score else 2 if home_score < away_score else 1
+        samples.extend((value, float(index == actual)) for index, value in enumerate(probabilities))
+    metrics = calibration_metrics(samples)
+    error = metrics.get('calibration_error')
+    if error is None or error > MAX_CALIBRATION_ERROR:
+        return {'status': 'holdout_above_ceiling', 'stored': False, 'score_dependence': tau, 'holdout_error': error}
+    parameters['score_dependence'] = tau
+    parameters['score_dependence_run'] = model['training_run_id']
+    parameters['score_dependence_holdout_error'] = error
+    connection.execute(
+        'UPDATE sports_ai_model_registry SET parameters_json=? WHERE id=?',
+        (json.dumps(parameters), model['id']),
+    )
+    return {'status': 'stored', 'stored': True, 'score_dependence': tau, 'holdout_error': error}
 
 
 def _with_rates(features, home_rate, away_rate, sport):
@@ -1447,7 +1616,9 @@ def settle_market(sport, market, features, parameters):
         away += weight * rates[1]
         used += weight
     adjusted = _with_rates(features, home / used, away / used, sport) if used else dict(features)
-    analytical = market_probability(sport, market, adjusted, rho)
+    temperature = float(parameters.get('temperature') or 1.0)
+    dependence = float(parameters.get('score_dependence') or 1.0)
+    analytical = market_probability(sport, market, adjusted, rho, temperature, dependence)
     monte_carlo_weight = float(weights.get('monte_carlo', 0.0)) if sport == 'basketball' else 0.0
     if sport != 'basketball' or monte_carlo_weight <= 0 or not analytical:
         return adjusted, analytical
@@ -1561,20 +1732,31 @@ def rotate_by_league(rows, limit):
     return chosen
 
 
+def _not_recently_skipped_sql(alias='f'):
+    """A fixture skipped for thin history can be tried again within the hour."""
+    return (
+        f"NOT EXISTS (SELECT 1 FROM sports_ai_prediction_jobs j "
+        f"WHERE j.idempotency_key='insufficient:' || {alias}.id "
+        f"AND j.finished_at > datetime('now','-45 minutes'))"
+    )
+
+
 def quoted_coverage_fixtures(connection, now=None, limit=8):
-    """Upcoming quoted fixtures whose league already has stored results, one league at a time."""
+    """Upcoming fixtures whose league already has stored results, one league at a time.
+
+    Today's kickoffs are taken before later days. A SportyBet price is not
+    required to store the prediction. A price older than the configured window
+    stays unqualified.
+    """
     current = now or datetime.now(timezone.utc)
-    fresh = (current - timedelta(minutes=15)).isoformat()
     history = {}
-    played = {}
     for row in connection.execute(
-        f"""SELECT f.sport, f.competition, f.home, f.away
+        f"""SELECT DISTINCT f.sport, f.competition
            FROM sports_ai_fixtures f
            JOIN sports_ai_results r ON r.fixture_id=f.id AND r.status='final'
            WHERE f.sport IN ({sql_in(ANALYSED_SPORTS)})""",
     ):
         history.setdefault(row['sport'], set()).add(league_key(row['competition']))
-        played.setdefault(row['sport'], set()).update((row['home'], row['away']))
     rows = [dict(row) for row in connection.execute(
         f"""SELECT f.* FROM sports_ai_fixtures f
             WHERE {upcoming_fixture_sql('f')}
@@ -1582,25 +1764,61 @@ def quoted_coverage_fixtures(connection, now=None, limit=8):
               AND lower(COALESCE(f.competition,'')) NOT LIKE '%srl%'
               AND lower(COALESCE(f.competition,'')) NOT LIKE '%simulated%'
               AND NOT EXISTS (SELECT 1 FROM sports_ai_engine_predictions p WHERE p.fixture_id=f.id)
-              AND NOT EXISTS (
-                SELECT 1 FROM sports_ai_prediction_jobs j
-                WHERE j.idempotency_key='insufficient:' || f.id
-                  AND j.finished_at > datetime('now','-12 hours')
-              )
-              AND EXISTS (
-                SELECT 1 FROM sports_ai_odds_snapshots q
-                WHERE q.fixture_id=f.id AND q.bookmaker='SportyBet' AND q.observed_at>=?
-              )
+              AND {_not_recently_skipped_sql('f')}
             ORDER BY f.sport, f.competition, {upcoming_order_sql('f')}""",
-        (fresh,),
     )]
     covered = [
         row for row in rows
         if league_key(row['competition']) in history.get(row['sport'], ())
-        or row['home'] in played.get(row['sport'], ())
-        or row['away'] in played.get(row['sport'], ())
     ]
-    return rotate_by_league(covered, max(1, int(limit)))
+    lagos = timezone(timedelta(hours=1))
+    today = current.astimezone(lagos).date()
+    current_day = []
+    later = []
+    for row in covered:
+        kickoff = parse_time(row['starts_at'])
+        if kickoff and kickoff.astimezone(lagos).date() == today:
+            current_day.append(row)
+        else:
+            later.append(row)
+    chosen = rotate_by_league(current_day, max(1, int(limit)))
+    if len(chosen) < limit:
+        chosen.extend(rotate_by_league(later, limit - len(chosen)))
+    return chosen
+
+
+def record_result_gaps(connection, now=None):
+    """Name competitions that have an upcoming fixture and no finished score of their own."""
+    current = now or datetime.now(timezone.utc)
+    finished = {
+        (row['sport'], row['competition'])
+        for row in connection.execute(
+            """SELECT DISTINCT f.sport, f.competition
+               FROM sports_ai_fixtures f
+               JOIN sports_ai_results r ON r.fixture_id=f.id AND r.status='final'""",
+        )
+    }
+    waiting = []
+    seen = set()
+    for row in connection.execute(
+        f"""SELECT sport, competition FROM sports_ai_fixtures f
+            WHERE {upcoming_fixture_sql('f')}
+              AND f.sport IN ({sql_in(ANALYSED_SPORTS)})
+            ORDER BY f.sport, f.competition""",
+    ):
+        key = (row['sport'], row['competition'])
+        if key in finished or key in seen:
+            continue
+        seen.add(key)
+        waiting.append({'sport': row['sport'], 'competition': row['competition']})
+    payload = {
+        'waiting': len(waiting),
+        'competitions': waiting[:40],
+        'recorded_at': current.isoformat(),
+        'places_wager': False,
+    }
+    _save_setting(connection, 'result_coverage', payload, current)
+    return payload
 
 
 def run_analysis(connection, actor, audit, deadline=None, fixture_id=None, coverage=False, limit=8):
@@ -1617,11 +1835,7 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None, cover
             f"""SELECT * FROM sports_ai_fixtures f
                 WHERE {upcoming_fixture_sql('f')}
                   AND NOT EXISTS (SELECT 1 FROM sports_ai_engine_predictions p WHERE p.fixture_id=f.id)
-                  AND NOT EXISTS (
-                    SELECT 1 FROM sports_ai_prediction_jobs j
-                    WHERE j.idempotency_key='insufficient:' || f.id
-                      AND j.finished_at > datetime('now','-12 hours')
-                  )
+                  AND {_not_recently_skipped_sql('f')}
                 ORDER BY {upcoming_order_sql('f')}
                 LIMIT 40"""
         )]
@@ -1908,6 +2122,8 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None, cover
         except (ValueError,TypeError,KeyError,OverflowError) as error:
             kind = type(error).__name__
             stats['skipped'][kind] = stats['skipped'].get(kind, 0) + 1
+        finally:
+            connection.commit()
     if not fixture_id and not fixtures and not coverage:
         stats['snapshots_reused'] += _reuse_existing_snapshots(connection)
     details = {**stats,'minimum_edge':min_edge,'odds_max_age_minutes':odds_age_limit,

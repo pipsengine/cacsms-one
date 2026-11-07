@@ -794,5 +794,7 @@ def analyse_upcoming_batch(connection, actor, audit, limit=8):
             results.append({'fixture_id': row['id'], 'status': 'busy'})
         except Exception as error:
             results.append({'fixture_id': row['id'], 'status': 'failed', 'error': str(error)[:200]})
+        finally:
+            connection.commit()
     log.info('autonomous batch attempted %s completed %s', len(rows), len(results))
     return {'status': 'complete', 'attempted': len(rows), 'results': results}

@@ -1,11 +1,55 @@
 import sys
+import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 
+import db
 from accumulator_engine import pack_diverse_tickets, pack_league_tickets
-from prediction_engine import rotate_by_league
+from prediction_engine import quoted_coverage_fixtures, rotate_by_league
+
+
+class QuotedCoverageTests(unittest.TestCase):
+    def setUp(self):
+        self.previous = db.DB
+        self.temp = tempfile.TemporaryDirectory()
+        db.DB = Path(self.temp.name) / 'sports.sqlite3'
+        db.initialize()
+
+    def tearDown(self):
+        db.DB = self.previous
+        self.temp.cleanup()
+
+    def test_a_league_with_a_final_is_selected_without_a_fresh_price(self):
+        now = datetime.now(timezone.utc)
+        kickoff = (now + timedelta(hours=4)).isoformat()
+        played = (now - timedelta(days=3)).isoformat()
+
+        def fixture(fixture_id, sport, competition, status, starts_at):
+            connection.execute(
+                """INSERT INTO sports_ai_fixtures
+                   (id,external_id,source,sport,competition,home,away,starts_at,status,
+                    statistics_json,odds_json,observed_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,'{}','{}',?)""",
+                (fixture_id, fixture_id, 'history', sport, competition, 'Home FC', 'Away FC',
+                 starts_at, status, now.isoformat()),
+            )
+
+        with db.connect() as connection:
+            fixture('past', 'football', 'Saturday League', 'finished', played)
+            connection.execute(
+                """INSERT INTO sports_ai_results
+                   (id,fixture_id,home_score,away_score,source,status,settled_at)
+                   VALUES('result-1','past',1,0,'verified','final',?)""",
+                (now.isoformat(),),
+            )
+            fixture('today', 'football', 'Saturday League', 'scheduled', kickoff)
+            fixture('empty', 'football', 'Empty Cup', 'scheduled', kickoff)
+            fixture('tennis', 'tennis', 'Saturday League', 'scheduled', kickoff)
+            chosen = quoted_coverage_fixtures(connection, now, limit=8)
+        self.assertEqual([row['id'] for row in chosen], ['today'])
 
 
 class CoverageSelectionTests(unittest.TestCase):

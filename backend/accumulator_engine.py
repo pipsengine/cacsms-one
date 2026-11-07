@@ -1685,7 +1685,10 @@ def build_high_probability_tickets(connection, actor, audit, now=None, minimum=0
                ORDER BY observed_at DESC""",
             (fixture['id'], fresh),
         )]
+        from market_registry import holdout_ready
         for prediction in predictions:
+            if not holdout_ready(connection, fixture['sport'], prediction['market']):
+                continue
             match = None
             for quote in quotes:
                 if normalize_quote_market(fixture['sport'], fixture, quote) == str(prediction['market']).upper():

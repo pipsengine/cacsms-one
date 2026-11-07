@@ -172,6 +172,38 @@ def is_active(connection, sport, market):
     return (sport, str(market or '').upper()) in active_keys(connection)
 
 
+def holdout_passes(evidence):
+    """A market line is usable only when its own holdout clears the existing ceilings."""
+    if not isinstance(evidence, dict):
+        return False
+    error = evidence.get('calibration_error')
+    sample = evidence.get('sample_size')
+    if sample is None:
+        sample = evidence.get('holdout_fixtures')
+    try:
+        sample = int(sample or 0)
+        error = float(error)
+    except (TypeError, ValueError):
+        return False
+    return sample >= MIN_SAMPLE and math.isfinite(error) and error <= MAX_CALIBRATION_ERROR
+
+
+def holdout_ready(connection, sport, market):
+    """True when this exact market key has its own passing holdout. A missing line does not."""
+    row = connection.execute(
+        """SELECT evidence_json FROM sports_ai_market_registry
+           WHERE sport=? AND market_key=?""",
+        (sport, str(market or '').upper()),
+    ).fetchone()
+    if not row:
+        return False
+    try:
+        evidence = json.loads(row['evidence_json'] or '{}')
+    except json.JSONDecodeError:
+        return False
+    return holdout_passes(evidence)
+
+
 def list_registry(connection):
     rows = [
         dict(row) for row in connection.execute(
@@ -227,6 +259,14 @@ def refresh_market_registry(connection, now=None):
                 rho = 0.0
         parent_active = bool(model and model['active'])
         version = None if not model else model['version']
+        temperature, dependence = 1.0, 1.0
+        if model and sport == 'football':
+            try:
+                stored = json.loads(model['parameters_json'] or '{}')
+                temperature = float(stored.get('temperature') or 1.0)
+                dependence = float(stored.get('score_dependence') or 1.0)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                temperature, dependence = 1.0, 1.0
         if sport in GOAL_SPORTS:
             records.extend(_result_rows(sport, model, quote_counts, 'HOME', 'Home win', 'DRAW', 'Draw', 'AWAY', 'Away win'))
             if sport == 'ice_hockey':
@@ -238,7 +278,10 @@ def refresh_market_registry(connection, now=None):
                     records.append(_derived_row(sport, key, selection, 'ft', line, rule, holdout, rho, quote_counts, parent_active, version))
             if sport == 'football':
                 for key, selection, line, rule in FOOTBALL_DERIVED:
-                    records.append(_derived_row(sport, key, selection, 'ft', line, rule, holdout, rho, quote_counts, parent_active, version))
+                    records.append(_derived_row(
+                        sport, key, selection, 'ft', line, rule, holdout, rho, quote_counts,
+                        parent_active, version, temperature, dependence,
+                    ))
                 records.append(_correct_score_row(holdout, rho, version))
         else:
             records.extend(_result_rows(
@@ -270,7 +313,7 @@ def refresh_market_registry(connection, now=None):
                 records.append(_derived_row(
                     sport, key, key.replace('_', ' ').title(), 'ft', _line_value(key),
                     'Line discovered from a stored SportyBet quote and settled from the same score or point model.',
-                    holdout, rho, quote_counts, parent_active, version,
+                    holdout, rho, quote_counts, parent_active, version, temperature, dependence,
                 ))
     for sport, key, selection, period, requirement in BLOCKED:
         if any(item['market_key'] == key and item['sport'] == sport for item in records):
@@ -308,7 +351,7 @@ def refresh_market_registry(connection, now=None):
             known.add((sport, key))
     _discover_quotes(records, quote_counts, _raw_families(connection))
     connection.execute('DELETE FROM sports_ai_market_registry')
-    for record in records:
+    for index, record in enumerate(records, start=1):
         connection.execute(
             """INSERT INTO sports_ai_market_registry
                (id,sport,market_key,selection,period,line_value,settlement_rule,data_requirements,
@@ -325,6 +368,8 @@ def refresh_market_registry(connection, now=None):
                 record['model_version'], record['status'], json.dumps(record['evidence']), current.isoformat(),
             ),
         )
+        if index % 40 == 0:
+            connection.commit()
     ensure_collected_sports(connection)
     summary = list_registry(connection)
     summary['refreshed'] = len(records)
@@ -441,8 +486,8 @@ def _result_rows(sport, model, quote_counts, *pairs):
     return rows
 
 
-def _derived_row(sport, key, selection, period, line, rule, holdout, rho, quote_counts, parent_active, version):
-    metrics = _score_market(sport, key, holdout, rho)
+def _derived_row(sport, key, selection, period, line, rule, holdout, rho, quote_counts, parent_active, version, temperature=1.0, dependence=1.0):
+    metrics = _score_market(sport, key, holdout, rho, temperature, dependence)
     quotes = quote_counts.get((sport, key), 0)
     status = assign_status(metrics['sample_size'], metrics['calibration_error'], quotes, parent_active=parent_active)
     source = 'score_distribution' if sport == 'football' else 'normal_points'
@@ -475,11 +520,13 @@ def _correct_score_row(holdout, rho, version):
     )
 
 
-def _score_market(sport, market, holdout, rho):
+def _score_market(sport, market, holdout, rho, temperature=1.0, dependence=1.0):
     from accumulator_engine import settle_result
     samples = []
     for features, home, away in holdout:
-        settlement = market_probability(sport, market, features, rho if sport == 'football' else 0.0)
+        settlement = market_probability(
+            sport, market, features, rho if sport == 'football' else 0.0, temperature, dependence,
+        )
         if not settlement:
             continue
         result = settle_result(sport, market, home, away)

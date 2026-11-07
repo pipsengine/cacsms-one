@@ -21,20 +21,26 @@ class WorkflowBoardTests(unittest.TestCase):
         db.DB = self.previous
         self.temp.cleanup()
 
-    def test_ten_stages_use_stored_counts_and_keep_settlement_independent(self):
+    def test_nine_stages_keep_rollover_beside_settlement(self):
         now = datetime(2026, 11, 6, 12, 0, tzinfo=timezone.utc)
         with db.connect() as connection:
-            board = workflow_board(connection, now, ready_slips=0, qualified_visible=0, win_rate=None)
+            board = workflow_board(connection, now, ready_slips=2, qualified_visible=0, win_rate=None)
         names = [item['name'] for item in board['stages']]
         self.assertEqual(names, [
             'Discover', 'Collect Odds', 'Validate', 'Analyse', 'Qualify',
-            'Tickets', 'Rollover', 'Booking Codes', 'Settle', 'Learn',
+            'Tickets & Booking Codes', 'Settle', 'Learn', 'Optimize',
         ])
         lanes = {item['name']: item['lane'] for item in board['stages']}
         self.assertEqual(lanes['Discover'], 'upcoming')
         self.assertEqual(lanes['Settle'], 'completed')
         self.assertEqual(lanes['Learn'], 'completed')
+        self.assertEqual(board['parallel']['name'], 'Rollover')
+        self.assertNotIn('Rollover', names)
+        stage_six = board['stages'][5]
+        self.assertIn('displayed', stage_six['explanation'])
+        self.assertIn('2 ready', stage_six['count'])
         self.assertFalse(board['places_wager'])
+        self.assertFalse(board['parallel']['places_wager'])
         self.assertTrue(board['asynchronous'])
         self.assertEqual(board['metrics'][5]['value'], 'Awaiting results')
         self.assertEqual(board['frequency'], 'Every 30 seconds')

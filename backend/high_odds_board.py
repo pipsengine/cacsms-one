@@ -510,9 +510,12 @@ def _rows(connection, start, end):
             'edge': item['probability'] * odds - 1,
         })
     held = _risk_review(connection, stored)
+    from market_registry import holdout_ready
+    ready = {}
     return [
         row for row in stored
         if (row['fixture_id'], str(row['market']).upper()) not in held
+        and ready.setdefault((row['sport'], str(row['market']).upper()), holdout_ready(connection, row['sport'], row['market']))
     ]
 
 
@@ -536,13 +539,19 @@ def _booking_index(connection):
                    ORDER BY j.created_at DESC LIMIT 1) AS job_status,
                   (SELECT j.id FROM sports_ai_booking_jobs j
                    WHERE j.signature LIKE t.id || '|%'
-                   ORDER BY j.created_at DESC LIMIT 1) AS job_id
+                   ORDER BY j.created_at DESC LIMIT 1) AS job_id,
+                  (SELECT j.updated_at FROM sports_ai_booking_jobs j
+                   WHERE j.signature LIKE t.id || '|%'
+                   ORDER BY j.created_at DESC LIMIT 1) AS job_updated
            FROM sports_ai_accumulator_tickets t
            WHERE json_extract(t.parameters_json, '$.product')='high_odds'
              AND t.status!='expired'""",
     )
     for row in rows:
-        item = {'id': row['id'], 'code': row['code'], 'job_status': row['job_status'], 'job_id': row['job_id']}
+        item = {
+            'id': row['id'], 'code': row['code'], 'job_status': row['job_status'],
+            'job_id': row['job_id'], 'job_updated': row['job_updated'],
+        }
         found[row['signature']] = item
         found['body:' + _signature_body(row['signature'])] = item
     return found
@@ -562,7 +571,7 @@ def _attach_booking(connection, days):
             elif match['job_status'] in ('QUEUED', 'PREPARING'):
                 ticket['booking_note'] = 'SportyBet is opening this ticket.'
             elif match['job_status'] in ('FAILED', 'ODDS_CHANGED'):
-                ticket['booking_note'] = 'SportyBet did not display a code.'
+                ticket['booking_note'] = 'The stored line was not on the page. The next request uses a line SportyBet has priced.'
             else:
                 ticket['booking_note'] = 'Waiting for SportyBet.'
 
@@ -674,11 +683,32 @@ def _retire_replaced(connection, day_name, band, signatures):
         )
 
 
+def _quote_arrived_since(connection, match, now):
+    """A line mismatch is sent again after 15 minutes, or as soon as a newer price is stored."""
+    raw = match.get('job_updated')
+    if not raw:
+        return True
+    try:
+        updated = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
+    except ValueError:
+        return True
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    if now - updated >= timedelta(minutes=15):
+        return True
+    row = connection.execute(
+        """SELECT 1 FROM sports_ai_odds_snapshots
+           WHERE bookmaker='SportyBet' AND observed_at>? LIMIT 1""",
+        (updated.isoformat(),),
+    ).fetchone()
+    return row is not None
+
+
 def prepare_high_odds_booking(now=None, bands=None):
     """Store the band tickets and return the next code request.
 
-    The caller opens SportyBet immediately, before price collection. A code is
-    kept only when SportyBet displays it. No wager is placed.
+    A line mismatch is requested again once a newer SportyBet price is stored,
+    or after 15 minutes. A code is kept only when SportyBet displays it. No wager is placed.
     """
     from db import connect
     from sportybet_booking import create_high_odds_job
@@ -709,10 +739,12 @@ def prepare_high_odds_booking(now=None, bands=None):
                 if allowed is not None and ticket.get('band') not in allowed:
                     continue
                 match = index.get(ticket['signature']) or index.get('body:' + _signature_body(ticket['signature']))
-                if not match or match['code'] or match['job_status'] in ('PREPARING', 'CODE_GENERATED', 'FAILED', 'ODDS_CHANGED'):
+                if not match or match['code'] or match['job_status'] in ('PREPARING', 'CODE_GENERATED'):
                     continue
                 if match['job_status'] == 'QUEUED' and match['job_id']:
                     return match['job_id']
+                if match['job_status'] in ('FAILED', 'ODDS_CHANGED') and not _quote_arrived_since(connection, match, moment):
+                    continue
                 created = create_high_odds_job(connection, match['id'])
                 if not created.get('duplicate'):
                     return created['id']

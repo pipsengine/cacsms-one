@@ -44,6 +44,9 @@ FOOTBALL_MENU_PATHS = (
     '/api/ng/factsCenter/queryTournamentBySport?sportId=sr:sport:1',
     '/api/ng/factsCenter/sportMenu?sportId=sr:sport:1',
 )
+# Sportradar ids SportyBet uses for Asian handicap, home team total and away team total.
+# A response that does not contain those prices adds nothing.
+ANALYSED_MARKET_IDS = '16,19,20'
 
 
 def quotes_from_payload(payload, sport, source_url):
@@ -140,6 +143,28 @@ def _competitions_from_rows(rows):
     return found
 
 
+def _analysed_tournament_ids(connection, limit=12):
+    """Tournament ids for football leagues that already have a stored feature snapshot."""
+    try:
+        rows = connection.execute(
+            """SELECT DISTINCT s.external_id
+               FROM sports_ai_league_sources s
+               JOIN sports_ai_leagues l ON l.id=s.league_id
+               WHERE s.provider_key='sportybet'
+                 AND s.external_id LIKE 'sr:%'
+                 AND EXISTS (
+                   SELECT 1 FROM sports_ai_fixtures f
+                   JOIN sports_ai_feature_snapshots snap ON snap.fixture_id=f.id
+                   WHERE f.sport='football' AND f.competition=l.name
+                 )
+               LIMIT ?""",
+            (max(1, int(limit)),),
+        ).fetchall()
+    except Exception:
+        return []
+    return [str(row['external_id']) for row in rows if row['external_id']]
+
+
 def _football_menu(page, sample_url):
     origin = '{0.scheme}://{0.netloc}'.format(urlsplit(sample_url or COLLECTION_URL))
     found = []
@@ -165,13 +190,15 @@ def _football_menu(page, sample_url):
     return found
 
 
-def _tournament_url(sample_url, tournament_id):
+def _tournament_url(sample_url, tournament_id, market_ids=None):
     parts = urlsplit(sample_url or COLLECTION_URL)
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
     query['sportId'] = query.get('sportId') or 'sr:sport:1'
     query['tournamentId'] = str(tournament_id)
     query['pageSize'] = '100'
     query['pageNum'] = '1'
+    if market_ids:
+        query['marketId'] = str(market_ids)
     path = parts.path if 'factsCenter' in (parts.path or '') else '/api/ng/factsCenter/pcUpcomingEvents'
     scheme = parts.scheme or 'https'
     netloc = parts.netloc or 'www.sportybet.com'
@@ -266,6 +293,7 @@ def publish_quotes(connection, rows, source_url, actor='sports-ai-worker', now=N
     if not rows:
         return {'saved': 0, 'imported': 0, 'skipped': 0}
     stored = store_observations(connection, None, rows, source_url, now.isoformat())
+    connection.commit()
     accepted = accept_displayed_quotes(connection, stored['saved'], actor, now)
     accepted['saved'] = len(stored['saved'])
     accepted['leagues'] = register_football_leagues(
@@ -349,6 +377,12 @@ def _read_section(page, sport, url):
                 if not item.get('id') or item['id'] in seen_ids or int(item.get('events') or 0) <= 0:
                     continue
                 for body in _pages(page, _tournament_url(captured.get('url') or url, item['id']), None):
+                    rows.extend(quotes_from_payload(body, sport, url))
+            sample = captured.get('url') or url
+            with connect() as connection:
+                extra_ids = _analysed_tournament_ids(connection)
+            for tournament_id in extra_ids:
+                for body in _pages(page, _tournament_url(sample, tournament_id, ANALYSED_MARKET_IDS), None):
                     rows.extend(quotes_from_payload(body, sport, url))
         return {'blocked': None, 'rows': rows}
     finally:

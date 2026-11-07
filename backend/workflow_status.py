@@ -1,13 +1,14 @@
-"""Live status for the 10-stage workflow. Every figure is a stored count.
+"""Live status for the 9-stage workflow. Every figure is a stored count.
 
-Discover through booking keep reading upcoming fixtures. Settle and learn
-read completed matches on the same cycle. An unfinished kickoff does not
-hold either lane, and neither lane places a wager.
+Discover through Tickets & Booking Codes read upcoming fixtures. Settle,
+Learn and Optimize read completed matches. Rollover is a parallel engine
+and does not hold either lane. An unfinished kickoff does not hold the next
+cycle, and no stage places a wager.
 """
 
 from datetime import datetime, timedelta, timezone
 
-from booking_schedule import phase_at, publication_open
+from booking_schedule import last_publication_at, phase_at, publication_due
 
 
 def workflow_board(connection, now=None, ready_slips=0, qualified_visible=0, win_rate=None):
@@ -58,6 +59,22 @@ def workflow_board(connection, now=None, ready_slips=0, qualified_visible=0, win
     rollover = connection.execute(
         "SELECT COUNT(*) FROM sports_ai_rollover_campaigns WHERE status='active'",
     ).fetchone()[0]
+    coded = connection.execute(
+        """SELECT COUNT(DISTINCT t.id)
+           FROM sports_ai_accumulator_tickets t
+           JOIN sports_ai_booking_codes b ON b.accumulator_ticket_id=t.id
+           WHERE t.status='qualified' AND b.verification_method='displayed'
+             AND TRIM(COALESCE(b.code, ''))<>''""",
+    ).fetchone()[0]
+    rejection = connection.execute(
+        """SELECT reason_code, COUNT(*) AS total
+           FROM sports_ai_qualification_decisions
+           WHERE state!='QUALIFIED'
+           GROUP BY reason_code ORDER BY total DESC LIMIT 1""",
+    ).fetchone()
+    active_models = connection.execute(
+        "SELECT COUNT(*) FROM sports_ai_model_registry WHERE active=1",
+    ).fetchone()[0]
     sources = [
         row['display_name'] for row in connection.execute(
             """SELECT display_name FROM sports_ai_provider_registry
@@ -66,7 +83,7 @@ def workflow_board(connection, now=None, ready_slips=0, qualified_visible=0, win
     ]
     if odds_row['total']:
         sources.append('SportyBet displayed prices')
-    booking_open = publication_open(phase_at(current))
+    booking_open = publication_due(current, last_publication_at(connection))
     learn = cycles.get('learning') or {}
     learn_age = _age_seconds(current, learn.get('created_at'))
     stages = [
@@ -89,19 +106,11 @@ def workflow_board(connection, now=None, ready_slips=0, qualified_visible=0, win
         _stage('Qualify', 'Probability, edge and market scan', 'qualification', 'upcoming',
                f'{_fmt(qualified_visible)} visible',
                'Running' if fresh else 'Completed' if qualified_visible else 'Waiting',
-               'Visible opportunities are strictly above 80 percent, one market per fixture.'),
-        _stage('Tickets', 'Singles and accumulators', 'tickets', 'upcoming',
-               f'{_fmt(ready_slips)} ready',
-               'Running' if fresh else 'Completed' if ready_slips else 'Waiting',
-               'Ready slips are strictly above 70 percent and still inside this Monday–Sunday week.'),
-        _stage('Rollover', 'Daily and weekly simulation', 'daily-rollover', 'upcoming',
-               f'{_fmt(rollover)} active',
-               'Running' if rollover else 'Waiting',
-               'Simulation only. No wager is placed.'),
-        _stage('Booking Codes', 'Retrieve a displayed code', 'codes', 'upcoming',
-               f'{_fmt(codes)} displayed',
-               'Running' if booking_open else 'Waiting',
-               'A code is stored only when SportyBet displays it. One request per open window.'),
+               _qualify_note(qualified_visible, rejection)),
+        _stage('Tickets & Booking Codes', 'Finalize the ticket, then register its code', 'tickets', 'upcoming',
+               f'{_fmt(ready_slips)} ready · {_fmt(coded)} coded',
+               'Running' if fresh and booking_open else 'Completed' if coded else 'Waiting',
+               _ticket_note(ready_slips, coded)),
         _stage('Settle', 'Official results for completed matches', 'results', 'completed',
                f'{_fmt(settled)} finals',
                'Running' if fresh else 'Waiting',
@@ -110,12 +119,25 @@ def workflow_board(connection, now=None, ready_slips=0, qualified_visible=0, win
                'Held' if learn.get('status') == 'failed' else 'Recorded' if learn_age is not None else 'Scheduled',
                'Attention' if learn.get('status') == 'failed' else 'Completed' if learn_age is not None and learn_age < 6 * 3600 else 'Scheduled',
                'Ceilings stay at 30 samples, 0.20 calibration error, and 30 quoted fixtures.'),
+        _stage('Optimize', 'Holdout gate and ticket constraints', 'optimizer', 'completed',
+               f'{_fmt(active_models)} active',
+               'Completed' if active_models else 'Scheduled',
+               'The holdout gate stays in place. Optimization does not lower a probability floor or invent a price.'),
     ]
     completed = sum(1 for item in stages if item['status'] == 'Completed')
     return {
         'places_wager': False,
         'asynchronous': True,
-        'note': 'Settlement and learning run on completed matches. Discovery through booking keep moving on upcoming fixtures.',
+        'note': 'Stage 6 finalizes a qualified ticket and then requests its SportyBet code. Settlement does not wait for rollover.',
+        'parallel': {
+            'name': 'Rollover',
+            'detail': 'Daily and weekly simulation',
+            'route': 'daily-rollover',
+            'count': f'{_fmt(rollover)} active',
+            'status': 'Running' if rollover else 'Waiting',
+            'explanation': 'Rollover runs beside the nine stages. It does not delay a ticket, a booking code, or settlement. Simulation only. No wager is placed.',
+            'places_wager': False,
+        },
         'worker': 'responding' if fresh else 'heartbeat stale',
         'frequency': 'Every 30 seconds',
         'next_cycle': _next_cycle(current, seen),
@@ -133,6 +155,27 @@ def workflow_board(connection, now=None, ready_slips=0, qualified_visible=0, win
         ],
         'stages': stages,
     }
+
+
+def _qualify_note(visible, rejection):
+    if visible:
+        return 'Visible opportunities are strictly above 80 percent, one market per fixture.'
+    if rejection:
+        return (
+            'No fixture this week is strictly above 80 percent. '
+            f'The most common stored decision is {rejection["reason_code"]} ({_fmt(rejection["total"])}).'
+        )
+    return 'No qualification decision is stored yet.'
+
+
+def _ticket_note(ready, coded):
+    waiting = max(0, int(ready or 0) - int(coded or 0))
+    return (
+        f'{_fmt(coded)} qualified ticket(s) carry a code SportyBet displayed. '
+        f'{_fmt(waiting)} ready ticket(s) have none yet. '
+        'The ticket is finalized first. Registration then runs in the same stage. '
+        'A code is stored only when SportyBet displays it.'
+    )
 
 
 def _stage(name, detail, route, lane, count, status, explanation):

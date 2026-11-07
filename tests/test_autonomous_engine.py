@@ -35,7 +35,9 @@ class AutonomousIntegrationTests(unittest.TestCase):
             overview = build_overview(connection, NOW)
         names = [stage['name'] for stage in overview['stages']]
         self.assertIn('Qualify', names)
-        self.assertIn('Rollover', names)
+        self.assertIn('Tickets & Booking Codes', names)
+        self.assertIn('Optimize', names)
+        self.assertNotIn('Rollover', names)
         self.assertIn('Learn', names)
         self.assertFalse(overview['places_wager'])
         self.assertFalse(overview['pipeline']['places_wager'])

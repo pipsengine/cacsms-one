@@ -11,7 +11,7 @@ from accumulator_engine import combine_ticket
 from discovery_catalogue import (
     COMPETITIONS, MARKET_GROUPS, catalogue_summary, ensure_reference_catalogue, load_reference_catalogue, match_competition,
 )
-from market_registry import _canonical, assign_status, choose_best, refresh_market_registry
+from market_registry import _canonical, assign_status, choose_best, holdout_passes, refresh_market_registry
 from prediction_engine import football_market
 from qualification_engine import decide, default_policy
 from accumulator_engine import settle_result
@@ -254,3 +254,38 @@ class RegistryRefreshTests(unittest.TestCase):
         self.assertFalse(map_market('tennis', 'Total Games', 'Over 22.5')['supported'])
         self.assertIsNone(market_probability('tennis', 'MONEYLINE_HOME', {'anything': 1}))
         self.assertIsNone(probability('tennis', 'MATCH_WINNER', {'anything': 1}))
+
+
+class ScoreDistributionTests(unittest.TestCase):
+    def test_identity_settings_leave_the_grid_unchanged(self):
+        features = {'expected_home_goals': 1.4, 'expected_away_goals': 1.1}
+        plain = football_market(features, 'BTTS_YES')
+        same = football_market(features, 'BTTS_YES', 0.0, 1.0, 1.0)
+        self.assertAlmostEqual(plain['p_win'], same['p_win'], places=8)
+
+    def test_both_score_weight_keeps_the_match_result(self):
+        features = {'expected_home_goals': 1.4, 'expected_away_goals': 1.1}
+        home = football_market(features, 'HOME', 0.0, 1.0, 1.0)
+        moved = football_market(features, 'HOME', 0.0, 1.0, 2.0)
+        draw = football_market(features, 'DRAW', 0.0, 1.0, 1.0)
+        draw_moved = football_market(features, 'DRAW', 0.0, 1.0, 2.0)
+        btts = football_market(features, 'BTTS_YES', 0.0, 1.0, 1.0)
+        btts_moved = football_market(features, 'BTTS_YES', 0.0, 1.0, 2.0)
+        self.assertAlmostEqual(home['p_win'], moved['p_win'], places=6)
+        self.assertAlmostEqual(draw['p_win'], draw_moved['p_win'], places=6)
+        self.assertGreater(btts_moved['p_win'], btts['p_win'])
+        self.assertAlmostEqual(btts['p_win'] + btts['p_loss'], 1.0, places=6)
+
+    def test_a_line_without_its_own_holdout_stays_off(self):
+        self.assertFalse(holdout_passes({}))
+        self.assertFalse(holdout_passes({'calibration_error': 0.05, 'sample_size': 12}))
+        self.assertFalse(holdout_passes({'calibration_error': 0.21, 'sample_size': 40}))
+        self.assertTrue(holdout_passes({'calibration_error': 0.09, 'sample_size': 30}))
+
+    def test_team_totals_map_separately_from_the_match_total(self):
+        team = map_market('football', 'Home Team Goals', 'Over 1.5', 1.5)
+        match = map_market('football', 'Over/Under', 'Over 1.5', 1.5)
+        asian = map_market('football', 'Asian Handicap', 'Home', -0.5)
+        self.assertEqual(team['canonical_market'], 'HOME_OVER_1.5')
+        self.assertEqual(match['canonical_market'], 'OVER_1.5')
+        self.assertEqual(asian['canonical_market'], 'HOME_HANDICAP_-0.5')

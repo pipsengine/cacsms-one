@@ -140,8 +140,8 @@ export default function AutonomousEngine({nav}) {
     <header className="ae-top">
       <div className="ae-crumb">CACSMS ONE <ChevronRight size={14}/> Sports AI <ChevronRight size={14}/> <b>Autonomous Engine</b></div>
       <div className="ae-pills">
-        <span className={`ae-pill ${running && data?.scheduler_fresh ? 'green' : 'amber'}`}><Bot size={13}/> {running && data?.scheduler_fresh ? 'Fully Autonomous: RUNNING' : paused ? 'Engine: PAUSED' : running ? 'Engine: SCHEDULER IDLE' : 'Engine: STOPPED'}</span>
-        <span className="ae-pill mint">{running && summary.uptime ? `Heartbeat ${summary.uptime}` : 'Heartbeat not fresh'}</span>
+        <span className={`ae-pill ${running && data?.scheduler_fresh ? 'green' : 'amber'}`}><Bot size={13}/> {!data ? 'Engine: connecting' : running && data?.scheduler_fresh ? 'Fully Autonomous: RUNNING' : paused ? 'Engine: PAUSED' : running ? 'Engine: SCHEDULER IDLE' : 'Engine: STOPPED'}</span>
+        <span className="ae-pill mint">{!data ? 'Heartbeat checking' : running && summary.uptime ? `Heartbeat ${summary.uptime}` : 'Heartbeat not fresh'}</span>
         <span className="ae-pill">Job success {percent(summary.health)}</span>
       </div>
     </header>

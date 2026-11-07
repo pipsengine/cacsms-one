@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from booking_schedule import describe, phase_at, publication_open
+from booking_schedule import describe, last_publication_at, phase_at, publication_due, publication_open
 from db import connect
 from sportybet_feed import SECTIONS
 from sportybet_research import blocked_page
@@ -147,6 +147,16 @@ def create_job(connection, selections, high_odds=False):
     if not sports:
         raise ValueError('A booking needs a sport on every selection')
     signature = _signature(selections)
+    ticket_id = selections[0].get('ticket_id')
+    if ticket_id:
+        linked = connection.execute(
+            """SELECT id, status FROM sports_ai_booking_jobs
+               WHERE ticket_id=? AND status IN ('QUEUED','PREPARING','CODE_GENERATED')
+               ORDER BY created_at DESC LIMIT 1""",
+            (ticket_id,),
+        ).fetchone()
+        if linked:
+            return {'id': linked['id'], 'status': linked['status'], 'duplicate': True, 'places_wager': False}
     existing = connection.execute(
         """SELECT id,status FROM sports_ai_booking_jobs
            WHERE signature=? AND status IN ('QUEUED','PREPARING','CODE_GENERATED')
@@ -159,9 +169,13 @@ def create_job(connection, selections, high_odds=False):
     moment = _now().isoformat()
     connection.execute(
         """INSERT INTO sports_ai_booking_jobs
-           (id,created_at,updated_at,status,sport,selections_json,signature,places_wager)
-           VALUES(?,?,?,?,?,?,?,0)""",
-        (job_id, moment, moment, 'QUEUED', next(iter(sports)) if len(sports) == 1 else 'mixed', json.dumps(selections), signature),
+           (id,created_at,updated_at,status,sport,selections_json,signature,places_wager,ticket_id)
+           VALUES(?,?,?,?,?,?,?,0,?)""",
+        (
+            job_id, moment, moment, 'QUEUED',
+            next(iter(sports)) if len(sports) == 1 else 'mixed',
+            json.dumps(selections), signature, ticket_id,
+        ),
     )
     return {'id': job_id, 'status': 'QUEUED', 'duplicate': False, 'places_wager': False}
 
@@ -278,14 +292,24 @@ def _ticket_on_job(connection, job_id):
     return next((item.get('ticket_id') for item in selections if item.get('ticket_id')), None)
 
 
+def _publication_anchor(connection):
+    """The latest code request that still occupies the 15-minute testing slot.
+
+    A line mismatch does not occupy the slot. The same ticket still waits 15 minutes
+    before it is sent again.
+    """
+    return last_publication_at(connection)
+
+
 def select_booking(connection, now):
     """Choose the ticket that is qualified now.
 
-    A failed job for a different ticket does not take the publication slot, and it does not
-    impose a wait on the current ticket. The same ticket is not repeated inside 15 minutes.
+    During the testing period a code may be requested every 15 minutes. A failed job
+    for a different ticket does not take that slot. The same ticket is not repeated
+    inside 15 minutes.
     """
     phase = phase_at(now)
-    open_now = publication_open(phase)
+    open_now = publication_due(now, _publication_anchor(connection))
     queued = connection.execute(
         "SELECT id FROM sports_ai_booking_jobs WHERE status='QUEUED' ORDER BY created_at LIMIT 1",
     ).fetchone()
@@ -374,11 +398,14 @@ def _high_odds_ticket(connection, ticket_id):
     if parameters.get('product') != 'high_odds':
         return False
     legs = connection.execute(
-        'SELECT decimal_odds, probability, bookmaker FROM sports_ai_accumulator_legs WHERE ticket_id=?',
+        'SELECT sport, market, decimal_odds, probability, bookmaker FROM sports_ai_accumulator_legs WHERE ticket_id=?',
         (ticket_id,),
     ).fetchall()
+    from market_registry import holdout_ready
     prices = []
     for leg in legs:
+        if not holdout_ready(connection, leg['sport'], leg['market']):
+            return False
         try:
             odds = float(leg['decimal_odds'])
             probability = float(leg['probability'])
@@ -539,6 +566,10 @@ FIND_LINE = '''(args) => {
   const wanted = tokens(args.home);
   const other = tokens(args.away);
   const price = Number(args.odds).toFixed(2);
+  const numeric = value => {
+    const match = String(value || '').replace(',', '.').match(/-?\\d+(?:\\.\\d+)?/);
+    return match ? Number(match[0]) : null;
+  };
   const line = String(args.line || '');
   document.querySelectorAll('[data-sports-ai-pick]').forEach(node => node.removeAttribute('data-sports-ai-pick'));
   const rows = [...document.querySelectorAll('.match-row')].filter(candidate => {
@@ -547,10 +578,10 @@ FIND_LINE = '''(args) => {
   }).sort((left, right) => (left.innerText || '').length - (right.innerText || '').length);
   const row = rows.find(candidate => candidate.querySelector('.af-select, .m-outcome')) || rows[0];
   if (!row) return {exact: 0, nearby: [], line_visible: null};
-  const blob = row.innerText || '';
-  const linePattern = line ? new RegExp('(?:^|[^\\d.])' + line.replace(/[.]/g, '\\.') + '(?:[^\\d.]|$)') : null;
   const selectedLine = [...row.querySelectorAll('.af-select-input')].map(node => (node.innerText || '').trim()).find(Boolean) || '';
-  const lineVisible = !line || linePattern.test(selectedLine);
+  const shownLine = numeric(selectedLine);
+  const wantedLine = numeric(line);
+  const lineVisible = !line || (shownLine != null && wantedLine != null && Math.abs(shownLine - wantedLine) < 0.001);
   const prices = [...row.querySelectorAll('.m-outcome, button, a, [role="button"]')].filter(node => {
     if (node.classList.contains('m-outcome--disabled') || node.classList.contains('m-outcome-odds')) return false;
     if (node.closest('.specifiers-select, .af-select')) return false;
@@ -615,6 +646,102 @@ def _market_side(market):
     if name == 'DRAW':
         return 'draw'
     return 'home'
+
+
+def _same_side(family, side, label):
+    text = str(label or '').casefold()
+    if family == 'total':
+        if side == 'under':
+            return 'under' in text
+        if side == 'over':
+            return 'over' in text
+        return False
+    if family == 'handicap':
+        return side in text or _market_side(label) == side
+    return False
+
+
+def _align_selection_to_offered(item, offered):
+    """Use a SportyBet price already stored for a line this page is showing."""
+    wanted = []
+    for value in offered or []:
+        number = _numeric_line(value)
+        if number is None or any(abs(number - seen) < 0.001 for seen in wanted):
+            continue
+        wanted.append(number)
+    if not wanted or not item.get('fixture_id'):
+        return None
+    side = _market_side(item.get('market'))
+    family = _market_family(item.get('market'))
+    with connect() as connection:
+        rows = connection.execute(
+            """SELECT market, outcome, line, decimal_odds
+               FROM sports_ai_odds_snapshots
+               WHERE fixture_id=? AND bookmaker='SportyBet'
+               ORDER BY observed_at DESC""",
+            (item['fixture_id'],),
+        ).fetchall()
+    for row in rows:
+        number = _numeric_line(row['line'])
+        if number is None:
+            number = _numeric_line(_market_line(str(row['market'] or '')))
+        if number is None or not any(abs(number - seen) < 0.001 for seen in wanted):
+            continue
+        label = f"{row['market']} {row['outcome']}"
+        if not _same_side(family, side, label):
+            continue
+        market = str(row['market'] or '')
+        if not _market_line(market):
+            if family != 'total':
+                continue
+            prefix = 'UNDER' if side == 'under' else 'OVER'
+            market = f'{prefix}_{_line_text(number)}'
+        try:
+            odds = float(row['decimal_odds'])
+        except (TypeError, ValueError):
+            continue
+        if odds <= 1:
+            continue
+        return {
+            'market': market,
+            'decimal_odds': odds,
+            'selection': row['outcome'] or item.get('selection'),
+        }
+    return None
+
+
+def _remember_aligned_leg(item, previous_market):
+    """Keep the ticket on the stored line the page can show."""
+    ticket_id = item.get('ticket_id')
+    fixture_id = item.get('fixture_id')
+    if not ticket_id or not fixture_id or not previous_market:
+        return
+    with connect() as connection:
+        connection.execute(
+            """UPDATE sports_ai_accumulator_legs
+               SET market=?, selection=?, decimal_odds=?
+               WHERE ticket_id=? AND fixture_id=? AND upper(market)=upper(?)""",
+            (
+                item['market'], item.get('selection'), float(item['decimal_odds']),
+                ticket_id, fixture_id, previous_market,
+            ),
+        )
+        prices = [
+            float(row['decimal_odds'])
+            for row in connection.execute(
+                'SELECT decimal_odds FROM sports_ai_accumulator_legs WHERE ticket_id=?',
+                (ticket_id,),
+            )
+        ]
+        if not prices:
+            return
+        product = 1.0
+        for price in prices:
+            product *= price
+        connection.execute(
+            'UPDATE sports_ai_accumulator_tickets SET combined_odds=? WHERE id=?',
+            (round(product, 4), ticket_id),
+        )
 
 
 REVEAL_FIXTURE = '''(args) => {
@@ -753,13 +880,24 @@ SWITCH_LINE = '''(args) => {
   const line = String(args.line || '');
   const control = row.querySelector('.af-select-title') || row.querySelector('.af-select, .specifiers-select');
   if (!control || control.getBoundingClientRect().width < 8) return '';
+  const numeric = value => {
+    const match = String(value || '').replace(',', '.').match(/-?\\d+(?:\\.\\d+)?/);
+    return match ? Number(match[0]) : null;
+  };
   const current = ((control.querySelector('.af-select-input') || control).innerText || '').trim();
-  if (current === line) return 'shown';
+  const shownLine = numeric(current);
+  const wantedLine = numeric(line);
+  if (shownLine != null && wantedLine != null && Math.abs(shownLine - wantedLine) < 0.001) return 'shown';
   control.setAttribute('data-sports-ai-line', '1');
   return 'open';
 }'''
 
 PICK_LINE = '''(line) => {
+  const numeric = value => {
+    const match = String(value || '').replace(',', '.').match(/-?\\d+(?:\\.\\d+)?/);
+    return match ? Number(match[0]) : null;
+  };
+  const wanted = numeric(line);
   document.querySelectorAll('[data-sports-ai-line-option]').forEach(node => node.removeAttribute('data-sports-ai-line-option'));
   const control = document.querySelector('[data-sports-ai-line="1"]');
   const anchor = control ? control.getBoundingClientRect() : null;
@@ -775,17 +913,59 @@ PICK_LINE = '''(line) => {
     ? lists.map(list => [...list.querySelectorAll('.af-select-item')])
     : [[...document.querySelectorAll('.af-select-item')]];
   for (const pool of pools) {
-    const node = pool.find(item => {
-      const text = (item.innerText || '').trim();
-      const box = item.getBoundingClientRect();
-      return text === line && box.width > 4 && box.height > 4;
+    const matches = pool.filter(item => {
+      const shown = numeric(item.innerText || '');
+      return wanted != null && shown != null && Math.abs(shown - wanted) < 0.001;
     });
+    const node = matches.find(item => {
+      const box = item.getBoundingClientRect();
+      return box.width > 4 && box.height > 4;
+    }) || matches[0];
     if (!node) continue;
+    node.scrollIntoView({block: 'center', inline: 'nearest'});
     node.setAttribute('data-sports-ai-line-option', '1');
+    node.click();
     return true;
   }
   return false;
 }'''
+
+READ_OFFERED_LINES = '''() => {
+  const numeric = value => {
+    const match = String(value || '').replace(',', '.').match(/-?\\d+(?:\\.\\d+)?/);
+    return match ? Number(match[0]) : null;
+  };
+  const values = [];
+  for (const node of document.querySelectorAll('.af-select-item')) {
+    const number = numeric(node.innerText || '');
+    if (number == null || values.some(item => Math.abs(item - number) < 0.001)) continue;
+    values.push(number);
+    if (values.length >= 40) break;
+  }
+  return values;
+}'''
+
+
+def _numeric_line(value):
+    match = re.search(r'-?\d+(?:\.\d+)?', str(value or '').replace(',', '.'))
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def _same_line(shown, wanted):
+    left = _numeric_line(shown)
+    right = _numeric_line(wanted)
+    return left is not None and right is not None and abs(left - right) < 0.001
+
+
+def _line_text(number):
+    if abs(number - round(number)) < 0.001:
+        return str(int(round(number)))
+    return f'{number:g}'
 
 
 def _line_choices(line):
@@ -831,10 +1011,6 @@ async def _switch_line(page, item):
         for _ in range(4):
             await page.wait_for_timeout(500)
             if await page.evaluate(PICK_LINE, choice):
-                await page.evaluate('''() => {
-                  const node = document.querySelector('[data-sports-ai-line-option="1"]');
-                  if (node) node.click();
-                }''')
                 await page.wait_for_timeout(700)
                 shown = await page.evaluate(
                     '''() => {
@@ -843,9 +1019,13 @@ async def _switch_line(page, item):
                       return ((input && input.innerText) || '').trim();
                     }'''
                 )
-                if shown == choice or shown.startswith(choice):
+                if _same_line(shown, choice):
                     item['_page_line'] = choice
                     return True
+    try:
+        item['_offered_lines'] = await page.evaluate(READ_OFFERED_LINES)
+    except Exception:
+        item['_offered_lines'] = []
     return False
 
 
@@ -891,7 +1071,18 @@ async def prepare_slip(page, selections, book=True):
             revealed = await _reveal_fixture(page, item)
             hits = await find_price()
         if hits.get('exact') != 1 and hits.get('line_visible') is False and _market_line(item.get('market')):
-            await _switch_line(page, item)
+            switched = await _switch_line(page, item)
+            if not switched:
+                aligned = _align_selection_to_offered(item, item.get('_offered_lines') or [])
+                if aligned:
+                    previous = item.get('market')
+                    item['market'] = aligned['market']
+                    item['decimal_odds'] = aligned['decimal_odds']
+                    if aligned.get('selection'):
+                        item['selection'] = aligned['selection']
+                    item['_page_line'] = _market_line(aligned['market'])
+                    _remember_aligned_leg(item, previous)
+                    await _switch_line(page, item)
             hits = await find_price()
         if hits['exact'] == 1:
             control = await page.evaluate(INSPECT, f'[data-sports-ai-pick="{marker}"]')
@@ -907,9 +1098,18 @@ async def prepare_slip(page, selections, book=True):
             continue
         if hits['exact'] == 0 and hits.get('line_visible') is False:
             seen.append({'fixture_id': item['fixture_id'], 'stored_odds': item['decimal_odds'], 'page_odds': None})
+            offered = item.get('_offered_lines') or []
+            wanted = _numeric_line(item.get('_page_line') or _market_line(item.get('market')))
+            listed = wanted is not None and any(abs(float(value) - wanted) < 0.001 for value in offered)
+            detail = 'The quoted line is not the line shown for this match.'
+            if listed:
+                detail = f'{detail} The page lists {_line_text(wanted)} and the stored price stays with that line.'
+            elif offered:
+                shown = ', '.join(_line_text(float(value)) for value in offered[:12])
+                detail = f'{detail} The page offered {shown}, and no stored SportyBet price matches one of those lines.'
             return {
                 'status': 'ODDS_CHANGED', 'seen': seen, 'code': None,
-                'error': 'The quoted line is not the line shown for this match.',
+                'error': detail,
             }
         if hits['exact'] == 0 and hits['nearby']:
             seen.append({'fixture_id': item['fixture_id'], 'stored_odds': item['decimal_odds'], 'page_odds': float(hits['nearby'][0]['text'])})
@@ -1243,7 +1443,7 @@ def _ticket_preflight(connection, ticket, now, window_open, minutes):
         if quote and abs(float(quote['decimal_odds']) - float(leg['decimal_odds'])) / float(leg['decimal_odds']) > 0.02:
             return 'ODDS_CHANGED', 'The current SportyBet price no longer matches the ticket.', 'review_required'
     if not window_open:
-        return 'WINDOW_CLOSED', 'The Africa/Lagos publication window is closed. The ticket stays ready and no browser is opened.', None
+        return 'WINDOW_CLOSED', 'The next code request waits for the 15-minute gap. The ticket stays ready and no browser is opened.', None
     return 'READY', 'The ticket is still qualified with a fresh SportyBet price.', None
 
 
@@ -1260,14 +1460,15 @@ def _parse_booking_time(value):
 
 
 def process_booking_queue(now=None):
-    """Request one prepared ticket's booking code inside a WAT publication window.
+    """Request one prepared ticket's booking code every 15 minutes during testing.
 
-    Does not open a browser when none qualify, when the window is closed, or when the retry limit is reached.
+    Does not open a browser when none qualify, when a code was requested inside the last 15 minutes, or when the retry limit is reached.
     """
     moment = now or _now()
     phase = phase_at(moment)
     with connect() as connection:
-        examined = examine_ready_tickets(connection, moment)
+        open_now = publication_due(moment, _publication_anchor(connection))
+        examined = examine_ready_tickets(connection, moment, window_open=open_now)
         expired = expire_displayed_codes(connection, moment)
         qualified = qualified_selections(connection, moment)
         choice = select_booking(connection, moment)
@@ -1401,8 +1602,9 @@ def book_prepared_tickets(limit=1, now=None):
     """Book the next prepared tickets whose prices are still on the page."""
     moment = now or _now()
     phase = phase_at(moment)
-    if not publication_open(phase):
-        return [{'status': 'outside_window', 'phase': phase, 'places_wager': False}]
+    with connect() as connection:
+        if not publication_due(moment, _publication_anchor(connection)):
+            return [{'status': 'outside_window', 'phase': phase, 'places_wager': False}]
     import asyncio
     results = []
     for _ in range(max(1, limit)):
@@ -1429,7 +1631,7 @@ def diagnose_booking(connection, now=None):
     """Trace the booking path without opening a browser or storing a code."""
     moment = now or _now()
     phase = phase_at(moment)
-    schedule = describe(moment)
+    schedule = describe(moment, _publication_anchor(connection))
     qualified = qualified_selections(connection, moment)
     ticket_id = next_ticket_id(connection, moment)
     decisions = connection.execute(
@@ -1442,7 +1644,7 @@ def diagnose_booking(connection, now=None):
            WHERE d.state='QUALIFIED'""",
     ).fetchall()
     blockers = []
-    if not publication_open(phase):
+    if not publication_due(moment, _publication_anchor(connection)):
         blockers.append({'code': 'outside_publication_window', 'detail': schedule['note']})
     if not decisions:
         blockers.append({'code': 'no_qualified_decision', 'detail': 'No decision is currently QUALIFIED.'})
@@ -1483,10 +1685,11 @@ def build_booking_router(auth):
         with connect() as connection:
             jobs = list_jobs(connection)
             logs = recent_logs(connection)
+            schedule = describe(_now(), _publication_anchor(connection))
         return {
             'items': jobs,
             'logs': logs,
-            'schedule': describe(_now()),
+            'schedule': schedule,
             'places_wager': False,
             'qualified_required': True,
             'message': 'A code is stored only when SportyBet displays it during a WAT publication window. No wager is placed. Zero codes is a valid result.',

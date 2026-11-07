@@ -20,11 +20,10 @@ STAGE_KINDS = (
     ('Validate', 'Data integrity', None, None),
     ('Analyse', 'Stored models', 'prediction', None),
     ('Qualify', 'Central qualification', None, 'qualification'),
-    ('Tickets', 'Odds tiers and weekly draws', 'accumulator', 'weekly_draw'),
-    ('Rollover', 'Simulation only', 'rollover', 'rollover'),
-    ('Booking codes', 'Displayed code retrieval', 'booking_queue', 'booking'),
+    ('Tickets & Booking Codes', 'Finalize the ticket, then register its displayed code', 'booking_queue', 'tickets_booking'),
     ('Settle', 'Verified results', 'settlement', None),
     ('Learn', 'Performance evaluation', 'learning', 'learning'),
+    ('Optimize', 'Holdout gate and ticket constraints', 'model_evaluation', 'optimize'),
 )
 
 
@@ -275,9 +274,9 @@ def production_readiness(connection, now=None):
             'Roll a model back with the administrator key. Training does not activate a replacement.',
         ],
         'procedures': [
-            'The worker loop runs discovery, odds refresh, qualification, autonomous tickets, draws, rollover simulation, learning and booking-code retrieval. It does not place a paid wager. A ticket is stored only from current QUALIFIED selections.',
+            'The worker runs discovery, odds, qualification, then Stage 6. Stage 6 stores a ticket from current QUALIFIED selections and then requests its displayed code. Rollover runs after settlement and does not delay that stage. It does not place a paid wager.',
             'Pause or Stop on the Autonomous Engine disables stored schedules and remembers them for Resume.',
-            'A booking code is stored only when SportyBet displays it inside a publication window.',
+            'A booking code is stored only when SportyBet displays it. Registration does not start before the ticket is finalized.',
         ],
     }
 

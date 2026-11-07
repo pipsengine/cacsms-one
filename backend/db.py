@@ -6,11 +6,11 @@ DB=Path(os.environ.get('SPORTS_SQLITE_PATH',str(Path(__file__).parent/'sports_de
 _migration_lock=threading.Lock()
 
 @contextmanager
-def connect():
+def connect(busy_timeout_ms=20000):
  DB.parent.mkdir(parents=True,exist_ok=True)
- c=sqlite3.connect(DB,timeout=20)
+ c=sqlite3.connect(DB,timeout=max(5,int(busy_timeout_ms)/1000))
  c.row_factory=sqlite3.Row
- c.execute('PRAGMA busy_timeout=20000')
+ c.execute(f'PRAGMA busy_timeout={int(busy_timeout_ms)}')
  c.execute('PRAGMA foreign_keys=ON')
  try:
   yield c

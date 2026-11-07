@@ -2,6 +2,7 @@
 
 import math
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 from booking_schedule import WAT, opportunity_week
@@ -19,6 +20,55 @@ def _status_label(state, reason):
     if state == 'MONITORING':
         return 'Monitoring'
     return (state or 'Unknown').replace('_', ' ').title()
+
+
+_SEASON_TEXT = re.compile(r'\b20\d{2}(?:\s*/\s*\d{2,4})?\b')
+
+
+def readable_league(name):
+    """A short league name a reader can recognise. The stored catalog string stays unchanged."""
+    raw = str(name or '').strip()
+    folded = raw.replace('ß', 'ss').replace('ü', 'u').replace('ä', 'a').replace('ö', 'o')
+    folded = _SEASON_TEXT.sub(' ', folded.casefold())
+    folded = re.sub(r'[^a-z0-9]+', ' ', folded).strip()
+    women = any(word in folded.split() for word in ('women', 'woman', 'frauen', 'ladies', 'female'))
+    amateur = 'amateur' in folded.split()
+    youth = re.search(r'\bu\d{2}\b', folded)
+    if 'bundesliga' in folded:
+        if women and amateur:
+            label = "Women's Amateur Bundesliga"
+        elif women:
+            label = "Women's Bundesliga"
+        elif '3' in folded.split():
+            label = '3. Liga'
+        elif '2' in folded.split():
+            label = '2. Bundesliga'
+        else:
+            label = 'Bundesliga'
+    else:
+        known = (
+            ('premier league', 'Premier League'),
+            ('championship', 'Championship'),
+            ('serie a', 'Serie A'),
+            ('la liga', 'La Liga'),
+            ('laliga', 'La Liga'),
+            ('primera division', 'La Liga'),
+            ('ligue 1', 'Ligue 1'),
+            ('primeira liga', 'Primeira Liga'),
+            ('liga portugal', 'Primeira Liga'),
+            ('eredivisie', 'Eredivisie'),
+            ('champions league', 'Champions League'),
+            ('europa league', 'Europa League'),
+            ('nba', 'NBA'),
+        )
+        label = next((title for needle, title in known if needle in folded), '')
+        if not label:
+            label = re.sub(r'\s+', ' ', _SEASON_TEXT.sub('', raw)).strip(' -') or 'League not stored'
+        if 'portugal' in folded and youth:
+            label = f'Portugal {youth.group(0).upper()}'
+    if youth and youth.group(0).upper() not in label.upper():
+        label = f'{label} {youth.group(0).upper()}'
+    return label
 
 
 def market_parts(market):
@@ -54,6 +104,8 @@ def command_view(connection, now=None):
     week_start, week_end = opportunity_week(current)
     opportunities = _opportunities(connection, current, week_end)
     draws = _draws(connection, week_start.astimezone(timezone.utc), week_end.astimezone(timezone.utc))
+    sure_odds = _sure_odds(connection, day_start, day_start + timedelta(days=1), current)
+    sure_odds_date = f"{local.strftime('%a')}, {local.day} {local.strftime('%b %Y')}"
     draw_count = connection.execute(
         """SELECT COUNT(*) FROM sports_ai_qualification_decisions d
            JOIN sports_ai_fixtures f ON f.id=d.fixture_id
@@ -150,6 +202,8 @@ def command_view(connection, now=None):
         },
         'opportunities': opportunities,
         'draws': draws,
+        'sure_odds': sure_odds,
+        'sure_odds_date': sure_odds_date,
         'sports': sports,
         'codes': codes,
         'slips': slips,
@@ -238,6 +292,98 @@ def _opportunities(connection, now, week_end):
             'status': _status_label(row['state'], row['reason_code']),
         })
     return items
+
+
+def _sure_odds(connection, start, end, now=None):
+    """Today's modelled selections still to play, priced from 1.50 through 3.00."""
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    predictions = connection.execute(
+        """SELECT f.id, f.home, f.away, f.competition, f.starts_at, p.market, p.outcome, m.metrics_json
+           FROM sports_ai_fixtures f
+           JOIN sports_ai_engine_predictions p ON p.fixture_id=f.id
+           LEFT JOIN sports_ai_model_registry m ON m.id=p.model_id
+           WHERE f.starts_at>? AND f.starts_at<?
+             AND f.status IN ('scheduled','not_started')
+             AND lower(COALESCE(f.competition,'')) NOT LIKE '%srl%'
+             AND lower(COALESCE(f.competition,'')) NOT LIKE '%simulated%'
+             AND lower(COALESCE(f.home,'')) NOT LIKE '%srl%'
+             AND lower(COALESCE(f.away,'')) NOT LIKE '%srl%'
+           ORDER BY f.starts_at""",
+        (current.isoformat(), end.isoformat()),
+    ).fetchall()
+    by_fixture = {}
+    for row in predictions:
+        by_fixture.setdefault(row['id'], []).append(row)
+    if not by_fixture:
+        return []
+    quotes = {}
+    identifiers = list(by_fixture)
+    for offset in range(0, len(identifiers), 400):
+        chunk = identifiers[offset:offset + 400]
+        marks = ','.join('?' for _ in chunk)
+        for quote in connection.execute(
+            f"""SELECT q.fixture_id, q.market, q.outcome, q.decimal_odds, q.observed_at
+                FROM sports_ai_odds_snapshots q
+                JOIN (
+                  SELECT fixture_id, market, outcome, MAX(observed_at) AS observed_at
+                  FROM sports_ai_odds_snapshots
+                  WHERE bookmaker='SportyBet' AND fixture_id IN ({marks})
+                  GROUP BY fixture_id, market, outcome
+                ) latest
+                  ON latest.fixture_id=q.fixture_id AND latest.market=q.market
+                 AND latest.outcome=q.outcome AND latest.observed_at=q.observed_at
+                WHERE q.bookmaker='SportyBet' AND q.decimal_odds>=1.5 AND q.decimal_odds<=3""",
+            chunk,
+        ):
+            quotes.setdefault(quote['fixture_id'], []).append(quote)
+    chosen = []
+    for fixture_id, rows in by_fixture.items():
+        match = _sure_quote(rows, quotes.get(fixture_id) or [])
+        if match:
+            chosen.append(match)
+    chosen.sort(key=lambda item: (item['starts_at'] or '', -(item['confidence'] or -1)))
+    chosen = chosen[:12]
+    for item in chosen:
+        code = connection.execute(
+            """SELECT b.code FROM sports_ai_booking_codes b
+               JOIN sports_ai_accumulator_legs l ON l.ticket_id=b.accumulator_ticket_id
+               WHERE l.fixture_id=? AND b.verification_method='displayed'
+                 AND b.verified_at IS NOT NULL AND b.verified_at>=?
+                 AND TRIM(COALESCE(b.code,''))<>''
+                 AND NOT EXISTS (
+                   SELECT 1 FROM sports_ai_accumulator_legs played
+                   WHERE played.ticket_id=b.accumulator_ticket_id AND played.starts_at<=?
+                 )
+               ORDER BY b.verified_at DESC LIMIT 1""",
+            (item.pop('fixture_id'), start.isoformat(), current.isoformat()),
+        ).fetchone()
+        item['code'] = None if not code else str(code['code']).strip()
+    return chosen
+
+
+def _sure_quote(predictions, quotes):
+    for quote in quotes:
+        for prediction in predictions:
+            labels = {str(prediction['market'] or '').upper(), str(prediction['outcome'] or '').upper()}
+            shown = {str(quote['market'] or '').upper(), str(quote['outcome'] or '').upper()}
+            if not labels.intersection(shown):
+                continue
+            confidence = confidence_from_metrics(prediction['metrics_json'])
+            family, selection = market_parts(prediction['market'])
+            return {
+                'fixture_id': prediction['id'],
+                'fixture': f"{prediction['home']} vs {prediction['away']}",
+                'competition': prediction['competition'] or '',
+                'league': readable_league(prediction['competition']),
+                'market': family,
+                'selection': selection,
+                'starts_at': prediction['starts_at'],
+                'odds': round(float(quote['decimal_odds']), 2),
+                'confidence': None if confidence is None else round(confidence * 100, 1),
+            }
+    return None
 
 
 def _draws(connection, start, end):
