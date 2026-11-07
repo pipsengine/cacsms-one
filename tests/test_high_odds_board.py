@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 
 from datetime import datetime, timezone
 
-from high_odds_board import COMBINED_TARGET, SELECTION_FLOOR, _in_band, build_day, build_slip, choose_one_per_fixture
+from high_odds_board import COMBINED_TARGET, SELECTION_FLOOR, _in_band, build_day, build_slip, choose_one_per_fixture, pack_sure_tickets
 
 
 def leg(fixture, odds, probability, confidence=0.9, market='OVER_1.5', sport='football', competition='League'):
@@ -44,6 +44,29 @@ class HighOddsBoardTests(unittest.TestCase):
         short = [leg(str(index), 2.4, 0.90) for index in range(11)]
         short.append(leg('city', 2.8, 0.43))
         self.assertIsNone(build_slip(short, 12))
+
+    def test_sure_tickets_land_between_2_and_2_95(self):
+        day = {'name': 'Saturday', 'date': '2026-11-07'}
+        rows = [leg(str(index), 1.2, 0.90, competition=f'League {index}') for index in range(10)]
+        rows.append(leg('long', 4.0, 0.95))
+        rows.append(leg('weak', 1.2, 0.70))
+        tickets = pack_sure_tickets(rows, day)
+        self.assertEqual(len(tickets), 2)
+        used = []
+        for ticket in tickets:
+            self.assertGreaterEqual(ticket['selection_count'], 2)
+            self.assertGreaterEqual(ticket['combined_odds'], 2)
+            self.assertLessEqual(ticket['combined_odds'], 2.95)
+            self.assertTrue(all(item['probability'] >= 80 for item in ticket['selections']))
+            used.extend(item['fixture'] for item in ticket['selections'])
+        self.assertEqual(len(used), len(set(used)))
+        self.assertNotIn('long vs Opponent', used)
+        self.assertEqual(pack_sure_tickets([leg('only', 1.4, 0.91)], day), [])
+        blocked = [leg('solo', 2.95, 0.99)]
+        blocked.extend(leg(f'small-{index}', 1.2, 0.90, competition=f'League {index}') for index in range(5))
+        opened = pack_sure_tickets(blocked, day)
+        self.assertEqual(len(opened), 1)
+        self.assertNotIn('solo vs Opponent', [item['fixture'] for item in opened[0]['selections']])
 
     def test_twelve_selections_when_every_price_is_from_2_to_3(self):
         rows = [leg(str(index), 2.4, 0.90, competition=f'League {index}') for index in range(12)]

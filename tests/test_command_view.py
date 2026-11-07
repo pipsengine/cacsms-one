@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 
 from booking_schedule import WAT, opportunity_week
-from command_view import _opportunities, _sure_odds, readable_league, ticket_confidence, ticket_probability
+from command_view import _opportunities, _sure_odds, _sure_quote, _sure_tickets, readable_league, ticket_confidence, ticket_probability
 import db
 
 
@@ -184,6 +184,49 @@ class SureOddsTests(unittest.TestCase):
         self.assertEqual(rows[0]['code'], 'SURE1')
         self.assertEqual(rows[0]['confidence'], 92.0)
         self.assertEqual(rows[0]['starts_at'], '2026-11-07T15:00:00+00:00')
+
+    def test_the_card_shows_a_combined_ticket_and_leaves_a_single_leg_out(self):
+        board = {'sure_tickets': [
+            {
+                'status': 'ready', 'label': '4 selections', 'odds_band': '2.00–2.95',
+                'combined_odds': 2.48, 'joint_probability': 66.4, 'confidence': 91.0, 'booking_code': None,
+                'selections': [
+                    {'fixture': 'Holstein Kiel vs DSC Arminia Bielefeld', 'competition': '2. Fußball-Bundesliga 2026/2027', 'market': 'Home', 'probability': 88.0, 'odds': 1.2, 'confidence': 91.0, 'starts_at': '2026-11-07T15:00:00+00:00'},
+                    {'fixture': 'VfL Osnabrück vs 1. FC Kaiserslautern', 'competition': '2. Bundesliga', 'market': 'Over 2.5', 'probability': 86.0, 'odds': 1.3, 'confidence': 92.0, 'starts_at': '2026-11-07T16:00:00+00:00'},
+                ],
+            },
+            {'status': 'ready', 'label': '1 selection', 'combined_odds': 2.2, 'selections': [
+                {'odds': 2.2, 'starts_at': '2026-11-07T18:00:00+00:00', 'fixture': 'One vs Leg', 'market': 'Home', 'competition': 'Bundesliga'},
+            ]},
+            {'status': 'ready', 'label': '18 selections', 'odds_band': '1.95 and below', 'combined_odds': 185.4, 'selections': [
+                {'odds': 1.2, 'starts_at': '2026-11-07T18:00:00+00:00', 'fixture': 'Low vs Price', 'market': 'Home', 'competition': 'Bundesliga'},
+                {'odds': 1.8, 'starts_at': '2026-11-07T19:00:00+00:00', 'fixture': 'Other vs Side', 'market': 'Home', 'competition': 'Bundesliga'},
+            ]},
+        ]}
+        tickets = _sure_tickets(board, datetime(2026, 11, 7, 10, tzinfo=timezone.utc))
+        self.assertEqual(len(tickets), 1)
+        self.assertEqual(tickets[0]['selection_count'], 2)
+        self.assertEqual(tickets[0]['selections'][0]['league'], '2. Bundesliga')
+        self.assertIsNone(tickets[0]['code'])
+
+    def test_a_handicap_price_does_not_become_the_match_result(self):
+        teams = {'id': 'leipzig', 'home': 'RB Leipzig', 'away': 'FC Augsburg', 'competition': '1. Fußball-Bundesliga', 'starts_at': '2026-11-07T14:30:00+00:00', 'metrics_json': '{"calibration_error":0.047}'}
+        predictions = [
+            {**teams, 'market': 'HOME', 'outcome': 'HOME', 'probability': 0.9968},
+            {**teams, 'market': 'AWAY', 'outcome': 'AWAY', 'probability': 0.0234},
+            {**teams, 'market': 'AWAY_UNDER_2.5', 'outcome': 'AWAY_UNDER_2.5', 'probability': 0.9999},
+        ]
+        in_range = [
+            {'market': 'european_handicap', 'outcome': 'AWAY', 'decimal_odds': 2.95, 'observed_at': '2026-11-07T10:04:00+00:00'},
+            {'market': 'h2h', 'outcome': 'away', 'decimal_odds': 2.40, 'observed_at': '2026-11-07T10:04:00+00:00'},
+        ]
+        self.assertIsNone(_sure_quote(predictions, in_range))
+        shown = _sure_quote(predictions, in_range + [
+            {'market': 'h2h', 'outcome': 'home', 'decimal_odds': 1.66, 'observed_at': '2026-11-07T10:04:00+00:00'},
+        ])
+        self.assertEqual(shown['selection'], 'Home Win')
+        self.assertEqual(shown['odds'], 1.66)
+        self.assertEqual(shown['probability'], 99.7)
 
     def test_league_names_drop_the_season_and_keep_the_division(self):
         self.assertEqual(readable_league('2. Fußball-Bundesliga 2026/2027'), '2. Bundesliga')

@@ -482,6 +482,30 @@ def _remember_higher_odds_run(now, status):
         )
 
 
+def _book_sure_odds():
+    """Build today's 2.00–2.95 tickets and request each displayed code. No wager is placed."""
+    import asyncio
+    from high_odds_board import prepare_sure_odds_booking
+    from sportybet_booking import execute_job
+    seen = set()
+    status = 'waiting'
+    while True:
+        job_id = prepare_sure_odds_booking()
+        if not job_id or job_id in seen:
+            if not seen:
+                print('sure odds booking', 'waiting', 'places_wager', False)
+            return status
+        seen.add(job_id)
+        result = asyncio.run(execute_job(job_id))
+        status = result.get('status') or status
+        print(
+            'sure odds booking', status,
+            result.get('code') or result.get('error') or '',
+            'places_wager', False,
+        )
+    return status
+
+
 def _book_ready_tickets(bands):
     """Store each ready ticket and request its code before the worker does anything else."""
     import asyncio
@@ -516,6 +540,7 @@ def _high_odds_booking_tick():
     now = datetime.now(timezone.utc)
     try:
         from high_odds_board import HIGHER_ODDS_BANDS
+        _book_sure_odds()
         _book_ready_tickets(('to-1.95',))
         if _higher_odds_due(now):
             status = _book_ready_tickets(HIGHER_ODDS_BANDS)

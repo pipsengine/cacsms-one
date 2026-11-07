@@ -457,6 +457,42 @@ def _apply_displayed_prices(connection, ticket_id, seen):
     )
 
 
+def _sure_odds_ticket(connection, ticket_id):
+    """A sure-odds ticket is at least two analyzed selections, combined from 2.00 to 2.95."""
+    row = connection.execute(
+        'SELECT parameters_json FROM sports_ai_accumulator_tickets WHERE id=?',
+        (ticket_id,),
+    ).fetchone()
+    if not row:
+        return False
+    try:
+        parameters = json.loads(row['parameters_json'] or '{}')
+    except json.JSONDecodeError:
+        return False
+    if parameters.get('product') != 'sure_odds':
+        return False
+    legs = connection.execute(
+        'SELECT sport, market, decimal_odds, probability, bookmaker FROM sports_ai_accumulator_legs WHERE ticket_id=?',
+        (ticket_id,),
+    ).fetchall()
+    if len(legs) < 2:
+        return False
+    from market_registry import holdout_ready
+    product = 1.0
+    for leg in legs:
+        if not holdout_ready(connection, leg['sport'], leg['market']):
+            return False
+        try:
+            odds = float(leg['decimal_odds'])
+            probability = float(leg['probability'])
+        except (TypeError, ValueError):
+            return False
+        if probability < 0.80 or leg['bookmaker'] != 'SportyBet' or not (1 < odds <= 2.95):
+            return False
+        product *= odds
+    return 2 <= product <= 2.95
+
+
 def create_high_odds_job(connection, ticket_id):
     """Queue one high-odds ticket. The qualified-slip rule does not apply. No wager is placed."""
     if not _high_odds_ticket(connection, ticket_id):
@@ -467,9 +503,19 @@ def create_high_odds_job(connection, ticket_id):
     return create_job(connection, selections, high_odds=True)
 
 
+def create_sure_odds_job(connection, ticket_id):
+    """Queue one sure-odds ticket. No operator selection and no wager."""
+    if not _sure_odds_ticket(connection, ticket_id):
+        raise ValueError('A sure-odds booking needs at least two selections of 80% or more, combined from 2.00 to 2.95')
+    selections = ticket_selections(connection, ticket_id)
+    for item in selections:
+        item['ticket_id'] = ticket_id
+    return create_job(connection, selections, high_odds=True)
+
+
 def _store_displayed_code(connection, ticket_id, code, evidence):
     from qualification_engine import ticket_is_bookable
-    if not ticket_is_bookable(connection, ticket_id) and not _high_odds_ticket(connection, ticket_id):
+    if not ticket_is_bookable(connection, ticket_id) and not _high_odds_ticket(connection, ticket_id) and not _sure_odds_ticket(connection, ticket_id):
         raise ValueError('A displayed code is stored only when every leg has a current QUALIFIED decision')
     moment = _now().isoformat()
     expiry = connection.execute(
@@ -1230,7 +1276,7 @@ async def execute_job(job_id, page_url=None):
             ticket_id = next((item.get('ticket_id') for item in selections if item.get('ticket_id')), None)
             if result['status'] == 'CODE_GENERATED':
                 _set_job(connection, job_id, 'CODE_GENERATED', code=result['code'], screenshot=str(shot), odds_json=json.dumps(result['seen']), reason_code='CODE_VERIFIED')
-                if ticket_id and _high_odds_ticket(connection, ticket_id):
+                if ticket_id and (_high_odds_ticket(connection, ticket_id) or _sure_odds_ticket(connection, ticket_id)):
                     _apply_displayed_prices(connection, ticket_id, result.get('seen') or [])
                 if ticket_id:
                     _store_displayed_code(connection, ticket_id, result['code'], str(shot))

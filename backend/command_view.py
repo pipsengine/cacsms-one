@@ -104,7 +104,6 @@ def command_view(connection, now=None):
     week_start, week_end = opportunity_week(current)
     opportunities = _opportunities(connection, current, week_end)
     draws = _draws(connection, week_start.astimezone(timezone.utc), week_end.astimezone(timezone.utc))
-    sure_odds = _sure_odds(connection, day_start, day_start + timedelta(days=1), current)
     sure_odds_date = f"{local.strftime('%a')}, {local.day} {local.strftime('%b %Y')}"
     draw_count = connection.execute(
         """SELECT COUNT(*) FROM sports_ai_qualification_decisions d
@@ -183,6 +182,7 @@ def command_view(connection, now=None):
     if not stages.get('ODDS_FRESH'):
         alerts.append({'id': 'odds', 'message': 'No SportyBet price is inside 15 minutes.'})
     active_names = [item['name'] for item in sports if item['status'] == 'Active']
+    high_odds = high_odds_board(connection, current)
     preview = os.environ.get('SPORTS_LOCAL_PREVIEW', '0') == '1'
     return {
         'environment': 'Development (Preview)' if preview else 'Development',
@@ -202,7 +202,7 @@ def command_view(connection, now=None):
         },
         'opportunities': opportunities,
         'draws': draws,
-        'sure_odds': sure_odds,
+        'sure_odds': _sure_tickets(high_odds, current),
         'sure_odds_date': sure_odds_date,
         'sports': sports,
         'codes': codes,
@@ -228,7 +228,7 @@ def command_view(connection, now=None):
             'average_odds': None if average is None else round(float(average), 2),
         },
         'alerts': alerts,
-        'high_odds': high_odds_board(connection, current),
+        'high_odds': high_odds,
         'workflow': workflow_board(
             connection, current,
             ready_slips=slip_count,
@@ -294,13 +294,66 @@ def _opportunities(connection, now, week_end):
     return items
 
 
+def _sure_tickets(board, now):
+    """Today's tickets whose combined price is from 2.00 to 2.95."""
+    current = now if getattr(now, 'tzinfo', None) else now.replace(tzinfo=timezone.utc)
+    tickets = []
+    for ticket in board.get('sure_tickets') or []:
+        selections = ticket.get('selections') or []
+        combined = ticket.get('combined_odds')
+        if ticket.get('status') != 'ready' or len(selections) < 2:
+            continue
+        try:
+            price = float(combined)
+        except (TypeError, ValueError):
+            continue
+        if price < 2 or price > 2.95:
+            continue
+        if any(_started(leg.get('starts_at'), current) for leg in selections):
+            continue
+        tickets.append({
+                'label': ticket.get('label') or f'{len(selections)} selections',
+                'odds_band': ticket.get('odds_band') or '',
+                'selection_count': len(selections),
+                'combined_odds': ticket.get('combined_odds'),
+                'joint_probability': ticket.get('joint_probability'),
+                'confidence': ticket.get('confidence'),
+                'code': ticket.get('booking_code'),
+                'selections': [
+                    {
+                        'fixture': leg.get('fixture'),
+                        'league': readable_league(leg.get('competition')),
+                        'selection': leg.get('market'),
+                        'probability': leg.get('probability'),
+                        'odds': leg.get('odds'),
+                        'confidence': leg.get('confidence'),
+                        'starts_at': leg.get('starts_at'),
+                    }
+                    for leg in selections
+                ],
+            })
+    return tickets
+
+
+def _started(value, now):
+    if not value:
+        return True
+    try:
+        kickoff = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+    except ValueError:
+        return True
+    if kickoff.tzinfo is None:
+        return True
+    return kickoff <= now
+
+
 def _sure_odds(connection, start, end, now=None):
     """Today's modelled selections still to play, priced from 1.50 through 3.00."""
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
     predictions = connection.execute(
-        """SELECT f.id, f.home, f.away, f.competition, f.starts_at, p.market, p.outcome, m.metrics_json
+        """SELECT f.id, f.home, f.away, f.competition, f.starts_at, p.market, p.outcome, p.probability, m.metrics_json
            FROM sports_ai_fixtures f
            JOIN sports_ai_engine_predictions p ON p.fixture_id=f.id
            LEFT JOIN sports_ai_model_registry m ON m.id=p.model_id
@@ -363,27 +416,54 @@ def _sure_odds(connection, start, end, now=None):
     return chosen
 
 
-def _sure_quote(predictions, quotes):
-    for quote in quotes:
-        for prediction in predictions:
-            labels = {str(prediction['market'] or '').upper(), str(prediction['outcome'] or '').upper()}
-            shown = {str(quote['market'] or '').upper(), str(quote['outcome'] or '').upper()}
-            if not labels.intersection(shown):
-                continue
-            confidence = confidence_from_metrics(prediction['metrics_json'])
-            family, selection = market_parts(prediction['market'])
-            return {
-                'fixture_id': prediction['id'],
-                'fixture': f"{prediction['home']} vs {prediction['away']}",
-                'competition': prediction['competition'] or '',
-                'league': readable_league(prediction['competition']),
-                'market': family,
-                'selection': selection,
-                'starts_at': prediction['starts_at'],
-                'odds': round(float(quote['decimal_odds']), 2),
-                'confidence': None if confidence is None else round(confidence * 100, 1),
-            }
+def _result_side(market, outcome):
+    """The match-result side. A handicap or a team total is not this result."""
+    name = str(market or '').upper()
+    side = str(outcome or '').upper()
+    if name in ('HOME', 'AWAY', 'DRAW'):
+        return name
+    if name in ('H2H', '1X2', 'MATCH_RESULT') and side in ('HOME', 'AWAY', 'DRAW'):
+        return side
     return None
+
+
+def _sure_quote(predictions, quotes):
+    """The match-result side with the highest stored probability, at that side's own price."""
+    results = []
+    for row in predictions:
+        side = _result_side(row['market'], row['outcome'])
+        if side is None:
+            continue
+        try:
+            probability = float(row['probability'])
+        except (TypeError, ValueError):
+            continue
+        results.append((probability, side, row))
+    if not results:
+        return None
+    probability, side, prediction = max(results, key=lambda item: item[0])
+    price = None
+    for quote in quotes:
+        if _result_side(quote['market'], quote['outcome']) != side:
+            continue
+        if price is None or str(quote['observed_at'] or '') > str(price['observed_at'] or ''):
+            price = quote
+    if price is None:
+        return None
+    confidence = confidence_from_metrics(prediction['metrics_json'])
+    family, selection = market_parts(side)
+    return {
+        'fixture_id': prediction['id'],
+        'fixture': f"{prediction['home']} vs {prediction['away']}",
+        'competition': prediction['competition'] or '',
+        'league': readable_league(prediction['competition']),
+        'market': family,
+        'selection': selection,
+        'probability': round(probability * 100, 1),
+        'starts_at': prediction['starts_at'],
+        'odds': round(float(price['decimal_odds']), 2),
+        'confidence': None if confidence is None else round(confidence * 100, 1),
+    }
 
 
 def _draws(connection, start, end):

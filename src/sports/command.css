@@ -253,6 +253,9 @@
 .ccx-sure-time{width:14%}
 .ccx-sure-price{width:8%}
 .ccx-sure-confidence{width:16%}
+.ccx-sure-ticket td{background:#eef4ff;white-space:normal}
+.ccx-sure-ticket b{display:block;color:#10295c}
+.ccx-sure-ticket span{display:block;color:#385384;font-weight:650;line-height:1.35}
 .ccx-sure-match{display:flex;flex-direction:column;gap:2px}
 .ccx-sure-match b{line-height:1.3}
 .ccx-sure-match small{color:#385384;font-weight:650}
