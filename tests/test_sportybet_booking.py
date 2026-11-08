@@ -350,6 +350,149 @@ class BookingTests(unittest.TestCase):
 
         self.assertEqual(asyncio.run(run())['clicked'], 'liga portugal 2')
 
+    def test_nested_country_tournament_is_opened_instead_of_collapsing_the_country(self):
+        from playwright.async_api import async_playwright
+        from sportybet_booking import _reveal_fixture
+
+        html = """<!doctype html><html><head><style>
+          ul { width: 300px; margin: 0; padding: 0; }
+          .category-list-item { width: 148px; height: 24px; }
+          .tournament-list { display: none; }
+          .tournament-list.open { display: block; }
+          .tournament-list-item { width: 0; height: 0; overflow: hidden; }
+          .tournament-list.open .tournament-list-item { width: 148px; height: 24px; overflow: visible; }
+        </style></head><body>
+          <ul>
+            <li class="category-list-item" id="spain">
+              <div class="category-item"><span>Spain</span></div>
+              <div class="tournament-list" id="spain-tournaments">
+                <ul>
+                  <li class="tournament-list-item" title="Primera FEB"><span class="tournament-name">Primera FEB</span></li>
+                  <li class="tournament-list-item" title="Segunda FEB"><span class="tournament-name">Segunda FEB</span></li>
+                </ul>
+              </div>
+            </li>
+          </ul>
+          <div id="board"></div>
+          <script>
+            const spain = document.getElementById('spain');
+            const tournaments = document.getElementById('spain-tournaments');
+            spain.addEventListener('click', (event) => {
+              if (event.target.closest('.tournament-list-item')) return;
+              tournaments.classList.toggle('open');
+            });
+            document.querySelector('[title="Segunda FEB"]').addEventListener('click', () => {
+              document.getElementById('board').innerHTML =
+                '<article class="match-row"><span>Cb Benicarlo</span> <span>Upb Gandia</span>'
+                + '<button class="m-outcome">1.58</button><button class="m-outcome">2.20</button>'
+                + '<button class="m-outcome">165.5</button><button class="m-outcome">1.85</button>'
+                + '<button class="m-outcome">1.95</button></article>'
+                + '<button id="book">Book bet</button><div data-booking-code></div>';
+              document.getElementById('book').onclick = () => {
+                document.querySelector('[data-booking-code]').textContent = 'BK7REAL';
+              };
+              document.querySelectorAll('.m-outcome').forEach(node => {
+                node.onclick = () => { node.dataset.clicked = 'yes'; };
+              });
+            });
+          </script>
+        </body></html>"""
+
+        async def run():
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(headless=True)
+                page = await (await browser.new_context()).new_page()
+                await page.set_content(html)
+                revealed = await _reveal_fixture(page, {
+                    'home': 'Cb Benicarlo', 'away': 'Upb Gandia', 'competition': 'Spain Segunda FEB',
+                })
+                from sportybet_booking import prepare_slip
+                result = await prepare_slip(page, [{
+                    'fixture_id': 'benicarlo', 'home': 'Cb Benicarlo', 'away': 'Upb Gandia',
+                    'sport': 'basketball', 'competition': 'Spain Segunda FEB',
+                    'market': 'MONEYLINE_HOME', 'selection': 'home', 'decimal_odds': 1.58,
+                }])
+                home = await page.locator('.m-outcome').first.get_attribute('data-clicked')
+                await browser.close()
+                return revealed, result, home
+
+        revealed, result, home = asyncio.run(run())
+        self.assertTrue(revealed.get('visible'), revealed)
+        self.assertEqual(result['status'], 'CODE_GENERATED')
+        self.assertEqual(result['code'], 'BK7REAL')
+        self.assertEqual(result['seen'][0]['page_odds'], 1.58)
+        self.assertEqual(home, 'yes')
+
+    def test_sure_odds_displayed_code_survives_page_price_drift(self):
+        """Page odds outside 2.00–2.95 must not discard a sure-odds displayed code."""
+        from datetime import datetime, timezone
+        from sportybet_booking import _apply_displayed_prices, _store_displayed_code, _sure_odds_ticket
+        moment = datetime(2026, 11, 8, 7, 53, tzinfo=timezone.utc).isoformat()
+        holdout = '{"calibration_error":0.09,"sample_size":30}'
+        with db.connect() as connection:
+            connection.execute('DELETE FROM sports_ai_booking_codes')
+            connection.execute('DELETE FROM sports_ai_accumulator_legs')
+            connection.execute('DELETE FROM sports_ai_accumulator_tickets')
+            connection.execute('DELETE FROM sports_ai_accumulator_runs')
+            connection.execute("DELETE FROM sports_ai_market_registry WHERE sport='basketball' AND market_key='MONEYLINE_HOME'")
+            connection.execute(
+                """INSERT INTO sports_ai_market_registry
+                   (id,sport,market_key,selection,period,line_value,settlement_rule,data_requirements,model_source,status,evidence_json,updated_at)
+                   VALUES('holdout-ml-home','basketball','MONEYLINE_HOME','home','match',NULL,'moneyline','[]','test','active',?,?)""",
+                (holdout, moment),
+            )
+            connection.execute(
+                """INSERT INTO sports_ai_accumulator_runs
+                   (id,config_id,sport_mode,status,trigger,idempotency_key,parameters_json,actor,started_at)
+                   VALUES('sure-run','accumulator-default','basketball','complete','test','sure-run','{}','test',?)""",
+                (moment,),
+            )
+            connection.execute(
+                """INSERT INTO sports_ai_accumulator_tickets
+                   (id,run_id,family_id,version,signature,tier,sport_mode,status,leg_count,probability_basis,
+                    joint_probability,combined_odds,explanation,parameters_json,created_at)
+                   VALUES('sure-ticket','sure-run','family',1,'sure-sig',2,'basketball','unverified_probability',2,'independent',
+                          0.85,2.45,'test',?,?)""",
+                (
+                    '{"product":"sure_odds","band":"2-2.95","odds_band":"2.00–2.95","places_wager":false}',
+                    moment,
+                ),
+            )
+            for leg_id, opp, fixture, home, away, odds, prob in (
+                ('leg-a', 'opp-a', 'fx-a', 'Home A', 'Away A', 1.40, 0.90),
+                ('leg-b', 'opp-b', 'fx-b', 'Home B', 'Away B', 1.75, 0.88),
+            ):
+                connection.execute(
+                    """INSERT INTO sports_ai_accumulator_legs
+                       (id,ticket_id,opportunity_id,fixture_id,sport,competition,home,away,starts_at,market,selection,
+                        decimal_odds,probability,bookmaker,odds_observed_at,quote_market,quote_outcome,model_id,
+                        model_version,settlement_kind,result,qualification_json)
+                       VALUES(?,?,?,?, 'basketball','Test',?,?,?,'MONEYLINE_HOME','home',?,?,'SportyBet',?,
+                              'MONEYLINE_HOME','home','model','1','binary','pending','{}')""",
+                    (leg_id, 'sure-ticket', opp, fixture, home, away, moment, odds, prob, moment),
+                )
+            self.assertTrue(_sure_odds_ticket(connection, 'sure-ticket'))
+            _apply_displayed_prices(
+                connection,
+                'sure-ticket',
+                [
+                    {'fixture_id': 'fx-a', 'market': 'MONEYLINE_HOME', 'selection': 'home', 'page_odds': 1.55},
+                    {'fixture_id': 'fx-b', 'market': 'MONEYLINE_HOME', 'selection': 'home', 'page_odds': 2.20},
+                ],
+            )
+            self.assertFalse(_sure_odds_ticket(connection, 'sure-ticket'))
+            _store_displayed_code(connection, 'sure-ticket', 'Q3XTSR', 'isolated sure-odds evidence')
+            stored = connection.execute(
+                "SELECT code, accumulator_ticket_id FROM sports_ai_booking_codes WHERE code='Q3XTSR'",
+            ).fetchone()
+            connection.execute("DELETE FROM sports_ai_booking_codes WHERE code='Q3XTSR'")
+            connection.execute("DELETE FROM sports_ai_accumulator_legs WHERE ticket_id='sure-ticket'")
+            connection.execute("DELETE FROM sports_ai_accumulator_tickets WHERE id='sure-ticket'")
+            connection.execute("DELETE FROM sports_ai_accumulator_runs WHERE id='sure-run'")
+            connection.execute("DELETE FROM sports_ai_market_registry WHERE sport='basketball' AND market_key='MONEYLINE_HOME'")
+        self.assertEqual(stored['code'], 'Q3XTSR')
+        self.assertEqual(stored['accumulator_ticket_id'], 'sure-ticket')
+
     def test_a_failed_job_does_not_take_the_current_ticket_slot(self):
         from datetime import datetime, timezone
         evening = datetime(2026, 11, 4, 16, 10, tzinfo=timezone.utc)

@@ -158,8 +158,9 @@
 .ccx-kpis span{display:block;font-size:11px;font-weight:800;letter-spacing:-.2px}
 .ccx-kpis strong{display:block;font-size:28px;line-height:1.15;font-weight:800;letter-spacing:-1px}
 .ccx-kpis small{display:block;font-size:11px;color:#17438d;font-weight:600}
-.ccx-primary{display:grid;grid-template-columns:minmax(0,1.66fr) minmax(300px,.9fr);gap:9px;margin-bottom:11px}
-.ccx-secondary{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(220px,.9fr) minmax(240px,1fr);gap:9px;margin-bottom:11px}
+.ccx-primary{display:grid;grid-template-columns:minmax(0,1fr);gap:9px;margin-bottom:11px}
+.ccx-sure-row{display:grid;grid-template-columns:minmax(0,1fr);gap:9px;margin-bottom:11px}
+.ccx-secondary{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:9px;margin-bottom:11px}
 .ccx-bottom{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(180px,.75fr) minmax(220px,1fr);gap:9px}
 .ccx-high-odds{display:grid;gap:12px}
 .ccx-high-note{margin:0;color:#385384;font-size:12px;line-height:1.45}
@@ -181,7 +182,7 @@
 .ccx-filters button{border:1px solid #dbe6f8;background:#f4f8ff;color:#0b245e;padding:6px 9px;border-radius:8px;font-weight:700;font-size:11px}
 .ccx-filters button.on{background:#0679ff;border-color:#0679ff;color:#fff}
 .ccx-table-scroll{overflow-x:auto}
-.ccx-book-scroll{max-height:390px;overflow:auto;border:1px solid #e3ecf8;border-radius:10px}
+.ccx-book-scroll{max-height:520px;overflow:auto;border:1px solid #e3ecf8;border-radius:10px}
 .ccx-book-scroll::-webkit-scrollbar{width:8px;height:8px}
 .ccx-book-scroll::-webkit-scrollbar-thumb{background:#b7cbeb;border-radius:8px}
 .ccx-book thead th{position:sticky;top:0;z-index:1}
@@ -247,7 +248,7 @@
 @media(max-width:760px){.ccx-tabs{flex-direction:column}.ccx-book{min-width:560px}}
 .ccx-sure .ccx-table{table-layout:fixed}
 .ccx-sure .ccx-table th,.ccx-sure .ccx-table td{white-space:normal;vertical-align:top}
-.ccx-sure .ccx-table-scroll{overflow-x:hidden}
+.ccx-sure .ccx-table-scroll{overflow-x:hidden;max-height:520px}
 .ccx-sure-num{width:32px}
 .ccx-sure-fixture{width:30%}
 .ccx-sure-league{width:18%}
@@ -347,5 +348,5 @@
 .ccx-flow-progress div{flex:1;min-width:0}
 .ccx-flow-progress i{display:block;height:8px;margin-top:4px;border-radius:8px;background:#d4dce9;overflow:hidden}
 .ccx-flow-progress i b{display:block;height:100%;margin:0;background:#1686ff;border-radius:8px}
-@media(max-width:1280px){.ccx-kpis,.ccx-flow-metrics{grid-template-columns:repeat(3,1fr)}.ccx-primary,.ccx-secondary,.ccx-bottom,.ccx-flow-foot{grid-template-columns:1fr}}
+@media(max-width:1280px){.ccx-kpis,.ccx-flow-metrics{grid-template-columns:repeat(3,1fr)}.ccx-primary,.ccx-sure-row,.ccx-secondary,.ccx-bottom,.ccx-flow-foot{grid-template-columns:1fr}}
 @media(max-width:760px){.ccx-top{flex-direction:column;align-items:flex-start}.ccx-kpis,.ccx-metrics,.ccx-flow-metrics{grid-template-columns:1fr 1fr}.ccx-flow-head{flex-direction:column}}

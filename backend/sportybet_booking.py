@@ -17,13 +17,25 @@ REFRESH_MINUTES = 15
 EVIDENCE = Path(__file__).resolve().parent / 'booking_evidence'
 
 FIND_ODDS = '''(args) => {
-  const fold = value => (value || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ');
-  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk','dsc','estac','rcd']);
+  const fold = value => (value || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').replace(/ä/g, 'a').replace(/ö/g, 'o').replace(/ü/g, 'u').replace(/ß/g, 'ss').replace(/ł/g, 'l').replace(/[^a-z0-9.]+/g, ' ');
+  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk','dsc','estac','rcd','cb','bc','kk','bk']);
+  const near = (token, word) => {
+    if (token === word) return true;
+    if (token.length < 6 || word.length < 6 || Math.abs(token.length - word.length) > 2) return false;
+    const rows = [Array.from({length: word.length + 1}, (_, index) => index)];
+    for (let i = 1; i <= token.length; i += 1) {
+      const next = [i];
+      for (let j = 1; j <= word.length; j += 1) next.push(Math.min(next[j - 1] + 1, rows[i - 1][j] + 1, rows[i - 1][j - 1] + (token[i - 1] === word[j - 1] ? 0 : 1)));
+      rows.push(next);
+    }
+    return rows[token.length][word.length] <= 2;
+  };
   const tokens = value => {
     const all = fold(value).split(' ').map(token => token.replace(/\\./g, '')).filter(Boolean);
-    const kept = all.filter(token => !skip.has(token) && !/^\\d+$/.test(token));
+    const kept = all.filter(token => !skip.has(token) && token.length > 1 && !/^\\d+$/.test(token));
     return kept.length ? kept : all;
   };
+  const present = (blob, token) => blob.includes(token) || blob.split(' ').some(word => near(token, word.replace(/\\./g, '')));
   const wanted = tokens(args.home);
   const other = tokens(args.away);
   const normalize = value => fold(value).split(' ').filter(Boolean);
@@ -38,7 +50,7 @@ FIND_ODDS = '''(args) => {
   document.querySelectorAll('[data-sports-ai-pick]').forEach(node => node.removeAttribute('data-sports-ai-pick'));
   for (const row of document.querySelectorAll('.match-row, article')) {
     const blob = fold(row.innerText || '');
-    if (!wanted.every(token => blob.includes(token)) || !other.every(token => blob.includes(token))) continue;
+    if (!wanted.every(token => present(blob, token)) || !other.every(token => present(blob, token))) continue;
     const prices = [];
     for (const node of row.querySelectorAll('.m-outcome, button, a, [role="button"]')) {
       if (node.classList.contains('m-outcome--disabled') || node.classList.contains('m-outcome-odds')) continue;
@@ -50,7 +62,8 @@ FIND_ODDS = '''(args) => {
     }
     if (!prices.length) continue;
     const explicit = prices.some(({node}) => node.hasAttribute('data-outcome') || node.hasAttribute('data-selection'));
-    if (args.two_way && !explicit && prices.length !== 2) continue;
+    // 2 Way & O/U shows winner prices first, then a total line and over/under.
+    if (args.two_way && !explicit && prices.length !== 2 && prices.length !== 5) continue;
     let matches = [];
     if (explicit) {
       matches = prices.filter(({node}) => {
@@ -58,6 +71,9 @@ FIND_ODDS = '''(args) => {
         return sideAliases.some(alias => label.includes(alias)) ||
           (selection.length > 0 && selection.every(token => label.includes(token)));
       });
+    } else if (args.two_way) {
+      const index = side === 'away' ? 1 : side === 'home' ? 0 : -1;
+      if (index >= 0 && index < prices.length) matches = [prices[index]];
     } else {
       const index = side === 'draw'
         ? (prices.length >= 3 ? 1 : -1)
@@ -549,6 +565,19 @@ def create_sure_odds_job(connection, ticket_id):
     return create_job(connection, selections, high_odds=True)
 
 
+def _ticket_product(connection, ticket_id):
+    row = connection.execute(
+        'SELECT parameters_json FROM sports_ai_accumulator_tickets WHERE id=?',
+        (ticket_id,),
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        return json.loads(row['parameters_json'] or '{}').get('product')
+    except json.JSONDecodeError:
+        return None
+
+
 def _store_displayed_code(connection, ticket_id, code, evidence):
     existing = connection.execute(
         "SELECT accumulator_ticket_id FROM sports_ai_booking_codes WHERE code=? AND bookmaker='SportyBet'",
@@ -564,7 +593,18 @@ def _store_displayed_code(connection, ticket_id, code, evidence):
         from high_odds_service import validate_snapshot
         if validate_snapshot(connection,ticket_id):
             raise ValueError('Finalized high-odds ticket no longer passes registration checks')
-    if not optimized and not ticket_is_bookable(connection, ticket_id) and not _high_odds_ticket(connection, ticket_id) and not _sure_odds_ticket(connection, ticket_id):
+    product = _ticket_product(connection, ticket_id)
+    # Sure/high-odds tickets are gated when the job is queued. Page prices can
+    # move the combined total outside the build band after SportyBet shows the
+    # code; that must not discard a real displayed code from Active Codes.
+    queued_product = product in ('sure_odds', 'high_odds')
+    if (
+        not optimized
+        and not queued_product
+        and not ticket_is_bookable(connection, ticket_id)
+        and not _high_odds_ticket(connection, ticket_id)
+        and not _sure_odds_ticket(connection, ticket_id)
+    ):
         raise ValueError('A displayed code is stored only when every leg has a current QUALIFIED decision')
     moment = _now().isoformat()
     expiry = connection.execute(
@@ -587,12 +627,12 @@ FOCUS_MARKET = '''(args) => {
   const labels = family === 'handicap'
     ? ['2 Way Handicap', 'Handicap', 'Asian Handicap', 'Spread']
     : family === 'winner'
-      ? ['Winner (incl. overtime)', 'Winner', 'Match Winner', 'Moneyline']
+      ? ['2 Way & O/U', '2 Way', 'Winner (incl. overtime)', 'Winner', 'Match Winner', 'Moneyline']
     : family === 'double'
       ? ['Double Chance']
       : ['O/U', 'Over/Under', 'Goals Over/Under', '2 Way & O/U', '3 Way & O/U'];
-  const fold = value => (value || '').toLowerCase().replace(/ä/g, 'a').replace(/ö/g, 'o').replace(/ü/g, 'u').replace(/ß/g, 'ss').replace(/[^a-z0-9.]+/g, ' ');
-  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk','dsc','estac','rcd']);
+  const fold = value => (value || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').replace(/ä/g, 'a').replace(/ö/g, 'o').replace(/ü/g, 'u').replace(/ß/g, 'ss').replace(/ł/g, 'l').replace(/[^a-z0-9.]+/g, ' ');
+  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk','dsc','estac','rcd','cb','bc','kk','bk']);
   const near = (token, word) => {
     if (token === word) return true;
     if (token.length < 6 || word.length < 6 || Math.abs(token.length - word.length) > 2) return false;
@@ -609,7 +649,7 @@ FOCUS_MARKET = '''(args) => {
     const kept = all.filter(token => !skip.has(token) && !/^\\d+$/.test(token));
     return kept.length ? kept : all;
   };
-  const present = (blob, token) => blob.split(' ').some(word => near(token, word.replace(/\\./g, '')));
+  const present = (blob, token) => blob.includes(token) || blob.split(' ').some(word => near(token, word.replace(/\\./g, '')));
   let scope = document;
   if (args.home) {
     const wanted = tokens(args.home);
@@ -641,8 +681,8 @@ FOCUS_MARKET = '''(args) => {
 }'''
 
 FIND_LINE = '''(args) => {
-  const fold = value => (value || '').toLowerCase().replace(/ä/g, 'a').replace(/ö/g, 'o').replace(/ü/g, 'u').replace(/ß/g, 'ss').replace(/[^a-z0-9.]+/g, ' ');
-  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk','dsc','estac','rcd']);
+  const fold = value => (value || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').replace(/ä/g, 'a').replace(/ö/g, 'o').replace(/ü/g, 'u').replace(/ß/g, 'ss').replace(/ł/g, 'l').replace(/[^a-z0-9.]+/g, ' ');
+  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk','dsc','estac','rcd','cb','bc','kk','bk']);
   const near = (token, word) => {
     if (token === word) return true;
     if (token.length < 6 || word.length < 6 || Math.abs(token.length - word.length) > 2) return false;
@@ -659,7 +699,7 @@ FIND_LINE = '''(args) => {
     const kept = all.filter(token => !skip.has(token) && !/^\\d+$/.test(token));
     return kept.length ? kept : all;
   };
-  const present = (blob, token) => blob.split(' ').some(word => near(token, word.replace(/\\./g, '')));
+  const present = (blob, token) => blob.includes(token) || blob.split(' ').some(word => near(token, word.replace(/\\./g, '')));
   const wanted = tokens(args.home);
   const other = tokens(args.away);
   const price = Number(args.odds).toFixed(2);
@@ -745,8 +785,8 @@ def _market_side(market):
 
 
 REVEAL_FIXTURE = '''(args) => {
-  const fold = value => (value || '').toLowerCase().replace(/ä/g, 'a').replace(/ö/g, 'o').replace(/ü/g, 'u').replace(/ß/g, 'ss').replace(/[^a-z0-9.]+/g, ' ');
-  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk','dsc','estac','rcd']);
+  const fold = value => (value || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').replace(/ä/g, 'a').replace(/ö/g, 'o').replace(/ü/g, 'u').replace(/ß/g, 'ss').replace(/ł/g, 'l').replace(/[^a-z0-9.]+/g, ' ');
+  const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk','dsc','estac','rcd','cb','bc','kk','bk']);
   const near = (token, word) => {
     if (token === word) return true;
     if (token.length < 6 || word.length < 6 || Math.abs(token.length - word.length) > 2) return false;
@@ -758,7 +798,7 @@ REVEAL_FIXTURE = '''(args) => {
     }
     return rows[token.length][word.length] <= 2;
   };
-  const present = (blob, token) => blob.split(' ').some(word => near(token, word.replace(/\\./g, '')));
+  const present = (blob, token) => blob.includes(token) || blob.split(' ').some(word => near(token, word.replace(/\\./g, '')));
   const tokens = value => {
     const all = fold(value).split(' ').map(token => token.replace(/\\./g, '')).filter(Boolean);
     const kept = all.filter(token => !skip.has(token) && token.length > 1 && !/^\\d+$/.test(token));
@@ -777,19 +817,34 @@ REVEAL_FIXTURE = '''(args) => {
   const labelOf = item => {
     if (item.classList.contains('tournament-list-item')) {
       const named = item.querySelector(':scope > .tournament-name') || item.querySelector('.tournament-name');
-      const raw = (named && named.textContent) || item.textContent || '';
+      const raw = (named && named.textContent) || item.getAttribute('title') || item.textContent || '';
       return fold(raw).trim().split(' ').slice(0, 8).join(' ');
     }
     const span = item.querySelector(':scope > .category-item span');
     return fold((span && span.textContent) || '').trim();
   };
+  const measure = item => {
+    let box = item.getBoundingClientRect();
+    if ((box.width < 8 || box.height < 8) && item.classList.contains('tournament-list-item')) {
+      try { item.scrollIntoView({block: 'nearest', inline: 'nearest'}); } catch (error) {}
+      box = item.getBoundingClientRect();
+    }
+    return box;
+  };
   document.querySelectorAll('[data-sports-ai-league]').forEach(node => node.removeAttribute('data-sports-ai-league'));
   let best = null;
   let bestRank = 0;
   for (const item of rows) {
-    const box = item.getBoundingClientRect();
     const tournament = item.classList.contains('tournament-list-item');
-    if (box.left < 0 || box.width < 36 || box.width > 420 || box.height < 8 || box.height > 64) continue;
+    // An expanded country already lists its tournaments. Clicking it again collapses it.
+    if (!tournament && item.hasAttribute('data-sports-ai-opened') && item.querySelector(':scope .tournament-list-item .tournament-name')) continue;
+    const box = measure(item);
+    const named = tournament && (item.querySelector('.tournament-name') || item.getAttribute('title'));
+    const parentCategory = tournament ? item.closest('li.category-list-item') : null;
+    // SportyBet keeps nested tournament nodes at display:none; the open country
+    // marker is the reliable signal that those rows can be clicked.
+    const nestedReady = Boolean(tournament && named && parentCategory && parentCategory.hasAttribute('data-sports-ai-opened'));
+    if (!nestedReady && (box.left < 0 || box.width < 36 || box.width > 420 || box.height < 8 || box.height > 64)) continue;
     if (!tournament && (box.left > 420 || box.width > 320)) continue;
     const text = labelOf(item);
     const label = text.split(' ').filter(Boolean);
@@ -801,7 +856,7 @@ REVEAL_FIXTURE = '''(args) => {
     const same = (token, word) => bare(token) === bare(word) || alias[token] === word || alias[word] === token;
     const hits = compTokens.filter(token => label.some(word => same(token, word))).length;
     const extras = label.filter(word => !compTokens.some(token => same(token, word))).length;
-    const rank = hits * 20 - extras * 25 + (item.classList.contains('tournament-list-item') ? 6 : 0) + (box.top > 0 && box.top < 900 ? 1 : 0);
+    const rank = hits * 20 - extras * 25 + (tournament ? 12 : 0) + (box.top > 0 && box.top < 900 ? 1 : 0);
     if (hits > 0 && rank > bestRank) {
       best = item;
       bestRank = rank;
@@ -810,6 +865,7 @@ REVEAL_FIXTURE = '''(args) => {
   if (best) {
     best.setAttribute('data-sports-ai-league', '1');
     best.setAttribute('data-sports-ai-opened', '1');
+    try { best.scrollIntoView({block: 'center', inline: 'nearest'}); } catch (error) {}
     return {visible: false, clicked: labelOf(best).slice(0, 40)};
   }
   const search = document.querySelector('input[placeholder*="Search" i], input[type="search"]');
@@ -829,7 +885,18 @@ async def _reveal_fixture(page, item):
     for _ in range(6):
         if result.get('visible') or result.get('clicked') == 'search' or not result.get('clicked'):
             break
-        await page.locator('[data-sports-ai-league="1"]').click()
+        clicked = await page.evaluate(
+            '''() => {
+              const node = document.querySelector('[data-sports-ai-league="1"]');
+              if (!node) return false;
+              try { node.scrollIntoView({block: 'center', inline: 'nearest'}); } catch (error) {}
+              const box = node.querySelector('.checkbox') || node;
+              box.click();
+              return true;
+            }'''
+        )
+        if not clicked:
+            break
         await page.wait_for_timeout(1500)
         result = await page.evaluate(REVEAL_FIXTURE, payload)
         if result.get('visible'):
@@ -860,7 +927,7 @@ SWITCH_LINE = '''(args) => {
     const kept = all.filter(token => !skip.has(token) && !/^\\d+$/.test(token));
     return kept.length ? kept : all;
   };
-  const present = (blob, token) => blob.split(' ').some(word => near(token, word.replace(/\\./g, '')));
+  const present = (blob, token) => blob.includes(token) || blob.split(' ').some(word => near(token, word.replace(/\\./g, '')));
   const wanted = tokens(args.home);
   const other = tokens(args.away);
   const rows = [...document.querySelectorAll('.match-row')].filter(candidate => {
@@ -1339,9 +1406,10 @@ async def execute_job(job_id, page_url=None):
                     _drop_unpriced_legs(connection, ticket_id, result['skipped'])
                 _set_job(connection, job_id, 'CODE_GENERATED', code=result['code'], screenshot=str(shot), odds_json=json.dumps(result['seen']), reason_code='CODE_VERIFIED')
                 if ticket_id:
-                    _apply_displayed_prices(connection, ticket_id, result.get('seen') or [])
-                if ticket_id:
+                    # Store before rewriting leg prices. Applying page odds first can
+                    # push a sure-odds total outside 2.00–2.95 and discard the code.
                     _store_displayed_code(connection, ticket_id, result['code'], str(shot))
+                    _apply_displayed_prices(connection, ticket_id, result.get('seen') or [])
                     _record_diagnostic(connection, ticket_id, 'CODE_VERIFIED', 'SportyBet displayed one booking code and it matched the expected format.', _now())
                 _log_booking(connection, job_id, 'published', 'SportyBet displayed a booking code', ticket_id=ticket_id, session_id=session_id, detail={'evidence': str(shot)})
                 _close_session(connection, session_id, 'CODE_GENERATED', 'Displayed booking code stored')

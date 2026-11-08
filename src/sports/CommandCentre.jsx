@@ -328,7 +328,7 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
         </div>
       </section>
     </div>
-    <div className="ccx-secondary">
+    <div className="ccx-sure-row">
       <section className="ccx-card ccx-sure">
         <header><strong><Goal size={16}/>Sure Odds For (Today) <small>{view.sure_odds_date || 'Today'}</small></strong><button className="ccx-link" onClick={() => nav('tickets')}>View All</button></header>
         <div className="ccx-table-scroll ccx-card-scroll"><table className="ccx-table compact"><colgroup><col className="ccx-sure-num"/><col className="ccx-sure-fixture"/><col className="ccx-sure-league"/><col className="ccx-sure-code"/><col className="ccx-sure-time"/><col className="ccx-sure-price"/><col className="ccx-sure-confidence"/></colgroup><thead><tr><th>#</th><th>Fixture</th><th>League</th><th>Booking code</th><th>Match Date/time</th><th>Odds</th><th>AI Confidence</th></tr></thead><tbody>
@@ -339,6 +339,8 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
           {!(view.sure_odds || []).length && <tr><td colSpan="7">No combined ticket priced from 2.00 to 2.95 is stored for today.</td></tr>}
         </tbody></table></div>
       </section>
+    </div>
+    <div className="ccx-secondary">
       <section className="ccx-card">
         <header><strong><Dribbble size={16}/>Sports Coverage</strong><button className="ccx-link" onClick={() => nav('sources')}>View All</button></header>
         <div className="ccx-coverage ccx-card-scroll">{(view.sports || []).map(item => <div key={item.name}><b>{item.name}</b><span>{fmt(item.fixtures)} fixtures</span><em className={pillClass(item.status)}>{item.status}</em></div>)}{!(view.sports || []).length && <p className="ccx-empty">No upcoming fixture is stored.</p>}</div>
