@@ -25,11 +25,16 @@ _WORK_LOCK=threading.Lock()
 _BACKGROUND=None
 _WAKE=threading.Event()
 PRIMARY = '2-4.99'
+JACKPOT = 'jackpot'
+JACKPOT_TARGET = 2_000_000
+JACKPOT_MAX = 2_200_000
+JACKPOT_STAKE = 100
+DAILY_TARGET = 5
 DEFAULTS = dict(min_legs=2, max_legs=16, min_leg_odds=1.01, max_per_competition=1, max_per_team=1,
                 min_probability=0.05, min_edge=0.01, min_completeness=0.5,
                 min_model_reliability=0.8, odds_max_age_minutes=15,
                 beam_width=100, search_limit=12000, timeout_seconds=3,
-                max_registration_attempts=3, registration_enabled=True)
+                max_registration_attempts=3, registration_enabled=True, jackpot_max_legs=25)
 
 
 def now_utc(now=None):
@@ -67,7 +72,7 @@ def save_settings(connection, updates, category_updates, actor):
         raise ValueError('Unknown optimizer setting')
     merged = {**current, **updates}
     for name, low, high in (
-        ('min_legs',2,25),('max_legs',2,25),('max_per_competition',1,1),
+        ('min_legs',2,25),('max_legs',2,25),('jackpot_max_legs',2,25),('max_per_competition',1,1),
         ('min_leg_odds',1.01,1000),
         ('max_per_team',1,1),('min_probability',0.01,0.99),('min_edge',0.001,1),
         ('min_completeness',0.5,1),('min_model_reliability',0.8,1),
@@ -81,6 +86,8 @@ def save_settings(connection, updates, category_updates, actor):
             raise ValueError(f'{name} must be an integer')
     if merged['max_legs'] < merged['min_legs']:
         raise ValueError('Maximum selections must be at least the minimum')
+    if merged['jackpot_max_legs'] < merged['min_legs']:
+        raise ValueError('Jackpot maximum selections must be at least the minimum')
     if not isinstance(merged['registration_enabled'], bool):
         raise ValueError('registration_enabled must be boolean')
     known = {c['id']: c for c in categories(connection)}
@@ -204,7 +211,14 @@ def live_opportunities(connection, now=None, sport=None):
 
 
 def inside(odds, category):
-    return odds <= 1000 and category['min_odds'] <= round(odds,2) <= category['max_odds']
+    if not category or not math.isfinite(odds):
+        return False
+    ceiling = JACKPOT_MAX if category.get('id') == JACKPOT else 1000
+    return odds <= ceiling and category['min_odds'] <= round(odds,2) <= category['max_odds']
+
+
+def category_settings(settings, category):
+    return {**settings, 'max_legs': settings['jackpot_max_legs']} if category['id'] == JACKPOT else settings
 
 
 def optimize(pool, category, settings):
@@ -244,7 +258,8 @@ def optimize(pool, category, settings):
                 if keys & events or team_keys & teams or league in leagues:
                     continue
                 product = odds*leg['decimal_odds']
-                if not math.isfinite(product) or product>1000 or round(product,2)>category['max_odds']:
+                ceiling = JACKPOT_MAX if category.get('id') == JACKPOT else 1000
+                if not math.isfinite(product) or product>ceiling or round(product,2)>category['max_odds']:
                     continue
                 indexes = indices+(index,)
                 joint = prob*leg['probability']
@@ -288,12 +303,18 @@ def optimize(pool, category, settings):
 
 
 def persist_ticket(connection, candidate, category, event_id, settings, now):
+    # Recheck the daily cap under the caller's write lock before reserving legs.
+    if category['id']==JACKPOT and connection.execute("""SELECT COUNT(*)
+        FROM sports_ai_high_odds_tickets WHERE category_id=?
+        AND date(created_at,'+1 hour')=date(?,'+1 hour')""",(JACKPOT,now.isoformat())).fetchone()[0]>=DAILY_TARGET:
+        return None
     snapshot = {'category_id':category['id'],'settings':{k:settings[k] for k in DEFAULTS},
         'legs':candidate['legs'],'combined_odds':candidate['combined_odds'],
         'joint_probability':candidate['joint_probability'],'expected_value':candidate['estimated_edge'],
         'confidence':candidate['confidence'],'model_uncertainty':candidate['model_uncertainty'],
         'lower_joint_probability':candidate['lower_joint_probability'],
-        'risk':candidate['risk'],'dependency_policy':candidate['dependency_policy']}
+        'risk':candidate['risk'],'dependency_policy':candidate['dependency_policy'],
+        'stake_assumption':JACKPOT_STAKE if category['id']==JACKPOT else None}
     signature = digest({'category':category['id'],'legs':sorted(
         [(l['fixture_id'],l['market'],l['decimal_odds'],l['model_id'],l['model_version']) for l in candidate['legs']])})
     if connection.execute('SELECT 1 FROM sports_ai_high_odds_tickets WHERE signature=?',(signature,)).fetchone():
@@ -330,9 +351,15 @@ def generate_event(connection, event_id, now=None):
                 JOIN sports_ai_accumulator_tickets t ON t.id=h.ticket_id WHERE h.category_id=?
                 AND t.status IN ('qualified','review_required','awaiting_odds','unverified_probability')""",(category['id'],)).fetchone()[0]
             slots = max(0,category['max_active']-active) if category['enabled'] else 0
+            daily_created = connection.execute("""SELECT COUNT(*) FROM sports_ai_high_odds_tickets
+                WHERE category_id=? AND date(created_at,'+1 hour')=date(?,'+1 hour')""",
+                (category['id'],current.isoformat())).fetchone()[0]
+            if category['id']==JACKPOT:
+                slots=min(slots,max(0,DAILY_TARGET-daily_created))
+            search_settings=category_settings(settings,category)
             report = {'rejections':rejected,'qualified_inputs':total,'unused_inputs':len(pool),
                 'created_ids':[],'priority':category['priority'],'policy':'one_active_ticket_per_match'}
-            candidates, search = optimize(pool,category,settings) if slots else ([],{'candidate_count':0,'evaluated':0,'truncated':False})
+            candidates, search = optimize(pool,category,search_settings) if slots else ([],{'candidate_count':0,'evaluated':0,'truncated':False})
             report.update(search)
             if not connection.in_transaction: connection.execute('BEGIN IMMEDIATE')
             connection.execute('SAVEPOINT high_odds_category')
@@ -340,12 +367,15 @@ def generate_event(connection, event_id, now=None):
             for candidate in candidates:
                 if len(report['created_ids'])>=slots: break
                 if keys_for(candidate['legs']) & used: continue
-                identifier = persist_ticket(connection,candidate,category,event_id,settings,current)
+                identifier = persist_ticket(connection,candidate,category,event_id,search_settings,current)
                 if identifier:
                     report['created_ids'].append(identifier)
                     used.update(keys_for(candidate['legs']))
             remaining = [leg for leg in pool if not event_keys(leg)&used]
             status = 'created' if report['created_ids'] else 'disabled' if not category['enabled'] else 'capacity' if not slots else 'insufficient_eligible_data'
+            if category['enabled'] and category['id']==JACKPOT and daily_created>=DAILY_TARGET:
+                status='daily_target'
+                report['reason']='Five jackpot tickets have already been generated for this Africa/Lagos day.'
             if status=='insufficient_eligible_data':
                 report['reason']='No unused, calibrated, fresh-price combination passed this category. No ticket was forced.'
             connection.execute('INSERT INTO sports_ai_high_odds_runs VALUES(?,?,?,?,?,?,?,?)',
@@ -427,7 +457,10 @@ def validate_snapshot(connection, ticket_id, now=None):
         elif any(current_leg[key]!=leg[key] for key in ('decimal_odds','probability','model_id','model_version')):
             errors.append(f"{leg['home']} vs {leg['away']}: price or model changed; a new snapshot is required")
     category = connection.execute('SELECT * FROM sports_ai_high_odds_categories WHERE id=?',(row['category_id'],)).fetchone()
-    if not inside(math.prod(l['decimal_odds'] for l in snapshot['legs']),category): errors.append('Combined odds are outside the category or above 1,000')
+    if not inside(math.prod(l['decimal_odds'] for l in snapshot['legs']),dict(category) if category else None):
+        errors.append('Combined odds are outside the configured category limits')
+    if category and not category['enabled']:
+        errors.append('This odds category is disabled')
     return errors
 
 
@@ -515,10 +548,11 @@ def check_displayed_prices(ticket_id, selections, seen):
     if not ticket_id: return
     from db import connect
     with connect() as c:
-        row=c.execute('SELECT snapshot_json FROM sports_ai_high_odds_tickets WHERE ticket_id=?',(ticket_id,)).fetchone()
+        row=c.execute('SELECT snapshot_json,category_id FROM sports_ai_high_odds_tickets WHERE ticket_id=?',(ticket_id,)).fetchone()
         if not row: return
         problems=validate_snapshot(c,ticket_id)
         snapshot=json.loads(row[0])
+        category=c.execute('SELECT * FROM sports_ai_high_odds_categories WHERE id=?',(row['category_id'],)).fetchone()
     if problems: raise ValueError('; '.join(problems))
     actual={(item['fixture_id'],item.get('market')):float(item['page_odds']) for item in seen if item.get('page_odds') is not None}
     if len(selections)!=len(snapshot['legs']): raise ValueError('Finalized ticket cannot drop selections during registration')
@@ -526,7 +560,8 @@ def check_displayed_prices(ticket_id, selections, seen):
         price=actual.get((leg['fixture_id'],leg['market']))
         if price is None or abs(price-leg['decimal_odds'])>0.000001:
             raise ValueError('Displayed price changed; requalification and a new finalized snapshot are required')
-    if math.prod(actual.values())>1000: raise ValueError('Displayed combined odds exceed 1,000')
+    if not inside(math.prod(actual.values()),dict(category) if category else None):
+        raise ValueError('Displayed combined odds are outside the configured category limits')
 
 
 def worker_tick(now=None):
@@ -606,7 +641,7 @@ def dashboard(connection, now=None, date_from=None, date_to=None, status=None, c
         item.update(ticket_no=f"HO-{item['ticket_no']:06}",legs=snapshot['legs'],
             start_at=min(l['starts_at'] for l in snapshot['legs']),booking_code=code['code'] if code else None,
             code_status=code['status'] if code else None,model_uncertainty=snapshot['model_uncertainty'],
-            dependency_policy=snapshot['dependency_policy'])
+            dependency_policy=snapshot['dependency_policy'],stake_assumption=snapshot.get('stake_assumption'))
         tickets.append(item)
     summaries=[]
     for category in categories(connection):
@@ -616,7 +651,12 @@ def dashboard(connection, now=None, date_from=None, date_to=None, status=None, c
             FROM sports_ai_high_odds_tickets h JOIN sports_ai_accumulator_tickets t ON t.id=h.ticket_id
             LEFT JOIN sports_ai_ticket_settlements s ON s.ticket_id=t.id WHERE h.category_id=?""",(category['id'],)).fetchone())
         run=connection.execute('SELECT status,report_json,created_at FROM sports_ai_high_odds_runs WHERE category_id=? ORDER BY created_at DESC LIMIT 1',(category['id'],)).fetchone()
-        summaries.append({**category,**stats,'primary':category['id']==PRIMARY,
+        daily=dict(connection.execute("""SELECT COUNT(*) daily_created,
+            SUM(CASE WHEN registration_state='registered' THEN 1 ELSE 0 END) daily_verified
+            FROM sports_ai_high_odds_tickets WHERE category_id=?
+            AND date(created_at,'+1 hour')=date(?,'+1 hour')""",(category['id'],current.isoformat())).fetchone())
+        summaries.append({**category,**stats,**daily,'daily_target':DAILY_TARGET,
+            'stake_assumption':JACKPOT_STAKE if category['id']==JACKPOT else None,'primary':category['id']==PRIMARY,
             'last_run':None if not run else {'status':run['status'],'created_at':run['created_at'],**json.loads(run['report_json'])}})
     queue={r['status']:r['n'] for r in connection.execute('SELECT status,COUNT(*) n FROM sports_ai_high_odds_events GROUP BY status')}
     registrations={r['registration_state']:r['n'] for r in connection.execute('SELECT registration_state,COUNT(*) n FROM sports_ai_high_odds_tickets GROUP BY registration_state')}
@@ -630,4 +670,4 @@ def dashboard(connection, now=None, date_from=None, date_to=None, status=None, c
         'kpis':{'total':sum(c['total'] for c in summaries),'active':sum(c['active'] or 0 for c in summaries),
             'registered':registrations.get('registered',0),'pending':sum(registrations.get(k,0) for k in ('pending','queued','retry')),
             'settled':sum(c['settled'] for c in summaries)},'places_wager':False,
-        'note':'2.00–4.99 is the higher-probability core. All eight categories are searched in the same pass. Flexible selection counts. Maximum combined odds 1,000. Each match is used on one active ticket. Joint probability assumes conditional independence after dependency checks; calibration sensitivity is not a confidence interval.'}
+        'note':'All nine categories are searched in the same pass. Regular categories retain a 1,000 combined-odds limit. Jackpot targets 2,000,000–2,200,000 with a hypothetical NGN100 stake and at most five new tickets per Africa/Lagos day. Each match is used on one active ticket. Only verified displayed bookmaker codes count as registered. No wager is placed.'}

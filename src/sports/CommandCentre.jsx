@@ -3,7 +3,7 @@ import {useNavigate} from 'react-router-dom';
 import {BadgeCheck,BarChart3,ChevronDown,Clock3,Copy,Dribbble,Eye,Goal,Hash,Layers3,Link2,Play,RefreshCw,Target,TriangleAlert,Trophy,X} from 'lucide-react';
 import {get} from './api';
 import WorkflowBoard from './WorkflowBoard';
-import HighOddsTickets from './HighOddsTickets';
+import BookingDashboard from './BookingDashboard';
 import useLiveResource from './useLiveResource';
 import './command.css';
 
@@ -230,20 +230,26 @@ function pillClass(status) {
   return 'unsupported';
 }
 
-export default function CommandCentre({data, nav, run, loading, refresh}) {
+export function SportsCoveragePipeline({data, nav}) {
+  const view = data?.command_view || {};
+  const pipelineMax = Math.max(1, ...(view.pipeline || []).map(item => Number(item.count) || 0));
+  return (<div className="ccx ccx-monitor-panels">
+      <section className="ccx-card">
+        <header><strong><Dribbble size={16}/>Sports Coverage</strong><button className="ccx-link" onClick={() => nav('sources')}>View All</button></header>
+        <div className="ccx-coverage ccx-card-scroll">{(view.sports || []).map(item => <div key={item.name}><b>{item.name}</b><span>{fmt(item.fixtures)} fixtures</span><em className={pillClass(item.status)}>{item.status}</em></div>)}{!(view.sports || []).length && <p className="ccx-empty">No upcoming fixture is stored.</p>}</div>
+      </section>
+      <section className="ccx-card">
+        <header><strong><BarChart3 size={16}/>Pipeline <small>(Current Cycle)</small></strong><span className={`ccx-pill ${view.engine_online ? 'qualified' : 'monitoring'}`}>{view.engine_online ? 'Operational' : 'Idle'}</span></header>
+        <div className="ccx-pipeline ccx-card-scroll">{(view.pipeline || []).map(item => <div key={item.name}><span>{item.name}</span><i><b style={{width: `${Math.max(4, (Number(item.count) || 0) / pipelineMax * 100)}%`}}/></i><strong>{fmt(item.count)}</strong></div>)}{!(view.pipeline || []).length && <p className="ccx-empty">The latest worker cycle has not reported a snapshot.</p>}</div>
+      </section>
+    </div>);
+}
+
+export function LiveOpportunities({data, nav}) {
   const navigate = useNavigate();
   const view = data?.command_view || {};
-  const kpis = view.kpis || {};
   const [sport, setSport] = React.useState('All');
   const live = useLiveResource(`/high-odds/opportunities${sport === 'All' ? '' : `?sport=${encodeURIComponent(sport)}`}`);
-  const [codeTab, setCodeTab] = React.useState('codes');
-  const [copied, setCopied] = React.useState('');
-  const [openTicket, setOpenTicket] = React.useState(null);
-  const [now, setNow] = React.useState(lagosClock);
-  React.useEffect(() => {
-    const timer = setInterval(() => setNow(lagosClock()), 30000);
-    return () => clearInterval(timer);
-  }, []);
   function openFixture(row) {
     if (!row.fixture_id) return;
     const sportKey = row.sport === 'basketball' ? 'basketball' : 'football';
@@ -251,22 +257,40 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
       state: {fixture: {id: row.fixture_id, sport: row.sport, competition: row.competition, home: row.home, away: row.away, kickoff_at: row.starts_at}},
     });
   }
-  async function copy(code) {
-    try {
-      await navigator.clipboard.writeText(code);
-      setCopied(code);
-    } catch {
-      setCopied('');
-    }
-  }
   const filters = [{code:'All',name:'All'}, ...(live.data?.sports || []).filter(item => ['football','basketball','tennis','ice_hockey'].includes(item.code))];
   const rows = live.data?.items || view.opportunities || [];
-  const pipelineMax = Math.max(1, ...(view.pipeline || []).map(item => Number(item.count) || 0));
+  return (<div className="ccx ccx-primary ccx-monitor-opportunities">
+      <section className="ccx-card">
+        <header><strong><Target size={16}/>Live Opportunities <small>(Top 10)</small></strong><div className="ccx-filters">{filters.map(item => <button key={item.code} className={sport === item.code ? 'on' : ''} onClick={() => setSport(item.code)}>{item.name}</button>)}<select aria-label="Filter live opportunities by sport" value={sport} onChange={e=>setSport(e.target.value)}><option value="All">All sports</option>{(live.data?.sports||[]).map(item=><option key={item.code} value={item.code}>{item.name}</option>)}</select><button className="ccx-link" onClick={() => nav('qualification')}>View All</button></div></header>
+        <p className="ccx-high-note" role="status">{live.error || `Refreshes every 15 seconds · Updated ${wat(live.data?.generated_at)} WAT · Current qualified opportunities, ranked by probability`}</p>
+        <div className="ccx-table-scroll"><table className="ccx-table"><thead><tr><th>#</th><th>Sport</th><th>Fixture</th><th>League</th><th>Start Date/Time</th><th>Market</th><th>Selection</th><th>AI Probability</th><th>Odds</th><th>Status</th></tr></thead><tbody>
+          {rows.map((row, index) => <tr key={`${row.fixture_id || row.fixture}-${row.selection}`} onClick={() => openFixture(row)}><td>{index + 1}</td><td><span className="ccx-sport">{row.sport === 'basketball' ? <Dribbble size={13}/> : <Goal size={13}/>}{row.sport_label}</span></td><td>{row.fixture}</td><td>{row.competition || '—'}</td><td>{wat(row.starts_at)}{row.starts_at ? <small className="ccx-wat">WAT</small> : null}</td><td>{row.market}</td><td>{row.selection}</td><td><ProbBar value={row.probability}/></td><td className="ccx-odds">{row.odds == null ? '—' : Number(row.odds).toFixed(2)}</td><td><span className={`ccx-pill ${pillClass(row.status)}`}>{row.status}</span></td></tr>)}
+          {!rows.length && <tr><td colSpan="10">{live.loading ? 'Checking current opportunities…' : live.data?.empty_reason || 'No current qualified opportunities.'}{(live.data?.qualification_reasons||[]).slice(0,3).map(item=><small style={{display:'block',marginTop:5}} key={item.reason_code}>{item.reason_code.replaceAll('_',' ')}: {item.total}</small>)}</td></tr>}
+        </tbody></table></div>
+      </section>
+
+    </div>);
+}
+
+export function KeyAlerts({data, nav}) {
+  const view = data?.command_view || {};
+  return <div className="ccx ccx-monitor-alerts"><section className="ccx-card ccx-alerts">
+        <header><strong><TriangleAlert size={16}/>Key Alerts</strong><button className="ccx-link" onClick={() => nav('alerts')}>View All</button></header>
+        {(view.alerts || []).map(item => <p key={item.id}><TriangleAlert size={14}/>{item.message}</p>)}
+        {!(view.alerts || []).length && <p className="ccx-empty">No alert is stored for this cycle.</p>}
+      </section></div>;
+}
+
+export default function CommandCentre({data, nav, run, loading, refresh}) {
+  const view = data?.command_view || {};
+  const kpis = view.kpis || {};
+  const [now, setNow] = React.useState(lagosClock);
+  React.useEffect(() => {
+    const timer = setInterval(() => setNow(lagosClock()), 30000);
+    return () => clearInterval(timer);
+  }, []);
   const performance = view.performance || {};
   const windowLabel = view.publication_open ? 'Open now' : clock(view.next_window);
-  const counts = view.booking_counts || {};
-  const centreRows = (codeTab === 'slips' ? (view.slips || []) : codeTab === 'history' ? (view.history || []) : (view.codes || []))
-    .filter(row => codeTab === 'history' || stillToPlay(row));
   return <div className="ccx">
     <header className="ccx-top">
       <div>
@@ -289,45 +313,6 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
       <button onClick={() => nav('weekly-draw')}><i className="teal"><Goal size={18}/></i><div><span>Draw Opportunities</span><strong>{shown(kpis.draws)}</strong><small>this week</small></div></button>
       <button onClick={() => nav('sources')}><i className="rose"><Dribbble size={18}/></i><div><span>Active Sports</span><strong>{shown(kpis.active_sports)}</strong><small>{(kpis.active_sport_names || []).join(', ') || 'None active'}</small></div></button>
     </section>
-    <div className="ccx-primary">
-      <section className="ccx-card">
-        <header><strong><Target size={16}/>Live Opportunities <small>(Top 10)</small></strong><div className="ccx-filters">{filters.map(item => <button key={item.code} className={sport === item.code ? 'on' : ''} onClick={() => setSport(item.code)}>{item.name}</button>)}<select aria-label="Filter live opportunities by sport" value={sport} onChange={e=>setSport(e.target.value)}><option value="All">All sports</option>{(live.data?.sports||[]).map(item=><option key={item.code} value={item.code}>{item.name}</option>)}</select><button className="ccx-link" onClick={() => nav('qualification')}>View All</button></div></header>
-        <p className="ccx-high-note" role="status">{live.error || `Refreshes every 15 seconds · Updated ${wat(live.data?.generated_at)} WAT · Current qualified opportunities, ranked by probability`}</p>
-        <div className="ccx-table-scroll"><table className="ccx-table"><thead><tr><th>#</th><th>Sport</th><th>Fixture</th><th>League</th><th>Start Date/Time</th><th>Market</th><th>Selection</th><th>AI Probability</th><th>Odds</th><th>Status</th></tr></thead><tbody>
-          {rows.map((row, index) => <tr key={`${row.fixture_id || row.fixture}-${row.selection}`} onClick={() => openFixture(row)}><td>{index + 1}</td><td><span className="ccx-sport">{row.sport === 'basketball' ? <Dribbble size={13}/> : <Goal size={13}/>}{row.sport_label}</span></td><td>{row.fixture}</td><td>{row.competition || '—'}</td><td>{wat(row.starts_at)}{row.starts_at ? <small className="ccx-wat">WAT</small> : null}</td><td>{row.market}</td><td>{row.selection}</td><td><ProbBar value={row.probability}/></td><td className="ccx-odds">{row.odds == null ? '—' : Number(row.odds).toFixed(2)}</td><td><span className={`ccx-pill ${pillClass(row.status)}`}>{row.status}</span></td></tr>)}
-          {!rows.length && <tr><td colSpan="10">{live.loading ? 'Checking current opportunities…' : live.data?.empty_reason || 'No current qualified opportunities.'}{(live.data?.qualification_reasons||[]).slice(0,3).map(item=><small style={{display:'block',marginTop:5}} key={item.reason_code}>{item.reason_code.replaceAll('_',' ')}: {item.total}</small>)}</td></tr>}
-        </tbody></table></div>
-      </section>
-      <section className="ccx-card ccx-codes">
-        <header><strong><Hash size={16}/>Booking Code Centre</strong><button className="ccx-link" onClick={() => nav('codes')}>View Centre</button></header>
-        <div className="ccx-tabs">
-          <button className={codeTab === 'codes' ? 'on' : ''} onClick={() => setCodeTab('codes')}>Active Codes ({fmt(counts.active ?? (view.codes || []).length)})</button>
-          <button className={codeTab === 'slips' ? 'on' : ''} onClick={() => setCodeTab('slips')}>Bet Slips Ready ({fmt(counts.slips ?? (view.slips || []).length)})</button>
-          <button className={codeTab === 'history' ? 'on' : ''} onClick={() => setCodeTab('history')}>History ({fmt(counts.history ?? (view.history || []).length)})</button>
-        </div>
-        <div className="ccx-table-scroll ccx-book-scroll">
-          <table className="ccx-table ccx-book">
-            <thead><tr><th>Ticket No</th><th>Booking Code</th><th>Odds</th><th>Start Date/Time</th><th>AI Probability / Confidence</th></tr></thead>
-            <tbody>
-              {centreRows.map(row => <tr key={`${row.id}-${row.code || 'slip'}`} onClick={() => setOpenTicket(row)}>
-                <td><b className="ccx-ticket-no">{row.ticket_no || '—'}</b><span className={`ccx-pill ${pillClass(row.settlement)}`}>{row.settlement || '—'}</span></td>
-                <td>
-                  <div className="ccx-code-cell">
-                    <strong>{row.code || '—'}</strong>
-                    {row.code && <button type="button" onClick={event => { event.stopPropagation(); copy(row.code); }} aria-label={`Copy ${row.code}`}><Copy size={12}/>{copied === row.code ? 'Copied' : 'Copy'}</button>}
-                  </div>
-                  <span className={`ccx-verify ${row.verified ? 'on' : ''}`}>{row.verified && <BadgeCheck size={12}/>}{row.verification || 'Unverified'}</span>
-                </td>
-                <td className="ccx-odds">{row.odds == null ? '—' : Number(row.odds).toFixed(2)}</td>
-                <td>{wat(row.starts_at)}{row.starts_at ? <small className="ccx-wat">WAT</small> : null}</td>
-                <td><ProbBar value={row.probability}/><small className="ccx-confidence">{row.confidence == null ? 'Confidence not stored' : `Confidence ${Number(row.confidence).toFixed(1)}%`}</small></td>
-              </tr>)}
-              {!centreRows.length && <tr><td className="ccx-empty" colSpan="5">{codeTab === 'slips' ? 'No ticket is ready for the next window.' : codeTab === 'history' ? 'No earlier booking code is stored.' : 'No verified booking code is stored.'}</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </div>
     <div className="ccx-sure-row">
       <section className="ccx-card ccx-sure">
         <header><strong><Goal size={16}/>Sure Odds For (Today) <small>{view.sure_odds_date || 'Today'}</small></strong><button className="ccx-link" onClick={() => nav('tickets')}>View All</button></header>
@@ -340,17 +325,7 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
         </tbody></table></div>
       </section>
     </div>
-    <div className="ccx-secondary">
-      <section className="ccx-card">
-        <header><strong><Dribbble size={16}/>Sports Coverage</strong><button className="ccx-link" onClick={() => nav('sources')}>View All</button></header>
-        <div className="ccx-coverage ccx-card-scroll">{(view.sports || []).map(item => <div key={item.name}><b>{item.name}</b><span>{fmt(item.fixtures)} fixtures</span><em className={pillClass(item.status)}>{item.status}</em></div>)}{!(view.sports || []).length && <p className="ccx-empty">No upcoming fixture is stored.</p>}</div>
-      </section>
-      <section className="ccx-card">
-        <header><strong><BarChart3 size={16}/>Pipeline <small>(Current Cycle)</small></strong><span className={`ccx-pill ${view.engine_online ? 'qualified' : 'monitoring'}`}>{view.engine_online ? 'Operational' : 'Idle'}</span></header>
-        <div className="ccx-pipeline ccx-card-scroll">{(view.pipeline || []).map(item => <div key={item.name}><span>{item.name}</span><i><b style={{width: `${Math.max(4, (Number(item.count) || 0) / pipelineMax * 100)}%`}}/></i><strong>{fmt(item.count)}</strong></div>)}{!(view.pipeline || []).length && <p className="ccx-empty">The latest worker cycle has not reported a snapshot.</p>}</div>
-      </section>
-    </div>
-    <div className="ccx-bottom">
+    <div className="ccx-bottom ccx-bottom-summary">
       <section className="ccx-card">
         <header><strong><BarChart3 size={16}/>Performance <small>(Last 30 days)</small></strong></header>
         <div className="ccx-metrics">
@@ -365,20 +340,11 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
         <strong>{windowLabel} WAT</strong>
         <small>{view.publication_open ? 'One ready ticket can be sent to SportyBet. No wager is placed.' : 'Africa/Lagos. No wager is placed.'}</small>
       </section>
-      <section className="ccx-card ccx-alerts">
-        <header><strong><TriangleAlert size={16}/>Key Alerts</strong><button className="ccx-link" onClick={() => nav('alerts')}>View All</button></header>
-        {(view.alerts || []).map(item => <p key={item.id}><TriangleAlert size={14}/>{item.message}</p>)}
-        {!(view.alerts || []).length && <p className="ccx-empty">No alert is stored for this cycle.</p>}
-      </section>
+
     </div>
-    <HighOddsTickets compact nav={nav}/>
+    <BookingDashboard embedded/>
     <footer className="ccx-engine"><span className={view.engine_online ? 'on' : 'off'}/>{view.engine_online ? 'Engine Online' : 'Engine idle'}<small>Last sync {when(view.updated_at)}</small><small>Next window {windowLabel} WAT</small></footer>
-    {openTicket && <div className="ccx-modal-back" onClick={() => setOpenTicket(null)}><section className="ccx-modal" onClick={event => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Ticket detail">
-      <header><div><span>Ticket {openTicket.ticket_no || '—'}</span><h2>{openTicket.code || 'No booking code'}</h2></div><button type="button" onClick={() => setOpenTicket(null)} aria-label="Close"><X size={16}/></button></header>
-      <p>{openTicket.selection_count == null ? 'Selections not stored' : `${openTicket.selection_count} selection${openTicket.selection_count === 1 ? '' : 's'}`} · {openTicket.bookmaker} · {openTicket.verification} · {openTicket.settlement}</p>
-      <p>{openTicket.probability == null ? 'Joint win probability was not calculated. The stored model does not treat these selections as independent.' : `Calibrated win probability ${Number(openTicket.probability).toFixed(1)}%.`} {openTicket.confidence == null ? 'Model confidence is not stored on every selection.' : `Model confidence ${Number(openTicket.confidence).toFixed(1)}%, from the weakest stored calibration figure.`}</p>
-      <div className="ccx-modal-legs">{(openTicket.legs || []).map((leg, index) => <p key={`${leg.home}-${leg.market}-${index}`}><b>{index + 1}. {leg.home} vs {leg.away}</b><span>{leg.market} · {leg.odds == null ? '—' : Number(leg.odds).toFixed(2)} · {leg.probability == null ? 'Selection probability not stored' : `${Number(leg.probability).toFixed(1)}%`} · {leg.result || 'pending'} · {wat(leg.starts_at)} WAT</span></p>)}{!(openTicket.legs || []).length && <p>No selections are stored on this ticket.</p>}</div>
-    </section></div>}
+
   </div>;
 }
 

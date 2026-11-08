@@ -59,13 +59,13 @@ class HighOddsServiceTests(unittest.TestCase):
             reports=service.generate_event(c,event,self.now)
             self.assertEqual(service.PRIMARY,'2-4.99')
             self.assertEqual(reports[0]['category_id'],'2-4.99')
-            self.assertEqual(len(reports),8)
+            self.assertEqual(len(reports),9)
             board=service.dashboard(c,self.now)
             self.assertEqual(board['primary_category'],'2-4.99')
             self.assertTrue(next(item['primary'] for item in board['categories'] if item['id']=='2-4.99'))
             self.assertFalse(next(item['primary'] for item in board['categories'] if item['id']=='10-24.99'))
-            self.assertTrue(all(r['created_ids'] for r in reports),[(r['category_id'],r['status'],r['candidate_count']) for r in reports])
-            self.assertTrue(all(r['candidate_count']>1 for r in reports))
+            self.assertTrue(all(r['created_ids'] for r in reports if r['category_id']!=service.JACKPOT),[(r['category_id'],r['status'],r['candidate_count']) for r in reports])
+            self.assertTrue(all(r['candidate_count']>1 for r in reports if r['category_id']!=service.JACKPOT))
             tickets=service.dashboard(c,self.now)['tickets']
             self.assertEqual(len({t['category_id'] for t in tickets}),8)
             fixtures=[l['fixture_id'] for t in tickets for l in t['legs']]
@@ -76,6 +76,76 @@ class HighOddsServiceTests(unittest.TestCase):
                 self.assertEqual(service.validate_snapshot(c,ticket['ticket_id'],self.now),[])
             self.assertEqual(service.generate_event(c,event,self.now),[])
             self.assertEqual(len(service.dashboard(c,self.now)['tickets']),len(tickets))
+
+    def test_jackpot_generation_registration_and_displayed_prices(self):
+        from sportybet_booking import ticket_selections, _store_displayed_code
+        with db.connect() as c:
+            self.seed(c,21,odds=2)
+            c.execute("UPDATE sports_ai_high_odds_categories SET enabled=(id='jackpot')")
+            report=next(r for r in service.generate_event(c,self.event(c),self.now) if r['category_id']=='jackpot')
+            self.assertEqual(report['status'],'created')
+            identifier=report['created_ids'][0]
+            ticket=service.dashboard(c,self.now)['tickets'][0]
+            self.assertEqual(ticket['category_id'],'jackpot')
+            self.assertEqual(ticket['combined_odds'],2**21)
+            self.assertEqual(ticket['stake_assumption'],100)
+            self.assertAlmostEqual(ticket['joint_probability'],.62**21)
+            self.assertEqual(service.validate_snapshot(c,identifier,self.now),[])
+            self.assertEqual(service.queue_registration(c,self.now),1)
+            selections=ticket_selections(c,identifier)
+        shown=[{'fixture_id':leg['fixture_id'],'market':leg['market'],'page_odds':leg['decimal_odds']} for leg in selections]
+        with patch.object(service,'now_utc',side_effect=lambda now=None:now or self.now):
+            service.check_displayed_prices(identifier,selections,shown)
+            with db.connect() as c:
+                _store_displayed_code(c,identifier,'JACKPOTTESTONLY','isolated test evidence')
+                service.registration_result(c,identifier,{'status':'CODE_GENERATED'},self.now)
+                category=next(x for x in service.dashboard(c,self.now)['categories'] if x['id']=='jackpot')
+                self.assertEqual(category['daily_verified'],1)
+                self.assertEqual(category['daily_created'],1)
+                self.assertEqual(category['daily_target'],5)
+            shown[0]['page_odds']=2.1
+            with self.assertRaises(ValueError):service.check_displayed_prices(identifier,selections,shown)
+
+    def test_jackpot_daily_limit_survives_ticket_retirement(self):
+        with db.connect() as c:
+            fixtures=self.seed(c,105,odds=2)
+            revalidate(c,'test',self.now,fixture_ids=[item['fixture_id'] for item in fixtures])
+            c.execute("UPDATE sports_ai_high_odds_categories SET enabled=(id='jackpot')")
+            settings=service.category_settings(service.config(c),{'id':'jackpot'})
+            pool=service.eligible(c,self.now)[0]
+            category=next(x for x in service.categories(c) if x['id']=='jackpot')
+            event=self.event(c)
+            for start in range(0,105,21):
+                candidates,_=service.optimize(pool[start:start+21],category,settings)
+                self.assertTrue(candidates)
+                identifier=service.persist_ticket(c,candidates[0],category,event,settings,self.now)
+                c.execute("UPDATE sports_ai_accumulator_tickets SET status='expired' WHERE id=?",(identifier,))
+            report=next(x for x in service.generate_event(c,event,self.now) if x['category_id']=='jackpot')
+            self.assertEqual(report['status'],'daily_target')
+            self.assertEqual(report['created_ids'],[])
+            # 23:30 UTC is the next Africa/Lagos day; the previous day's limit is reset.
+            tomorrow=self.now.replace(hour=23,minute=30)
+            event2=service.enqueue(c,'test.next_day',{},'next-day',tomorrow)
+            report=next(x for x in service.generate_event(c,event2,tomorrow) if x['category_id']=='jackpot')
+            self.assertNotEqual(report['status'],'daily_target')
+
+    def test_jackpot_migration_preserves_existing_ticket_references(self):
+        with db.connect() as c:
+            # Emulate an existing database before migration 042, including a stored ticket.
+            c.execute('DROP TABLE sports_ai_high_odds_categories')
+            original=(Path(__file__).resolve().parents[1]/'migrations/040_high_odds_optimizer.sql').read_text(encoding='utf-8')
+            for statement in original.split(';')[:2]:c.execute(statement)
+            c.execute("DELETE FROM sports_ai_schema_migrations WHERE name='042_high_odds_jackpot.sql'")
+            self.seed(c,4)
+            self.assertTrue(service.generate_event(c,self.event(c),self.now))
+            before=[tuple(r) for r in c.execute('SELECT ticket_id,category_id,snapshot_hash FROM sports_ai_high_odds_tickets')]
+        db.initialize()
+        with db.connect() as c:
+            self.assertEqual(before,[tuple(r) for r in c.execute('SELECT ticket_id,category_id,snapshot_hash FROM sports_ai_high_odds_tickets')])
+            self.assertEqual(c.execute('PRAGMA foreign_key_check').fetchall(),[])
+            self.assertEqual(len(service.categories(c)),9)
+            with self.assertRaises(Exception):
+                c.execute("UPDATE sports_ai_high_odds_categories SET max_odds=2000 WHERE id='500-1000'")
 
     def test_registration_is_idempotent_and_has_snapshot_audit(self):
         with db.connect() as c:
@@ -166,7 +236,7 @@ class HighOddsServiceTests(unittest.TestCase):
     def test_no_data_reports_each_category_independently(self):
         with db.connect() as c:
             reports=service.generate_event(c,self.event(c),self.now)
-            self.assertEqual(len(reports),8)
+            self.assertEqual(len(reports),9)
             self.assertTrue(all(r['status']=='insufficient_eligible_data' for r in reports))
             self.assertEqual(c.execute('SELECT COUNT(*) FROM sports_ai_accumulator_tickets').fetchone()[0],0)
 
@@ -179,7 +249,7 @@ class HighOddsServiceTests(unittest.TestCase):
                 return optimizer(pool,category,settings)
             with patch.object(service,'optimize',side_effect=search):
                 reports=service.generate_event(c,self.event(c),self.now)
-            self.assertEqual(len(reports),8)
+            self.assertEqual(len(reports),9)
             self.assertEqual(reports[0]['status'],'failed')
             self.assertTrue(any(r['status']=='created' for r in reports[1:]))
 
@@ -201,7 +271,7 @@ class HighOddsServiceTests(unittest.TestCase):
         from high_odds_api import build_high_odds_router
         app=FastAPI();app.include_router(build_high_odds_router(lambda:'test-operator',lambda _key:None))
         with TestClient(app) as client:
-            self.assertEqual(len(client.get('/api/sports-ai/high-odds').json()['categories']),8)
+            self.assertEqual(len(client.get('/api/sports-ai/high-odds').json()['categories']),9)
             self.assertEqual(client.get('/api/sports-ai/high-odds?date_from=2026-11-09&date_to=2026-11-08').status_code,422)
             first=client.post('/api/sports-ai/high-odds/generate',json={'idempotency_key':'same-command'})
             second=client.post('/api/sports-ai/high-odds/generate',json={'idempotency_key':'same-command'})
@@ -258,6 +328,14 @@ class OptimizationMathTests(unittest.TestCase):
         self.assertTrue(candidates)
         self.assertTrue(all(t['combined_odds']==1000 and len(t['legs'])==3 for t in candidates))
         self.assertFalse(service.inside(1000.001,category))
+
+    def test_only_jackpot_can_exceed_regular_odds_cap(self):
+        jackpot={'id':'jackpot','min_odds':2_000_000,'max_odds':2_200_000}
+        self.assertTrue(service.inside(2**21,jackpot))
+        self.assertFalse(service.inside(2_200_000.01,jackpot))
+        self.assertFalse(service.inside(1_000_000,jackpot))
+        self.assertFalse(service.inside(2**21,{**jackpot,'id':'500-1000'}))
+        self.assertFalse(service.inside(float('inf'),jackpot))
 
     def test_unsupported_dependence_is_not_multiplied(self):
         category={'min_odds':2,'max_odds':24.99}

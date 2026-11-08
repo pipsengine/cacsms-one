@@ -1,0 +1,19 @@
+{
+  "enabled_status": true,
+  "daily_progress": true,
+  "jackpot_filter": true,
+  "hypothetical_payout": true,
+  "disabled_setting": true,
+  "daily_limit_status": true,
+  "nine_category_analytics": true,
+  "optimizer_request": true,
+  "responsive_widths": [
+    1536,
+    1280,
+    768,
+    390,
+    360
+  ],
+  "page_errors": [],
+  "data_source": "isolated browser fixtures"
+}

@@ -3,7 +3,8 @@ import {useLiveReload} from './live';
 import {useNavigate} from 'react-router-dom';
 import {AlertCircle, Download, Pause, Play, RefreshCw, RotateCcw} from 'lucide-react';
 import {get, post, put} from './api';
-import {AutonomousPipeline, IntegrationStatus} from './CommandCentre';
+import {MonitorBookingEngine} from './BookingDashboard';
+import {AutonomousPipeline, IntegrationStatus, SportsCoveragePipeline, LiveOpportunities, KeyAlerts} from './CommandCentre';
 
 const adminHeaders = key => (key ? {'X-Sports-Admin-Key': key} : {});
 
@@ -188,6 +189,10 @@ export default function OperationsCentre({page, tab = 0}) {
 
       {page === 'monitor' && tab === 0 && (
         <>
+          <SportsCoveragePipeline data={status} nav={target => navigate('/sports/' + target)} />
+          <KeyAlerts data={status} nav={target => navigate('/sports/' + target)} />
+          <MonitorBookingEngine onLogs={() => navigate('/sports/high-odds?view=logs')} />
+          <LiveOpportunities data={status} nav={target => navigate('/sports/' + target)} />
           <IntegrationStatus data={status} />
           <AutonomousPipeline data={status} />
           <section className="sp-panel">

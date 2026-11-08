@@ -1,0 +1,34 @@
+{
+  "old_booking_panel_removed": true,
+  "updated_dashboard_embedded": true,
+  "single_sidebar": true,
+  "embedded_tabs": true,
+  "open_workspace": true,
+  "layouts": [
+    {
+      "width": 1536,
+      "overflow": false
+    },
+    {
+      "width": 1280,
+      "overflow": false
+    },
+    {
+      "width": 1024,
+      "overflow": false
+    },
+    {
+      "width": 768,
+      "overflow": false
+    },
+    {
+      "width": 390,
+      "overflow": false
+    },
+    {
+      "width": 360,
+      "overflow": false
+    }
+  ],
+  "page_errors": []
+}

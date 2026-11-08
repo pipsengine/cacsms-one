@@ -1,5 +1,5 @@
 import os, sqlite3, threading
-from contextlib import contextmanager
+from contextlib import contextmanager, closing
 from datetime import datetime, timezone
 from pathlib import Path
 DB=Path(os.environ.get('SPORTS_SQLITE_PATH',str(Path(__file__).parent/'sports_demo.sqlite3'))).expanduser().resolve()
@@ -36,7 +36,7 @@ def initialize():
   if pending and existed:
    stamp=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
    backup=DB.with_name(f'{DB.stem}.sports-ai-backup-{stamp}{DB.suffix}')
-   with connect() as source, sqlite3.connect(backup) as target:
+   with connect() as source, closing(sqlite3.connect(backup)) as target:
     source.backup(target)
   for migration in pending:
    sql=migration.read_text(encoding='utf-8')
@@ -50,18 +50,21 @@ def initialize():
    if statement.strip():
     raise ValueError(f'Incomplete SQL statement in migration {migration.name}')
    with connect() as c:
-    if migration.name.startswith('035_'):
+    rebuild_references=migration.name.startswith(('035_','042_'))
+    if rebuild_references:
      c.execute('PRAGMA foreign_keys=OFF')
     c.execute('BEGIN IMMEDIATE')
     try:
      for sql_statement in statements:c.execute(sql_statement)
      c.execute('INSERT INTO sports_ai_schema_migrations(name,applied_at) VALUES(?,?)',
       (migration.name,datetime.now(timezone.utc).isoformat()))
+     if migration.name.startswith('042_') and c.execute('PRAGMA foreign_key_check').fetchone():
+      raise ValueError('Jackpot migration failed foreign key validation')
      c.commit()
-     if migration.name.startswith('035_'):
+     if rebuild_references:
       c.execute('PRAGMA foreign_keys=ON')
     except BaseException:
      c.rollback()
-     if migration.name.startswith('035_'):
+     if rebuild_references:
       c.execute('PRAGMA foreign_keys=ON')
      raise

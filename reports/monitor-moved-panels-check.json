@@ -1,0 +1,20 @@
+{
+  "removed_from_landing": [
+    "Key Alerts",
+    "Autonomous Engine",
+    "Live Opportunities"
+  ],
+  "monitor_single_instances": true,
+  "eight_workers": true,
+  "sport_filters": true,
+  "automatic_refresh": true,
+  "engine_logs_navigation": true,
+  "alerts_navigation": true,
+  "responsive_widths": [
+    1536,
+    1024,
+    768,
+    390
+  ],
+  "page_errors": []
+}

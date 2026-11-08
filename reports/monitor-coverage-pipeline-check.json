@@ -1,0 +1,13 @@
+{
+  "removed_from_landing": true,
+  "monitor_service_health": true,
+  "live_data_mapping": true,
+  "view_all_navigation": true,
+  "responsive_widths": [
+    1536,
+    1024,
+    768,
+    390
+  ],
+  "page_errors": []
+}

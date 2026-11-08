@@ -1,0 +1,42 @@
+{
+  "optimizer_request": {
+    "idempotency_key": "aa011785-c0e1-45e1-b72b-b0ffa5aa2d09"
+  },
+  "layouts": [
+    {
+      "width": 1536,
+      "overflow": false
+    },
+    {
+      "width": 1280,
+      "overflow": false
+    },
+    {
+      "width": 1024,
+      "overflow": false
+    },
+    {
+      "width": 768,
+      "overflow": false
+    },
+    {
+      "width": 390,
+      "overflow": false
+    },
+    {
+      "width": 360,
+      "overflow": false
+    }
+  ],
+  "page_errors": [],
+  "verified_only": true,
+  "filters": true,
+  "date_filter": true,
+  "detail_dialog": true,
+  "clipboard": true,
+  "tabs": true,
+  "refresh": true,
+  "automatic_refresh": true,
+  "navigation": true,
+  "data_source": "isolated browser fixtures; no live writes"
+}
