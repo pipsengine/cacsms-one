@@ -45,6 +45,41 @@ class AutonomousIntegrationTests(unittest.TestCase):
         self.assertFalse(overview['readiness']['places_wager'])
         self.assertFalse(overview['readiness']['ready'])
 
+    def test_overview_includes_high_probability_product_below_joint_threshold(self):
+        with db.connect() as connection:
+            tickets = [
+                ('high-probability', 'unverified_probability', 0.31, '{"coverage":"high_probability"}'),
+                ('qualified-low', 'qualified', 0.65, '{}'),
+                ('qualified-high', 'qualified', 0.81, '{}'),
+            ]
+            for ticket_id, status, probability, parameters in tickets:
+                connection.execute(
+                    """INSERT INTO sports_ai_accumulator_tickets
+                       (id,family_id,version,signature,tier,sport_mode,status,leg_count,probability_basis,
+                        joint_probability,explanation,parameters_json,created_at)
+                       VALUES(?,?,1,?,1,'football',?,1,'independent',?,'test',?,?)""",
+                    (ticket_id, ticket_id, ticket_id, status, probability, parameters, NOW.isoformat()),
+                )
+                connection.execute(
+                    """INSERT INTO sports_ai_accumulator_legs
+                       (id,ticket_id,opportunity_id,fixture_id,sport,competition,home,away,starts_at,market,selection,
+                        decimal_odds,bookmaker,odds_observed_at,quote_market,quote_outcome,model_id,model_version,
+                        settlement_kind,qualification_json)
+                       VALUES(?,?,?,?,?,'League','Home','Away',?,'HOME','Home',2.0,'test',?,'h2h','home','model','v1','binary','{}')""",
+                    (
+                        f'{ticket_id}-leg', ticket_id, f'{ticket_id}-opportunity', f'{ticket_id}-fixture',
+                        'football', (NOW.replace(hour=14)).isoformat(), NOW.isoformat(),
+                    ),
+                )
+
+            overview = build_overview(connection, NOW)
+
+        by_id = {ticket['id']: ticket for ticket in overview['tickets']}
+        self.assertIn('high-probability', by_id)
+        self.assertIn('qualified-high', by_id)
+        self.assertNotIn('qualified-low', by_id)
+        self.assertEqual(by_id['high-probability']['probability'], 31.0)
+
     def test_a_stage_cannot_record_a_paid_wager(self):
         with db.connect() as connection:
             record_stage(connection, 'booking', 'complete', {'places_wager': False, 'status': 'idle'}, NOW)

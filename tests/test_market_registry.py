@@ -243,6 +243,7 @@ class RegistryRefreshTests(unittest.TestCase):
         self.assertEqual(coverage_status('mma', set(), 0), 'Research')
         self.assertEqual(coverage_status('table_tennis', set(), 0), 'Research')
         self.assertEqual(coverage_status('football', {'football'}, 2), 'Active')
+        self.assertEqual(coverage_status('basketball', set(), 1), 'Research')
         self.assertEqual(coverage_status('darts', set(), 0), 'Unsupported')
         self.assertEqual(settle_result('tennis', 'MONEYLINE_HOME', 2, 1), 'won')
         self.assertEqual(settle_result('mma', 'MONEYLINE_AWAY', 0, 1), 'won')

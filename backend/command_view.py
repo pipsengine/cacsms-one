@@ -513,16 +513,19 @@ def _sports(connection, now):
                FROM sports_ai_market_registry GROUP BY sport""",
         )
     }
-    modelled = {
-        row['code'] for row in connection.execute(
-            "SELECT code FROM sports_ai_sports WHERE prediction_status='modelled'",
+    active_models = {
+        row['sport'] for row in connection.execute(
+            """SELECT m.sport FROM sports_ai_model_registry m
+               JOIN sports_ai_training_runs t ON t.id=m.training_run_id
+               WHERE m.active=1 AND m.status='active' AND t.status='validated'
+                 AND m.calibration_status IN ('validated','calibrated')""",
         )
     }
     from sport_support import coverage_status
     names = list(dict.fromkeys([*counts.keys(), *registry.keys()]))
     rows = []
     for sport in names:
-        status = coverage_status(sport, modelled, registry.get(sport))
+        status = coverage_status(sport, active_models, registry.get(sport))
         rows.append({'name': str(sport).replace('_', ' ').title(), 'fixtures': counts.get(sport, 0), 'status': status})
     rows.sort(key=lambda item: ({'Active': 0, 'Research': 1, 'Unsupported': 2}[item['status']], -item['fixtures'], item['name']))
     return [item for item in rows if item['fixtures'] or item['status'] == 'Active']

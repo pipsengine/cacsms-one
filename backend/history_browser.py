@@ -10,12 +10,12 @@ import re
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
-from zoneinfo import ZoneInfo
 
 from acquisition import CollectionError
 from acquisition_engine import _normalize, _record
+from booking_schedule import WAT
 
-LAGOS = ZoneInfo('Africa/Lagos')
+LAGOS = WAT
 HISTORY_KEY = 'history_browse'
 MIN_GAP = timedelta(minutes=10)
 MIN_GAP_WHEN_WAITING = timedelta(minutes=2)

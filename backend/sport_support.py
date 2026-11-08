@@ -26,10 +26,10 @@ def recognised(sport):
     return code in ANALYSED_SPORTS or code in WINNER_SPORTS
 
 
-def coverage_status(sport, modelled, active_markets):
-    """Active only when this sport's own model is on and a market has passed the ceilings."""
+def coverage_status(sport, active_models, active_markets):
+    """Active only when this sport has a validated active model and an active market."""
     code = str(sport or '').lower()
-    known = {str(item).lower() for item in modelled}
+    known = {str(item).lower() for item in active_models}
     if code in known and active_markets:
         return 'Active'
     if code in known or recognised(code):

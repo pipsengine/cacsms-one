@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 
 from booking_schedule import WAT, opportunity_week
-from command_view import _opportunities, _sure_odds, _sure_quote, _sure_tickets, readable_league, ticket_confidence, ticket_probability
+from command_view import _opportunities, _sports, _sure_odds, _sure_quote, _sure_tickets, readable_league, ticket_confidence, ticket_probability
 import db
 
 
@@ -25,6 +25,66 @@ class TicketProbabilityTests(unittest.TestCase):
         self.assertEqual(ticket_confidence([0.91, 0.74], 2), 74.0)
         self.assertIsNone(ticket_confidence([0.91, None], 2))
         self.assertIsNone(ticket_confidence([0.91], 2))
+
+
+class SportsCoverageViewTests(unittest.TestCase):
+    def test_active_requires_an_active_validated_model_and_market(self):
+        previous = db.DB
+        temp = tempfile.TemporaryDirectory()
+        db.DB = Path(temp.name) / 'sports.sqlite3'
+        try:
+            db.initialize()
+            now = datetime.now(timezone.utc)
+            with db.connect() as connection:
+                connection.execute(
+                    """INSERT INTO sports_ai_fixtures
+                       (id,external_id,source,sport,competition,home,away,starts_at,status,
+                        statistics_json,odds_json,observed_at)
+                       VALUES('fixture','external','source','basketball','NBA','Home','Away',
+                              ?,'scheduled','{}','{}',?)""",
+                    ((now + timedelta(days=1)).isoformat(), now.isoformat()),
+                )
+                connection.execute(
+                    """UPDATE sports_ai_sports SET prediction_status='modelled'
+                       WHERE code='basketball'""",
+                )
+                connection.execute(
+                    """INSERT INTO sports_ai_market_registry
+                       (id,sport,market_key,selection,period,settlement_rule,data_requirements,
+                        model_source,status,evidence_json,updated_at)
+                       VALUES('market','basketball','MONEYLINE_HOME','Home','full_time',
+                              'winner','final score','test','active','{}',?)""",
+                    (now.isoformat(),),
+                )
+                connection.execute(
+                    """INSERT INTO sports_ai_training_runs
+                       (id,sport,model_name,version,status,training_window_json,parameters_json,
+                        metrics_json,sample_size)
+                       VALUES('training','basketball','basketball','1','insufficient_data',
+                              '{}','{}','{}',40)""",
+                )
+                connection.execute(
+                    """INSERT INTO sports_ai_model_registry
+                       (id,training_run_id,sport,model_name,version,status,active,parameters_json,
+                        metrics_json,calibration_status)
+                       VALUES('model','training','basketball','basketball','1','inactive',0,
+                              '{}','{}','uncalibrated')""",
+                )
+                status = {row['name']: row['status'] for row in _sports(connection, now)}
+                self.assertEqual(status['Basketball'], 'Research')
+                connection.execute(
+                    """UPDATE sports_ai_training_runs SET status='validated' WHERE id='training'""",
+                )
+                connection.execute(
+                    """UPDATE sports_ai_model_registry
+                       SET status='active',active=1,calibration_status='validated'
+                       WHERE id='model'""",
+                )
+                status = {row['name']: row['status'] for row in _sports(connection, now)}
+            self.assertEqual(status['Basketball'], 'Active')
+        finally:
+            db.DB = previous
+            temp.cleanup()
 
 
 class OpportunityWeekTests(unittest.TestCase):

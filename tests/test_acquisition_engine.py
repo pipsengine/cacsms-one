@@ -233,12 +233,60 @@ class AcquisitionEngineTests(unittest.TestCase):
             {'id':'json-2','date':'2026-10-31','team1':'North FC','team2':'South FC',
              'score':[1,0]},
         ]}
-        with patch.object(acquisition_engine,'_json_body',return_value=(payload,{})):
-            batch=acquisition_engine._openfootball(
-                provider,{'dataset_url':'https://raw.githubusercontent.com/openfootball/football.json/master/2026-27/en.1.json'},
-            )
+        with patch.object(acquisition_engine,'utc_now',return_value='2026-11-10T00:00:00+00:00'):
+            with patch.object(acquisition_engine,'_json_body',return_value=(payload,{})):
+                batch=acquisition_engine._openfootball(
+                    provider,{'dataset_url':'https://raw.githubusercontent.com/openfootball/football.json/master/2026-27/en.1.json'},
+                )
         self.assertEqual([row['home_score'] for row in batch['fixtures']],[2,1])
         self.assertEqual([row['time_precision'] for row in batch['fixtures']],['date','date'])
+        self.assertEqual(
+            [row['settled_at'] for row in batch['fixtures']],
+            ['2026-11-10T00:00:00+00:00'] * 2,
+        )
+
+    def test_date_only_result_settlement_uses_observation_time(self):
+        observed='2026-10-31T12:00:00+00:00'
+        with patch.object(acquisition_engine,'utc_now',return_value=observed):
+            record=acquisition_engine._record(
+                'openfootball','game-1','football','Test League','Home FC','Away FC',
+                '2026-10-30','2026-10-31','https://example.org/results',
+                home_score=2,away_score=1,settled_at='2026-10-30',
+            )
+        self.assertEqual(record['settled_at'],observed)
+
+    def test_same_score_refresh_preserves_or_repairs_settlement_time(self):
+        provider=self._provider()
+        record=self._record(source='openfootball')
+        with db.connect() as connection:
+            acquisition_engine._persist(connection,provider,{'fixtures':[record],'standings':[]})
+            later={**record,'settled_at':'2026-10-30T21:00:00+00:00'}
+            acquisition_engine._persist(connection,provider,{'fixtures':[later],'standings':[]})
+            settled=connection.execute(
+                'SELECT settled_at FROM sports_ai_results',
+            ).fetchone()['settled_at']
+            self.assertEqual(settled,record['settled_at'])
+            connection.execute(
+                "UPDATE sports_ai_results SET settled_at='2026-10-30T00:00:00+00:00'",
+            )
+            repair={**record,'settled_at':'2026-10-30T22:00:00+00:00'}
+            acquisition_engine._persist(connection,provider,{'fixtures':[repair],'standings':[]})
+            settled=connection.execute(
+                'SELECT settled_at FROM sports_ai_results',
+            ).fetchone()['settled_at']
+        self.assertEqual(settled,repair['settled_at'])
+
+    def test_persistence_rejects_results_settled_before_kickoff(self):
+        provider=self._provider()
+        record=self._record(source='openfootball')
+        record['settled_at']='2026-10-30T18:00:00+00:00'
+        with db.connect() as connection:
+            with self.assertRaisesRegex(CollectionError,'must be after match kickoff'):
+                acquisition_engine._persist(connection,provider,{'fixtures':[record],'standings':[]})
+            self.assertEqual(
+                connection.execute('SELECT COUNT(*) FROM sports_ai_results').fetchone()[0],
+                0,
+            )
 
     def test_football_txt_reads_league_and_nations_scores(self):
         provider={'provider_key': 'txt-openfootball'}
@@ -329,10 +377,31 @@ class AcquisitionEngineTests(unittest.TestCase):
             config={'dataset_url':'https://raw.githubusercontent.com/sportsdataverse/example/main/games.csv'},
         )
         csv_body=b'id,date,home,away,home_score,away_score\n1,2026-11-01,Home,Away,99,97\n'
-        with patch.object(acquisition_engine,'_request',return_value=(csv_body,{})):
-            batch=acquisition_engine._sportsdataverse_csv(provider,json.loads(provider['config_json']))
+        with patch.object(acquisition_engine,'utc_now',return_value='2026-11-10T00:00:00+00:00'):
+            with patch.object(acquisition_engine,'_request',return_value=(csv_body,{})):
+                batch=acquisition_engine._sportsdataverse_csv(
+                    provider,json.loads(provider['config_json']),
+                )
         self.assertEqual(batch['fixtures'][0]['sport'],'basketball')
         self.assertEqual(batch['fixtures'][0]['home_score'],99)
+        self.assertEqual(batch['fixtures'][0]['settled_at'],'2026-11-10T00:00:00+00:00')
+
+    def test_sportsdataverse_missing_settlement_uses_observation_time(self):
+        provider=self._provider(
+            adapter='sportsdataverse_csv',
+            config={'dataset_url':'https://raw.githubusercontent.com/sportsdataverse/example/main/games.csv'},
+        )
+        observed='2026-11-10T00:00:00+00:00'
+        csv_body=(
+            b'id,date,home,away,home_score,away_score\n'
+            b'1,2026-11-01T22:00:00Z,Home,Away,99,97\n'
+        )
+        with patch.object(acquisition_engine,'utc_now',return_value=observed):
+            with patch.object(acquisition_engine,'_request',return_value=(csv_body,{})):
+                batch=acquisition_engine._sportsdataverse_csv(
+                    provider,json.loads(provider['config_json']),
+                )
+        self.assertEqual(batch['fixtures'][0]['settled_at'],observed)
 
     def test_browser_permissions_reject_unapproved_and_private_hosts(self):
         with self.assertRaises(BrowserResearchError):

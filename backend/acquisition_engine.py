@@ -185,11 +185,14 @@ def _record(source_id, external_id, sport, competition, home, away, starts_at,
         not 0 <= int(home_score) <= 300 or not 0 <= int(away_score) <= 300
     ):
         raise CollectionError('Provider score is outside the accepted range')
+    settlement = settled_at or observed_at
+    if re.fullmatch(r'\d{4}-\d{2}-\d{2}', str(settlement)):
+        settlement = utc_now()
     if home_score is not None:
         kickoff_time=datetime.fromisoformat(_as_utc(starts_at))
-        settlement_time=datetime.fromisoformat(_as_utc(settled_at or observed_at))
-        if settlement_time < kickoff_time:
-            raise CollectionError('Provider result settlement time precedes match kickoff')
+        settlement_time=datetime.fromisoformat(_as_utc(settlement))
+        if settlement_time <= kickoff_time:
+            raise CollectionError('Provider result settlement time must be after match kickoff')
     time_precision = 'date' if re.fullmatch(r'\d{4}-\d{2}-\d{2}',str(starts_at)) else 'instant'
     result = {
         'external_id': str(external_id)[:200],
@@ -209,7 +212,7 @@ def _record(source_id, external_id, sport, competition, home, away, starts_at,
     if home_score is not None and away_score is not None:
         result['home_score'] = int(home_score)
         result['away_score'] = int(away_score)
-        result['settled_at'] = _as_utc(settled_at or observed_at)
+        result['settled_at'] = _as_utc(settlement)
     return result
 
 
@@ -721,7 +724,7 @@ def _sportsdataverse_csv(provider, config, limit=MAX_RECORDS):
             home, away, kickoff, observed, url,
             'FINISHED' if home_score is not None else 'SCHEDULED',
             home_score, away_score,
-            _csv_value(normalized, 'settled_at') or (kickoff if home_score is not None else None),
+            _csv_value(normalized, 'settled_at') or None,
         ))
     return {'fixtures': fixtures[:row_limit], 'standings': [], 'source_url': url, 'pages': 1}
 
@@ -784,8 +787,15 @@ def _persist(connection, provider, batch):
         seen += 1
         fixture_id = _fixture_for(connection, provider, record)
         previous = connection.execute(
-            'SELECT id FROM sports_ai_fixtures WHERE id=?', (fixture_id,),
+            'SELECT id,starts_at FROM sports_ai_fixtures WHERE id=?', (fixture_id,),
         ).fetchone()
+        kickoff = previous['starts_at'] if previous else record['starts_at']
+        incoming_settlement = None
+        if record.get('home_score') is not None and record.get('away_score') is not None:
+            kickoff_time = datetime.fromisoformat(_as_utc(kickoff))
+            incoming_settlement = datetime.fromisoformat(_as_utc(record['settled_at']))
+            if incoming_settlement <= kickoff_time:
+                raise CollectionError('Provider result settlement time must be after match kickoff')
         if previous:
             mapped_elsewhere=connection.execute(
                 """SELECT 1 FROM sports_ai_fixture_source_map
@@ -828,7 +838,7 @@ def _persist(connection, provider, batch):
         )
         if record.get('home_score') is not None and record.get('away_score') is not None:
             existing_result = connection.execute(
-                'SELECT home_score, away_score FROM sports_ai_results WHERE fixture_id=?',
+                'SELECT home_score, away_score, settled_at FROM sports_ai_results WHERE fixture_id=?',
                 (fixture_id,),
             ).fetchone()
             if existing_result and (
@@ -853,16 +863,28 @@ def _persist(connection, provider, batch):
                         })),
                     )
             else:
-                connection.execute(
-                    """INSERT INTO sports_ai_results
-                       (id,fixture_id,home_score,away_score,source,status,settled_at)
-                       VALUES(?,?,?,?,?,'final',?)
-                       ON CONFLICT(fixture_id) DO UPDATE SET home_score=excluded.home_score,
-                       away_score=excluded.away_score,source=excluded.source,status='final',
-                       settled_at=excluded.settled_at""",
-                    (str(uuid.uuid4()),fixture_id,record['home_score'],record['away_score'],
-                     provider['provider_key'],record['settled_at']),
+                existing_settlement = None
+                if existing_result and existing_result['settled_at']:
+                    existing_settlement = datetime.fromisoformat(
+                        _as_utc(existing_result['settled_at'])
+                    )
+                should_update_result = (
+                    not existing_result
+                    or existing_settlement is None
+                    or existing_settlement <= kickoff_time
+                    or incoming_settlement < existing_settlement
                 )
+                if should_update_result:
+                    connection.execute(
+                        """INSERT INTO sports_ai_results
+                           (id,fixture_id,home_score,away_score,source,status,settled_at)
+                           VALUES(?,?,?,?,?,'final',?)
+                           ON CONFLICT(fixture_id) DO UPDATE SET home_score=excluded.home_score,
+                           away_score=excluded.away_score,source=excluded.source,status='final',
+                           settled_at=excluded.settled_at""",
+                        (str(uuid.uuid4()),fixture_id,record['home_score'],record['away_score'],
+                         provider['provider_key'],record['settled_at']),
+                    )
         for quote in record.get('odds') or []:
             connection.execute(
                 """INSERT OR IGNORE INTO sports_ai_odds_snapshots

@@ -1,4 +1,4 @@
-import React, {useEffect, useMemo, useState} from 'react';
+import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {Activity, AlertCircle, BarChart3, Bot, CalendarDays, CheckCircle2, ChevronRight, Clock3, Cpu, Database, Download, FileText, Layers3, Pause, Play, RefreshCw, Settings, ShieldCheck, Square, Target, Ticket, TrendingUp, Workflow} from 'lucide-react';
 import {get, post, put} from './api';
 import './autonomous.css';
@@ -46,29 +46,46 @@ export default function AutonomousEngine({nav}) {
   const [logQuery, setLogQuery] = useState('');
   const [form, setForm] = useState(null);
   const [saved, setSaved] = useState('');
+  const latestRequest = useRef(0);
+  const settingsDirty = useRef(false);
 
-  async function load() {
+  async function load(syncSettings = false) {
+    const request = ++latestRequest.current;
     try {
       const value = await get('/autonomous/overview');
+      if (request !== latestRequest.current) return;
       setData(value);
-      setForm(value.settings);
+      if (syncSettings || !settingsDirty.current) setForm(value.settings);
       setError('');
     } catch (requestError) {
+      if (request !== latestRequest.current) return;
       setError(requestError.message);
     }
   }
 
   useEffect(() => {
-    load();
-    const timer = setInterval(load, 10000);
-    return () => clearInterval(timer);
+    let active = true;
+    let timer;
+    const refresh = async () => {
+      await load();
+      if (active) timer = setTimeout(refresh, 10000);
+    };
+    refresh();
+    return () => {
+      active = false;
+      clearTimeout(timer);
+      latestRequest.current += 1;
+    };
   }, []);
 
   async function command(action) {
     setBusy(true);
     setSaved('');
     try {
-      setData(await post('/autonomous/control', {action}));
+      latestRequest.current += 1;
+      const value = await post('/autonomous/control', {action});
+      latestRequest.current += 1;
+      setData(value);
       setError('');
     } catch (requestError) {
       setError(requestError.message);
@@ -89,13 +106,19 @@ export default function AutonomousEngine({nav}) {
         odds_max_age_minutes: Number(form.odds_max_age_minutes),
         form_half_life_days: Number(form.form_half_life_days),
       });
-      await load();
+      settingsDirty.current = false;
+      await load(true);
       setSaved('Risk controls saved.');
     } catch (requestError) {
       setError(requestError.message);
     } finally {
       setBusy(false);
     }
+  }
+
+  function updateForm(values) {
+    settingsDirty.current = true;
+    setForm(current => ({...current, ...values}));
   }
 
   const summary = data?.summary || {};
@@ -127,7 +150,7 @@ export default function AutonomousEngine({nav}) {
     [CalendarDays, 'Live matches', count(summary.live), summary.live ? 'In play' : 'None in play', 'green'],
     [Cpu, 'Analysed (24h)', count(summary.analysed), 'Prediction rows', 'violet'],
     [Target, 'Value opportunities', count(summary.opportunities), 'Qualified', 'orange'],
-    [Ticket, 'Tickets generated', count((data?.tickets || []).length), 'Ready this week, above 70%', 'violet'],
+    [Ticket, 'Tickets generated', count(summary.tickets), `Ready this week: ${count((data?.tickets || []).length)}`, 'violet'],
     [BarChart3, 'Prediction accuracy', percent(summary.accuracy), summary.settled ? `${count(summary.settled)} settled` : 'No settled results', 'orange'],
     [TrendingUp, 'Model edge (avg)', summary.edge == null ? '—' : `+${Number(summary.edge).toFixed(1)}%`, summary.edge == null ? 'No qualified edge' : 'Qualified average', 'green'],
     [ShieldCheck, 'Qualified decisions', count(summary.qualified_decisions), 'Central qualification', 'blue'],
@@ -259,12 +282,12 @@ export default function AutonomousEngine({nav}) {
     {tab === 'Settings' && form && <section className="ae-panel">
       <div className="ae-head"><h2><Settings size={18}/> Engine Settings</h2></div>
       <form className="ae-settings" onSubmit={saveSettings}>
-        <label>Minimum edge<input type="number" min="0" max="1" step="0.01" value={form.min_edge} onChange={event => setForm({...form, min_edge: event.target.value})}/></label>
-        <label>Maximum ticket legs<input type="number" min="1" max="8" step="1" value={form.max_legs} onChange={event => setForm({...form, max_legs: event.target.value})}/></label>
-        <label>Odds tolerance<input type="number" min="0.01" max="0.5" step="0.01" value={form.odds_tolerance} onChange={event => setForm({...form, odds_tolerance: event.target.value})}/></label>
-        <label>Odds freshness, minutes<input type="number" min="1" max="1440" step="1" value={form.odds_max_age_minutes} onChange={event => setForm({...form, odds_max_age_minutes: event.target.value})}/></label>
-        <label>Form half-life, days<input type="number" min="1" max="3650" step="1" value={form.form_half_life_days} onChange={event => setForm({...form, form_half_life_days: event.target.value})}/></label>
-        <label className="ae-check"><input type="checkbox" checked={form.autonomous_tickets !== false} onChange={event => setForm({...form, autonomous_tickets: event.target.checked})}/> Build tickets automatically from current QUALIFIED selections</label>
+        <label>Minimum edge<input type="number" min="0" max="1" step="0.01" value={form.min_edge} onChange={event => updateForm({min_edge: event.target.value})}/></label>
+        <label>Maximum ticket legs<input type="number" min="1" max="8" step="1" value={form.max_legs} onChange={event => updateForm({max_legs: event.target.value})}/></label>
+        <label>Odds tolerance<input type="number" min="0.01" max="0.5" step="0.01" value={form.odds_tolerance} onChange={event => updateForm({odds_tolerance: event.target.value})}/></label>
+        <label>Odds freshness, minutes<input type="number" min="1" max="1440" step="1" value={form.odds_max_age_minutes} onChange={event => updateForm({odds_max_age_minutes: event.target.value})}/></label>
+        <label>Form half-life, days<input type="number" min="1" max="3650" step="1" value={form.form_half_life_days} onChange={event => updateForm({form_half_life_days: event.target.value})}/></label>
+        <label className="ae-check"><input type="checkbox" checked={form.autonomous_tickets !== false} onChange={event => updateForm({autonomous_tickets: event.target.checked})}/> Build tickets automatically from current QUALIFIED selections</label>
         <button className="ae-btn primary" disabled={busy}>Save risk controls</button>
         {saved && <span className="ae-saved">{saved}</span>}
       </form>

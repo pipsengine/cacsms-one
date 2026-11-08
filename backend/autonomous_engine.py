@@ -443,18 +443,23 @@ def _opportunities(connection, now):
 
 
 def _tickets(connection, now=None):
-    """The same slips the Ticket Builder lists: qualified, above 70%, and still inside this Monday–Sunday week."""
+    """Current-week qualified slips plus specialized products, without conflating ticket and leg probability."""
     current = now or datetime.now(timezone.utc)
     now_iso = current.astimezone(timezone.utc).isoformat()
     week_end = opportunity_week(current)[1].astimezone(timezone.utc).isoformat()
     candidates = [dict(row) for row in connection.execute(
         """SELECT id,tier,status,combined_odds,joint_probability,estimated_edge,leg_count,created_at,sport_mode
            FROM sports_ai_accumulator_tickets
-           WHERE probability_basis='independent' AND joint_probability>?
+           WHERE probability_basis='independent'
              AND (
-               status='qualified'
-               OR (status='unverified_probability' AND json_extract(parameters_json,'$.coverage')='high_probability')
-               OR (status='unverified_probability' AND json_extract(parameters_json,'$.product') IN ('sure_odds','high_odds'))
+               (status='qualified' AND joint_probability>?)
+               OR (
+                 status='unverified_probability'
+                 AND (
+                   json_extract(parameters_json,'$.coverage')='high_probability'
+                   OR json_extract(parameters_json,'$.product') IN ('sure_odds','high_odds')
+                 )
+               )
              )
            ORDER BY created_at DESC""",
         (0.70,),

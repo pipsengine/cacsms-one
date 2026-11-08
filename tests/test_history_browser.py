@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 
 import db
 from history_browser import (
+    LAGOS,
     _advance,
     _blank_state,
     collect_match_history,
@@ -60,6 +61,11 @@ SOCCERWAY_HTML = """
 
 
 class HistoryParseTests(unittest.TestCase):
+    def test_lagos_history_timezone_works_without_a_system_timezone_database(self):
+        self.assertEqual(LAGOS.utcoffset(None).total_seconds(), 3600)
+        local = datetime(2026, 11, 7, 8, 0, tzinfo=timezone.utc).astimezone(LAGOS)
+        self.assertEqual(local.isoformat(), '2026-11-07T09:00:00+01:00')
+
     def test_displayed_finals_are_kept_and_a_postponement_is_skipped(self):
         women = parse_betexplorer_results(BETEXPLORER_HTML, 'football', 'https://www.betexplorer.com/football/results/', OBSERVED, NOW)
         basketball = parse_betexplorer_results(BETEXPLORER_HTML, 'basketball', 'https://www.betexplorer.com/basketball/results/', OBSERVED, NOW)

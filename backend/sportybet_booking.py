@@ -26,25 +26,52 @@ FIND_ODDS = '''(args) => {
   };
   const wanted = tokens(args.home);
   const other = tokens(args.away);
-  const price = Number(args.odds).toFixed(2);
-  const exact = [];
-  const nearby = [];
+  const normalize = value => fold(value).split(' ').filter(Boolean);
+  const selection = normalize(args.selection);
+  const side = args.side || 'home';
+  const sideAliases = {
+    home: ['home', '1'],
+    draw: ['draw', 'x'],
+    away: ['away', '2'],
+  }[side] || [];
+  const outcomes = [];
   document.querySelectorAll('[data-sports-ai-pick]').forEach(node => node.removeAttribute('data-sports-ai-pick'));
   for (const row of document.querySelectorAll('.match-row, article')) {
     const blob = fold(row.innerText || '');
     if (!wanted.every(token => blob.includes(token)) || !other.every(token => blob.includes(token))) continue;
+    const prices = [];
     for (const node of row.querySelectorAll('.m-outcome, button, a, [role="button"]')) {
       if (node.classList.contains('m-outcome--disabled') || node.classList.contains('m-outcome-odds')) continue;
       const text = (node.innerText || '').trim();
       if (!/^\\d+(?:\\.\\d+)?$/.test(text)) continue;
-      const shown = Number(text).toFixed(2);
-      const hit = {text: shown};
-      nearby.push(hit);
-      if (shown === price) exact.push(node);
+      const odds = Number(text);
+      if (!Number.isFinite(odds) || odds <= 1) continue;
+      prices.push({node, odds});
     }
+    if (!prices.length) continue;
+    const explicit = prices.some(({node}) => node.hasAttribute('data-outcome') || node.hasAttribute('data-selection'));
+    let matches = [];
+    if (explicit) {
+      matches = prices.filter(({node}) => {
+        const label = normalize(node.getAttribute('data-outcome') || node.getAttribute('data-selection') || '');
+        return sideAliases.some(alias => label.includes(alias)) ||
+          (selection.length > 0 && selection.every(token => label.includes(token)));
+      });
+    } else {
+      const index = side === 'draw'
+        ? (prices.length >= 3 ? 1 : -1)
+        : side === 'away'
+          ? (prices.length >= 3 ? 2 : prices.length === 2 ? 1 : -1)
+          : side === 'home' ? 0 : -1;
+      if (index >= 0 && index < prices.length) matches = [prices[index]];
+    }
+    outcomes.push(...matches);
   }
-  if (exact.length === 1) exact[0].setAttribute('data-sports-ai-pick', args.marker);
-  return {exact: exact.length, nearby: nearby.slice(0, 8)};
+  if (outcomes.length === 1) {
+    outcomes[0].node.setAttribute('data-sports-ai-pick', args.marker);
+    return {matched: 1, shown: outcomes[0].odds.toFixed(2)};
+  }
+  return {matched: 0, nearby: []};
 }'''
 
 FIND_BOOK = '''() => {
@@ -331,7 +358,7 @@ def select_booking(connection, now):
 
 def ticket_selections(connection, ticket_id):
     rows = connection.execute(
-        """SELECT fixture_id, sport, competition, home, away, market, selection, decimal_odds
+        """SELECT fixture_id, sport, competition, home, away, starts_at, market, selection, decimal_odds
            FROM sports_ai_accumulator_legs
            WHERE ticket_id=?
            ORDER BY starts_at""",
@@ -440,11 +467,12 @@ def _apply_displayed_prices(connection, ticket_id, seen):
             odds = float(item.get('page_odds'))
         except (TypeError, ValueError):
             continue
-        if not item.get('fixture_id') or odds <= 1:
+        if not item.get('fixture_id') or not item.get('market') or item.get('selection') is None or odds <= 1:
             continue
         connection.execute(
-            'UPDATE sports_ai_accumulator_legs SET decimal_odds=? WHERE ticket_id=? AND fixture_id=?',
-            (odds, ticket_id, item['fixture_id']),
+            """UPDATE sports_ai_accumulator_legs SET decimal_odds=?
+               WHERE ticket_id=? AND fixture_id=? AND upper(market)=upper(?) AND selection=?""",
+            (odds, ticket_id, item['fixture_id'], item['market'], item['selection']),
         )
     rows = connection.execute(
         'SELECT decimal_odds FROM sports_ai_accumulator_legs WHERE ticket_id=?',
@@ -559,7 +587,7 @@ FOCUS_MARKET = '''(args) => {
     const kept = all.filter(token => !skip.has(token) && token.length > 1);
     return kept.length ? kept : all;
   };
-  const present = (blob, token) => blob.split(' ').some(word => near(token, word));
+  const present = (blob, token) => blob.split(' ').some(word => near(token, word.replace(/\\./g, '')));
   let scope = document;
   if (args.home) {
     const wanted = tokens(args.home);
@@ -609,7 +637,7 @@ FIND_LINE = '''(args) => {
     const kept = all.filter(token => !skip.has(token) && !/^\\d+$/.test(token));
     return kept.length ? kept : all;
   };
-  const present = (blob, token) => blob.split(' ').some(word => near(token, word));
+  const present = (blob, token) => blob.split(' ').some(word => near(token, word.replace(/\\./g, '')));
   const wanted = tokens(args.home);
   const other = tokens(args.away);
   const price = Number(args.odds).toFixed(2);
@@ -624,7 +652,7 @@ FIND_LINE = '''(args) => {
     return wanted.every(token => present(blob, token)) && other.every(token => present(blob, token));
   }).sort((left, right) => (left.innerText || '').length - (right.innerText || '').length);
   const row = rows.find(candidate => candidate.querySelector('.af-select, .m-outcome')) || rows[0];
-  if (!row) return {exact: 0, nearby: [], line_visible: null};
+  if (!row) return {matched: 0, nearby: [], line_visible: null};
   const selectedLine = [...row.querySelectorAll('.af-select-input')].map(node => (node.innerText || '').trim()).find(Boolean) || '';
   const shownLine = numeric(selectedLine);
   const wantedLine = numeric(line);
@@ -638,7 +666,7 @@ FIND_LINE = '''(args) => {
     return text !== line && text !== bare;
   });
   const nearby = prices.slice(0, 8).map(node => ({text: Number(node.innerText).toFixed(2)}));
-  if (!lineVisible) return {exact: 0, nearby, line_visible: false};
+  if (!lineVisible) return {matched: 0, nearby, line_visible: false};
   const total = args.side === 'over' || args.side === 'under';
   const doubleIndex = { '1x': 0, '12': 1, 'x2': 2 }[args.side];
   const index = doubleIndex !== undefined
@@ -651,14 +679,13 @@ FIND_LINE = '''(args) => {
         ? (args.side === 'over' ? 2 : 3)
         : (args.side === 'over' ? 0 : 1);
   const chosen = prices[index];
-  if (!chosen) return {exact: 0, nearby, line_visible: true};
+  if (!chosen) return {matched: 0, nearby, line_visible: true};
   const shown = Number(chosen.innerText);
-  const quoted = Number(args.odds);
-  if (!Number.isFinite(shown) || !quoted || Math.abs(shown - quoted) / quoted > 0.05) {
-    return {exact: 0, nearby: [{text: Number.isFinite(shown) ? shown.toFixed(2) : ''}], line_visible: true};
+  if (!Number.isFinite(shown) || shown <= 1) {
+    return {matched: 0, nearby: [{text: Number.isFinite(shown) ? shown.toFixed(2) : ''}], line_visible: true};
   }
   chosen.setAttribute('data-sports-ai-pick', args.marker);
-  return {exact: 1, nearby, line_visible: true, shown: shown.toFixed(2)};
+  return {matched: 1, nearby, line_visible: true, shown: shown.toFixed(2)};
 }'''
 
 
@@ -695,102 +722,6 @@ def _market_side(market):
     return 'home'
 
 
-def _same_side(family, side, label):
-    text = str(label or '').casefold()
-    if family == 'total':
-        if side == 'under':
-            return 'under' in text
-        if side == 'over':
-            return 'over' in text
-        return False
-    if family == 'handicap':
-        return side in text or _market_side(label) == side
-    return False
-
-
-def _align_selection_to_offered(item, offered):
-    """Use a SportyBet price already stored for a line this page is showing."""
-    wanted = []
-    for value in offered or []:
-        number = _numeric_line(value)
-        if number is None or any(abs(number - seen) < 0.001 for seen in wanted):
-            continue
-        wanted.append(number)
-    if not wanted or not item.get('fixture_id'):
-        return None
-    side = _market_side(item.get('market'))
-    family = _market_family(item.get('market'))
-    with connect() as connection:
-        rows = connection.execute(
-            """SELECT market, outcome, line, decimal_odds
-               FROM sports_ai_odds_snapshots
-               WHERE fixture_id=? AND bookmaker='SportyBet'
-               ORDER BY observed_at DESC""",
-            (item['fixture_id'],),
-        ).fetchall()
-    for row in rows:
-        number = _numeric_line(row['line'])
-        if number is None:
-            number = _numeric_line(_market_line(str(row['market'] or '')))
-        if number is None or not any(abs(number - seen) < 0.001 for seen in wanted):
-            continue
-        label = f"{row['market']} {row['outcome']}"
-        if not _same_side(family, side, label):
-            continue
-        market = str(row['market'] or '')
-        if not _market_line(market):
-            if family != 'total':
-                continue
-            prefix = 'UNDER' if side == 'under' else 'OVER'
-            market = f'{prefix}_{_line_text(number)}'
-        try:
-            odds = float(row['decimal_odds'])
-        except (TypeError, ValueError):
-            continue
-        if odds <= 1:
-            continue
-        return {
-            'market': market,
-            'decimal_odds': odds,
-            'selection': row['outcome'] or item.get('selection'),
-        }
-    return None
-
-
-def _remember_aligned_leg(item, previous_market):
-    """Keep the ticket on the stored line the page can show."""
-    ticket_id = item.get('ticket_id')
-    fixture_id = item.get('fixture_id')
-    if not ticket_id or not fixture_id or not previous_market:
-        return
-    with connect() as connection:
-        connection.execute(
-            """UPDATE sports_ai_accumulator_legs
-               SET market=?, selection=?, decimal_odds=?
-               WHERE ticket_id=? AND fixture_id=? AND upper(market)=upper(?)""",
-            (
-                item['market'], item.get('selection'), float(item['decimal_odds']),
-                ticket_id, fixture_id, previous_market,
-            ),
-        )
-        prices = [
-            float(row['decimal_odds'])
-            for row in connection.execute(
-                'SELECT decimal_odds FROM sports_ai_accumulator_legs WHERE ticket_id=?',
-                (ticket_id,),
-            )
-        ]
-        if not prices:
-            return
-        product = 1.0
-        for price in prices:
-            product *= price
-        connection.execute(
-            'UPDATE sports_ai_accumulator_tickets SET combined_odds=? WHERE id=?',
-            (round(product, 4), ticket_id),
-        )
-
-
 REVEAL_FIXTURE = '''(args) => {
   const fold = value => (value || '').toLowerCase().replace(/ä/g, 'a').replace(/ö/g, 'o').replace(/ü/g, 'u').replace(/ß/g, 'ss').replace(/[^a-z0-9.]+/g, ' ');
   const skip = new Set(['fc','sc','sv','ac','cf','afc','cfc','vfb','vfl','tsg','bsc','fk','sk','dsc','estac','rcd']);
@@ -805,7 +736,7 @@ REVEAL_FIXTURE = '''(args) => {
     }
     return rows[token.length][word.length] <= 2;
   };
-  const present = (blob, token) => blob.split(' ').some(word => near(token, word));
+  const present = (blob, token) => blob.split(' ').some(word => near(token, word.replace(/\\./g, '')));
   const tokens = value => {
     const all = fold(value).split(' ').map(token => token.replace(/\\./g, '')).filter(Boolean);
     const kept = all.filter(token => !skip.has(token) && token.length > 1 && !/^\\d+$/.test(token));
@@ -818,7 +749,8 @@ REVEAL_FIXTURE = '''(args) => {
     return wanted.every(token => present(blob, token)) && other.every(token => present(blob, token));
   });
   if (shown) return {visible: true, clicked: ''};
-  const rows = [...document.querySelectorAll('li.category-list-item, li.tournament-list-item, .tournament-list-item')];
+  const rows = [...document.querySelectorAll('li.category-list-item, li.tournament-list-item, .tournament-list-item')]
+    .filter(item => !item.hasAttribute('data-sports-ai-opened'));
   const compTokens = fold(args.competition).split(' ').filter(word => word && !/^\\d{3,}$/.test(word) && (word.length > 2 || /^\\d+\\.?$/.test(word)));
   const labelOf = item => {
     if (item.classList.contains('tournament-list-item')) {
@@ -842,7 +774,7 @@ REVEAL_FIXTURE = '''(args) => {
     if (!label.length) continue;
     if (!compTokens.includes('srl') && label.includes('srl')) continue;
     if (!compTokens.includes('simulated') && label.includes('simulated')) continue;
-    const alias = {english: 'england', dutch: 'netherlands', french: 'france', german: 'germany'};
+    const alias = {english: 'england', dutch: 'netherlands', french: 'france', german: 'germany', fussball: 'germany'};
     const bare = word => word.replace(/\\.$/, '');
     const same = (token, word) => bare(token) === bare(word) || alias[token] === word || alias[word] === token;
     const hits = compTokens.filter(token => label.some(word => same(token, word))).length;
@@ -855,6 +787,7 @@ REVEAL_FIXTURE = '''(args) => {
   }
   if (best) {
     best.setAttribute('data-sports-ai-league', '1');
+    best.setAttribute('data-sports-ai-opened', '1');
     return {visible: false, clicked: labelOf(best).slice(0, 40)};
   }
   const search = document.querySelector('input[placeholder*="Search" i], input[type="search"]');
@@ -870,20 +803,18 @@ async def _reveal_fixture(page, item):
         'away': item.get('away') or '',
         'competition': item.get('competition') or '',
     }
-    previous = ''
-    result = {}
+    result = await page.evaluate(REVEAL_FIXTURE, payload)
     for _ in range(3):
-        result = await page.evaluate(REVEAL_FIXTURE, payload)
         if result.get('visible') or result.get('clicked') == 'search' or not result.get('clicked'):
             break
-        if result.get('clicked') == previous:
-            break
-        previous = result.get('clicked')
+        clicked = result.get('clicked')
         await page.locator('[data-sports-ai-league="1"]').click()
         await page.wait_for_timeout(1500)
         result = await page.evaluate(REVEAL_FIXTURE, payload)
         if result.get('visible'):
             return result
+        if result.get('clicked') == clicked:
+            break
     if result.get('clicked') == 'search':
         box = page.locator('input[placeholder*="Search" i], input[type="search"]').first
         await box.fill(item.get('home') or '')
@@ -910,7 +841,7 @@ SWITCH_LINE = '''(args) => {
     const kept = all.filter(token => !skip.has(token) && !/^\\d+$/.test(token));
     return kept.length ? kept : all;
   };
-  const present = (blob, token) => blob.split(' ').some(word => near(token, word));
+  const present = (blob, token) => blob.split(' ').some(word => near(token, word.replace(/\\./g, '')));
   const wanted = tokens(args.home);
   const other = tokens(args.away);
   const rows = [...document.querySelectorAll('.match-row')].filter(candidate => {
@@ -1016,15 +947,11 @@ def _line_text(number):
 
 
 def _line_choices(line):
-    """SportyBet lists basketball spreads on the half point when the stored line is a whole number."""
-    choices = [line]
-    if re.fullmatch(r'-?\d+', line or ''):
-        choices.append(f'-{line[1:]}.5' if line.startswith('-') else f'{line}.5')
-    return choices
+    return [line] if line else []
 
 
 async def _switch_line(page, item):
-    """Open the line control and choose the quoted line. The price is clicked only when it matches."""
+    """Open the line control and choose only the ticket's exact line."""
     line = _market_line(item.get('market'))
     if not line:
         return False
@@ -1092,7 +1019,7 @@ async def _focus_market(page, item):
 
 
 async def prepare_slip(page, selections, book=True, skip_unpriced=False):
-    """Click the displayed price for each selection. Book only when asked. Never place a wager.
+    """Select each ticket outcome at its current displayed price. Never place a wager.
 
     A high-odds ticket can leave out a line SportyBet is not showing, then book the rest.
     """
@@ -1114,43 +1041,34 @@ async def prepare_slip(page, selections, book=True, skip_unpriced=False):
                     'side': _market_side(item.get('market')), 'marker': marker,
                 })
             return await page.evaluate(FIND_ODDS, {
-                'home': item['home'], 'away': item['away'], 'odds': float(item['decimal_odds']), 'marker': marker,
+                'home': item['home'], 'away': item['away'], 'selection': item.get('selection') or '',
+                'side': _market_side(item.get('market')), 'marker': marker,
             })
         hits = await find_price()
         revealed = {}
-        if hits.get('exact') != 1:
+        if hits.get('matched') != 1:
             revealed = await _reveal_fixture(page, item)
             hits = await find_price()
-        if hits.get('exact') != 1 and hits.get('line_visible') is False and _market_line(item.get('market')):
-            switched = await _switch_line(page, item)
-            if not switched:
-                aligned = _align_selection_to_offered(item, item.get('_offered_lines') or [])
-                if aligned:
-                    previous = item.get('market')
-                    item['market'] = aligned['market']
-                    item['decimal_odds'] = aligned['decimal_odds']
-                    if aligned.get('selection'):
-                        item['selection'] = aligned['selection']
-                    item['_page_line'] = _market_line(aligned['market'])
-                    _remember_aligned_leg(item, previous)
-                    await _switch_line(page, item)
+        if hits.get('matched') != 1 and hits.get('line_visible') is False and _market_line(item.get('market')):
+            await _switch_line(page, item)
             hits = await find_price()
-        if hits['exact'] == 1:
+        if hits['matched'] == 1:
             control = await page.evaluate(INSPECT, f'[data-sports-ai-pick="{marker}"]')
             name = (control or {}).get('name') or ''
             if not control or control.get('disabled') or re.search(r'place\s*bet|bet\s*now|\bpay\b|deposit|confirm\s*bet', name, re.I):
                 raise RuntimeError(f"The price control is not an allowed selection: {item['home']} vs {item['away']}")
             seen.append({
-                'fixture_id': item['fixture_id'], 'stored_odds': item['decimal_odds'],
+                'fixture_id': item['fixture_id'], 'market': item.get('market'), 'selection': item.get('selection'),
+                'stored_odds': item['decimal_odds'],
                 'page_odds': float(hits.get('shown') or item['decimal_odds']), 'control': control,
             })
             await page.locator(f'[data-sports-ai-pick="{marker}"]').click()
             await page.wait_for_timeout(400)
             continue
-        if skip_unpriced and hits.get('exact') != 1:
+        if skip_unpriced and hits.get('matched') != 1:
             skipped.append(item)
             continue
-        if hits['exact'] == 0 and hits.get('line_visible') is False:
+        if hits['matched'] == 0 and hits.get('line_visible') is False:
             seen.append({'fixture_id': item['fixture_id'], 'stored_odds': item['decimal_odds'], 'page_odds': None})
             offered = item.get('_offered_lines') or []
             wanted = _numeric_line(item.get('_page_line') or _market_line(item.get('market')))
@@ -1165,7 +1083,7 @@ async def prepare_slip(page, selections, book=True, skip_unpriced=False):
                 'status': 'ODDS_CHANGED', 'seen': seen, 'code': None,
                 'error': detail,
             }
-        if hits['exact'] == 0 and hits['nearby']:
+        if hits['matched'] == 0 and hits['nearby']:
             seen.append({'fixture_id': item['fixture_id'], 'stored_odds': item['decimal_odds'], 'page_odds': float(hits['nearby'][0]['text'])})
             return {'status': 'ODDS_CHANGED', 'seen': seen, 'code': None}
         opened = revealed.get('clicked') or 'none'
@@ -1358,7 +1276,7 @@ async def execute_job(job_id, page_url=None):
                 if ticket_id and result.get('skipped'):
                     _drop_unpriced_legs(connection, ticket_id, result['skipped'])
                 _set_job(connection, job_id, 'CODE_GENERATED', code=result['code'], screenshot=str(shot), odds_json=json.dumps(result['seen']), reason_code='CODE_VERIFIED')
-                if ticket_id and (_high_odds_ticket(connection, ticket_id) or _sure_odds_ticket(connection, ticket_id)):
+                if ticket_id:
                     _apply_displayed_prices(connection, ticket_id, result.get('seen') or [])
                 if ticket_id:
                     _store_displayed_code(connection, ticket_id, result['code'], str(shot))
@@ -1568,11 +1486,9 @@ def _ticket_preflight(connection, ticket, now, window_open, minutes):
         observed = _parse_booking_time(quote['observed_at'] if quote else leg.get('odds_observed_at'))
         if not observed or (now - observed).total_seconds() / 60 > minutes:
             return 'ODDS_STALE', 'The SportyBet price is older than the 15-minute freshness window.', 'review_required'
-        if quote and abs(float(quote['decimal_odds']) - float(leg['decimal_odds'])) / float(leg['decimal_odds']) > 0.02:
-            return 'ODDS_CHANGED', 'The current SportyBet price no longer matches the ticket.', 'review_required'
     if not window_open:
         return 'WINDOW_CLOSED', 'The next code request waits for the 15-minute gap. The ticket stays ready and no browser is opened.', None
-    return 'READY', 'The ticket is still qualified with a fresh SportyBet price.', None
+    return 'READY', 'The ticket is still qualified and its same-selection SportyBet quote is fresh.', None
 
 
 def _parse_booking_time(value):

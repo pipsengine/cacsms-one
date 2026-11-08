@@ -1,4 +1,4 @@
-import React,{useEffect,useState}from'react';
+import React,{useEffect,useRef,useState}from'react';
 import {useLiveReload} from './live';
 import {AlertCircle,CheckCircle2,ClipboardList,History,RefreshCcw,Save,Ticket,X}from'lucide-react';
 import {get,post,put}from'./api';
@@ -30,6 +30,9 @@ const exposure=ticket=>{
 const oddsText=n=>n==null?'—':Number(n).toFixed(3);
 const pct=n=>n==null?'—':(Number(n)*100).toFixed(1)+'%';
 const kindFor=status=>status==='qualified'||status==='settled'?'success':status==='expired'||status==='unverified_probability'||status==='review_required'?'warning':'neutral';
+const availableForBetslip=ticket=>['qualified','unverified_probability'].includes(ticket.status)
+  &&Array.isArray(ticket.legs)&&ticket.legs.length>0
+  &&ticket.legs.every(leg=>{const kickoff=Date.parse(leg.starts_at);return Number.isFinite(kickoff)&&kickoff>Date.now()});
 
 function Status({children,kind='neutral'}){return <span className={'sp-status '+kind}>{children}</span>}
 
@@ -47,6 +50,7 @@ export default function AccumulatorPage({page,tab=0}){
   const [betslip,setBetslip]=useState(null);
   const [error,setError]=useState('');
   const [notice,setNotice]=useState('');
+  const [ticketsLoaded,setTicketsLoaded]=useState(false);
   const [busy,setBusy]=useState(false);
   const [generating,setGenerating]=useState(false);
   const [adminKey,setAdminKey]=useState('');
@@ -54,35 +58,55 @@ export default function AccumulatorPage({page,tab=0}){
   const [backtest,setBacktest]=useState(null);
   const [form,setForm]=useState({sport_mode:'mixed',tier:'',min_edge:'0.05',max_legs:'25',market:'',competition:'',bookmaker:''});
   const [codeForm,setCodeForm]=useState({ticket_id:'',code:'',evidence:''});
+  const refreshInFlight=useRef(false);
 
   async function refresh(){
-    const [centre,stored,policy,book,pool,bookingJobs]=await Promise.all([
-      get('/accumulator/command'),
-      get('/accumulator/tickets'),
-      get('/accumulator/config'),
-      get('/accumulator/booking-codes'),
-      get('/accumulator/candidates?sport_mode=mixed'),
-      get('/bookings').catch(()=>({items:[]})),
-    ]);
-    setCommand(centre);
-    setTickets(stored);
-    setConfig(policy);
-    setCodes(book);
-    setBookings(bookingJobs.items||[]);
-    setBookingSchedule(bookingJobs.schedule||null);
-    setBookingLogs(bookingJobs.logs||[]);
-    setCandidates(pool.accepted||[]);
-    setError('');
+    if(refreshInFlight.current)return;
+    refreshInFlight.current=true;
+    try{
+      const [centre,stored,policy,book,pool,bookingJobs]=await Promise.all([
+        get('/accumulator/command'),
+        get('/accumulator/tickets'),
+        get('/accumulator/config'),
+        get('/accumulator/booking-codes'),
+        get('/accumulator/candidates?sport_mode=mixed'),
+        get('/bookings').catch(()=>({items:[]})),
+      ]);
+      setCommand(centre);
+      setTickets(stored);
+      setConfig(policy);
+      setCodes(book);
+      setBookings(bookingJobs.items||[]);
+      setBookingSchedule(bookingJobs.schedule||null);
+      setBookingLogs(bookingJobs.logs||[]);
+      setCandidates(pool.accepted||[]);
+      setError('');
+    }catch(loadError){
+      setError(loadError instanceof Error?loadError.message:'Ticket records could not be loaded');
+      throw loadError;
+    }finally{
+      setTicketsLoaded(true);
+      refreshInFlight.current=false;
+    }
   }
 
   useEffect(()=>{refresh().catch(e=>setError(e.message))},[]);
   useLiveReload(()=>refresh());
 
   async function openTicket(id){
-    const ticket=await get('/accumulator/tickets/'+encodeURIComponent(id));
-    setSelected(ticket);
-    setHistory(await get('/accumulator/tickets?family_id='+encodeURIComponent(ticket.family_id)));
-    if(page==='betslip'||page==='codes')setBetslip(await get('/accumulator/betslip/'+encodeURIComponent(id)));
+    setError('');
+    if(page==='betslip')setBetslip(null);
+    try{
+      const ticket=await get('/accumulator/tickets/'+encodeURIComponent(id));
+      setSelected(ticket);
+      if(page==='betslip'||page==='codes'){
+        setBetslip(await get('/accumulator/betslip/'+encodeURIComponent(id)));
+      }else{
+        setHistory(await get('/accumulator/tickets?family_id='+encodeURIComponent(ticket.family_id)));
+      }
+    }catch(loadError){
+      setError(loadError instanceof Error?loadError.message:'The selected ticket could not be opened');
+    }
   }
 
   async function generate(){
@@ -159,6 +183,7 @@ export default function AccumulatorPage({page,tab=0}){
 
   const tierFilter=page==='tiers'?RANGES[tab]||RANGES[0]:null;
   const visible=tickets.filter(ticket=>!tierFilter||ticket.tier===tierFilter.tier);
+  const betslipTickets=tickets.filter(availableForBetslip);
   const adminHeaders={'X-Sports-Admin-Key':adminKey};
 
   return <div className="sp-intelligence-stack">
@@ -179,7 +204,7 @@ export default function AccumulatorPage({page,tab=0}){
       <button className="sp-primary" disabled={generating||busy} onClick={generate}><Ticket size={16}/>{generating?'Generating…':'Generate Tickets'}</button>
     </section>}
     {page==='optimizer'&&config&&<Optimizer config={config} setConfig={setConfig} adminKey={adminKey} setAdminKey={setAdminKey} save={saveConfig} busy={busy} tab={tab} tickets={tickets} openTicket={openTicket} runBacktest={async()=>{setBusy(true);try{setBacktest(await post('/accumulator/backtest',{}))}catch(e){setError(e.message)}finally{setBusy(false)}}} backtest={backtest} setError={setError}/>}
-    {page==='betslip'&&<Betslip tickets={tickets} selected={selected} betslip={betslip} openTicket={openTicket} tab={tab}/>}
+    {page==='betslip'&&<Betslip tickets={betslipTickets} totalTickets={tickets.length} loaded={ticketsLoaded} selected={selected} betslip={betslip} openTicket={openTicket} refresh={()=>refresh().catch(()=>{})} tab={tab}/>}
     {(page==='codes'||page==='code-history')&&<Codes page={page} tab={tab} codes={codes} bookings={bookings} schedule={bookingSchedule} logs={bookingLogs} tickets={tickets} codeForm={codeForm} setCodeForm={setCodeForm} adminKey={adminKey} setAdminKey={setAdminKey} busy={busy} submit={()=>act('/accumulator/tickets/'+encodeURIComponent(codeForm.ticket_id)+'/booking-code',{code:codeForm.code,evidence:codeForm.evidence},adminHeaders)}/>}
     {(page==='tickets'||page==='tiers'||page==='optimizer')&&<TicketTable tickets={visible} openTicket={openTicket}/>}
     {selected&&(page==='tickets'||page==='tiers')&&<TicketDrawer ticket={selected} history={history} candidates={candidates} busy={busy} onClose={()=>setSelected(null)} onRemove={opportunity=>setConfirm({title:'Remove selection',body:'The current version stays as it is. A new version is created for review.',run:()=>act(`/accumulator/tickets/${selected.id}/legs/remove`,{opportunity_id:opportunity})})} onReplace={add=>act(`/accumulator/tickets/${selected.id}/legs/replace`,{remove_opportunity_id:selected.legs[0].opportunity_id,add_opportunity_id:add})} onRecalculate={()=>act(`/accumulator/tickets/${selected.id}/recalculate`)} onSave={()=>act(`/accumulator/tickets/${selected.id}/save`)} onAccept={()=>act(`/accumulator/tickets/${selected.id}/accept`)} onExport={exportTicket}/>}
@@ -303,13 +328,16 @@ function Optimizer({config,setConfig,adminKey,setAdminKey,save,busy,tab,tickets,
   </>;
 }
 
-function Betslip({tickets,selected,betslip,openTicket,tab}){
-  return <section className="sp-panel"><div className="sp-panel-head"><div><h3>{tab===2?'Integration status':tab===1?'Source verification':'Prepared selections'}</h3><p>A booking code is requested only for a qualified selection. Nothing on this page submits a wager.</p></div><ClipboardList size={18}/></div>
-    <label className="sp-intel-fixture">Ticket<select value={selected?.id||''} onChange={e=>e.target.value&&openTicket(e.target.value)}><option value="">Choose a stored ticket</option>{tickets.map(ticket=><option key={ticket.id} value={ticket.id}>{tierLabel(ticket)} · {ticket.sport_mode} · {ticket.status}</option>)}</select></label>
-    {!betslip&&<p className="sp-muted">Choose a ticket to prepare the manual betslip.</p>}
-    {betslip&&tab===0&&<div>{betslip.selections.map(leg=><div className="sp-leg" key={leg.fixture_id+leg.market}><div><strong>{leg.home} vs {leg.away}</strong><small>{leg.market} · {leg.bookmaker} · recorded price {oddsText(leg.decimal_odds)} · observed {leg.odds_observed_at}</small></div></div>)}<p className="sp-intel-explanation">{betslip.instructions}</p><p className="sp-intel-fine">Booking code: none. Automatic request was not sent.</p></div>}
-    {betslip&&tab===1&&<p className="sp-intel-explanation">Prices shown are the quotes stored on the ticket. Recalculate from the ticket builder before using them. Status: {betslip.status}. Probability basis: {betslip.probability_basis}.</p>}
-    {betslip&&tab===2&&<p className="sp-intel-explanation">{betslip.integration.reason}</p>}
+function Betslip({tickets,totalTickets,loaded,selected,betslip,openTicket,refresh,tab}){
+  const selectedId=tickets.some(ticket=>ticket.id===selected?.id)?selected.id:'';
+  const prepared=selectedId?betslip:null;
+  return <section className="sp-panel"><div className="sp-panel-head"><div><h3>{tab===2?'Integration status':tab===1?'Source verification':'Prepared selections'}</h3><p>A booking code is requested only for a qualified selection. Nothing on this page submits a wager.</p></div><button className="sp-secondary" onClick={refresh}><RefreshCcw size={16}/>Refresh</button></div>
+    <p className="sp-intel-fine">{loaded?`${tickets.length} current ticket${tickets.length===1?'':'s'} available${totalTickets>tickets.length?` · ${totalTickets-tickets.length} expired, started or review-only tickets hidden`:''}.`:'Loading stored tickets…'}</p>
+    <label className="sp-intel-fixture">Ticket<select value={selectedId} onChange={e=>e.target.value&&openTicket(e.target.value)}><option value="">{loaded?'Choose a current ticket':'Loading tickets…'}</option>{tickets.map(ticket=><option key={ticket.id} value={ticket.id}>{tierLabel(ticket)} · {ticket.sport_mode} · {ticket.leg_count} selections · {oddsText(ticket.combined_odds)} odds · {ticket.status.replaceAll('_',' ')}</option>)}</select></label>
+    {!prepared&&<p className="sp-muted">{tickets.length?'Choose a current ticket above to view its stored selections.':loaded?'No current ticket is available. Tickets with expired or started fixtures are excluded.':'Waiting for stored tickets…'}</p>}
+    {prepared&&tab===0&&<div>{prepared.selections.map(leg=><div className="sp-leg" key={leg.fixture_id+leg.market}><div><strong>{leg.home} vs {leg.away}</strong><small>{leg.market} · {leg.bookmaker} · recorded price {oddsText(leg.decimal_odds)} · observed {leg.odds_observed_at}</small></div></div>)}<p className="sp-intel-explanation">{prepared.instructions}</p><p className="sp-intel-fine">Booking code: none. Automatic request was not sent.</p></div>}
+    {prepared&&tab===1&&<p className="sp-intel-explanation">Prices shown are the quotes stored on the ticket. Recalculate from the ticket builder before using them. Status: {prepared.status}. Probability basis: {prepared.probability_basis}.</p>}
+    {prepared&&tab===2&&<p className="sp-intel-explanation">{prepared.integration.reason}</p>}
   </section>;
 }
 

@@ -138,9 +138,13 @@ class BookingTests(unittest.TestCase):
         self.assertEqual(placed, 'no')
         self.assertEqual(clicked, 'yes')
 
-    def test_changed_price_does_not_request_a_code(self):
+    def test_changed_price_uses_same_named_outcome_and_requests_a_code(self):
         from playwright.async_api import async_playwright
-        Handler.html = PAGE.replace('__HOME__', '1.95')
+        Handler.html = PAGE.replace(
+            '<button class="price">__HOME__</button><button class="price">2.07</button>',
+            '<button class="price" data-selection="away">1.80</button>'
+            '<button class="price" data-selection="home">1.95</button>',
+        )
 
         async def run():
             async with async_playwright() as playwright:
@@ -150,17 +154,114 @@ class BookingTests(unittest.TestCase):
                 result = await prepare_slip(page, [self.selection()])
                 booked = await page.locator('body').get_attribute('data-booked')
                 placed = await page.locator('body').get_attribute('data-placed')
+                away_clicked = await page.locator('[data-selection="away"]').get_attribute('data-clicked')
+                home_clicked = await page.locator('[data-selection="home"]').get_attribute('data-clicked')
                 await browser.close()
-                return result, booked, placed
+                return result, booked, placed, away_clicked, home_clicked
 
         try:
-            result, booked, placed = asyncio.run(run())
+            result, booked, placed, away_clicked, home_clicked = asyncio.run(run())
         finally:
             Handler.html = PAGE.replace('__HOME__', '1.80')
-        self.assertEqual(result['status'], 'ODDS_CHANGED')
-        self.assertIsNone(result['code'])
-        self.assertEqual(booked, 'no')
+        self.assertEqual(result['status'], 'CODE_GENERATED')
+        self.assertEqual(result['code'], 'BK7REAL')
+        self.assertEqual(away_clicked, None)
+        self.assertEqual(home_clicked, 'yes')
+        self.assertEqual(result['seen'][0]['page_odds'], 1.95)
+        self.assertEqual(booked, 'yes')
         self.assertEqual(placed, 'no')
+
+    def test_changed_total_price_is_accepted_only_on_the_same_line(self):
+        from playwright.async_api import async_playwright
+        from sportybet_booking import FIND_LINE
+
+        html = """<!doctype html><html><body>
+          <div class="match-row">Pistons vs 76ers
+            <div class="af-select"><span class="af-select-input">2.5</span></div>
+            <button class="m-outcome">1.95</button><button class="m-outcome">1.85</button>
+          </div>
+          <button id="place">Place bet</button><button id="book">Book bet</button>
+          <div data-booking-code></div>
+          <script>
+            document.body.dataset.placed='no';
+            document.body.dataset.booked='no';
+            document.querySelectorAll('.m-outcome').forEach(button => button.addEventListener('click', () => button.dataset.clicked='yes'));
+            document.getElementById('place').addEventListener('click', () => { document.body.dataset.placed='yes'; });
+            document.getElementById('book').addEventListener('click', () => {
+              document.body.dataset.booked='yes';
+              document.querySelector('[data-booking-code]').textContent='BK7REAL';
+            });
+          </script>
+        </body></html>"""
+
+        async def run():
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(headless=True)
+                page = await (await browser.new_context()).new_page()
+                await page.set_content(html)
+                selection = {
+                    **self.selection(1.80),
+                    'market': 'OVER_2.5',
+                    'selection': 'Over 2.5',
+                }
+                result = await prepare_slip(page, [selection])
+                clicked = await page.locator('.m-outcome').first.get_attribute('data-clicked')
+                placed = await page.locator('body').get_attribute('data-placed')
+                await browser.close()
+                return result, clicked, placed
+
+        result, clicked, placed = asyncio.run(run())
+        self.assertEqual(result['status'], 'CODE_GENERATED')
+        self.assertEqual(result['seen'][0]['page_odds'], 1.95)
+        self.assertEqual(clicked, 'yes')
+        self.assertEqual(placed, 'no')
+
+    def test_reveal_fixture_drills_from_country_into_exact_competition(self):
+        from playwright.async_api import async_playwright
+        from sportybet_booking import _reveal_fixture
+
+        html = """<!doctype html><html><head><style>
+          ul { width: 300px; margin: 0; padding: 0; }
+          .category-list-item, .tournament-list-item { width: 280px; min-height: 20px; }
+        </style></head><body>
+          <ul>
+            <li class="category-list-item">
+              <div class="category-item"><span>Germany</span></div>
+              <ul id="competitions" hidden></ul>
+            </li>
+          </ul>
+          <script>
+            const country = document.querySelector('.category-list-item');
+            country.addEventListener('click', () => {
+              const competitions = document.getElementById('competitions');
+              competitions.hidden = false;
+              if (!competitions.childElementCount) {
+                competitions.innerHTML = '<li class="tournament-list-item"><div class="tournament-name">2. Bundesliga</div><div id="matches" hidden></div></li>';
+                competitions.firstElementChild.addEventListener('click', () => {
+                  const matches = document.getElementById('matches');
+                  matches.hidden = false;
+                  matches.innerHTML = '<article class="match-row">1. FC Magdeburg FC St. Pauli</article>';
+                });
+              }
+            });
+          </script>
+        </body></html>"""
+
+        async def run():
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(headless=True)
+                page = await (await browser.new_context()).new_page()
+                await page.set_content(html)
+                result = await _reveal_fixture(page, {
+                    'home': '1. FC Magdeburg',
+                    'away': 'FC St. Pauli',
+                    'competition': '2. Fußball-Bundesliga 2026/2027',
+                })
+                await browser.close()
+                return result
+
+        result = asyncio.run(run())
+        self.assertTrue(result['visible'], result)
 
     def test_a_failed_job_does_not_take_the_current_ticket_slot(self):
         from datetime import datetime, timezone
@@ -184,8 +285,9 @@ class BookingTests(unittest.TestCase):
             connection.execute(
                 """INSERT INTO sports_ai_accumulator_tickets
                    (id,run_id,family_id,version,signature,tier,sport_mode,status,leg_count,probability_basis,
-                    explanation,parameters_json,created_at)
-                   VALUES('current-ticket','run','family',1,'current-ticket',2,'football','qualified',1,'independent','test','{}',?)""",
+                    joint_probability,explanation,parameters_json,created_at)
+                   VALUES('current-ticket','run','family',1,'current-ticket',2,'football','qualified',1,'independent',
+                          0.8,'test','{}',?)""",
                 (evening.isoformat(),),
             )
             chosen = select_booking(connection, evening)

@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 
 from booking_schedule import phase_at, publication_due, publication_open, next_publication
-from sportybet_booking import _align_selection_to_offered, _same_line, can_retry, expire_displayed_codes
+from sportybet_booking import _line_choices, _same_line, can_retry, expire_displayed_codes
 import db
 
 
@@ -56,37 +56,9 @@ class WatWindowTests(unittest.TestCase):
         self.assertTrue(_same_line('Over 4.5', '4.5'))
         self.assertFalse(_same_line('3', '4.5'))
 
-    def test_a_stored_price_for_a_line_the_page_shows_replaces_the_missing_line(self):
-        previous = db.DB
-        temp = tempfile.TemporaryDirectory()
-        db.DB = Path(temp.name) / 'sports.sqlite3'
-        try:
-            db.initialize()
-            with db.connect() as connection:
-                connection.execute(
-                    """INSERT INTO sports_ai_fixtures
-                       (id,external_id,source,sport,competition,home,away,starts_at,status,statistics_json,odds_json,observed_at)
-                       VALUES('fix','fix','test','football','League','Osnabruck','Kaiserslautern','2026-11-07T15:00:00+00:00','scheduled','{}','{}','2026-11-07T09:00:00+00:00')"""
-                )
-                connection.execute(
-                    """INSERT INTO sports_ai_provider_registry
-                       (id,provider_key,display_name,sport,adapter,enabled,terms_reviewed,status)
-                       VALUES('provider','line-test','SportyBet','football','authorized_json',1,1,'operational')"""
-                )
-                connection.execute(
-                    """INSERT INTO sports_ai_odds_snapshots
-                       (id,fixture_id,provider_id,bookmaker,market,outcome,line,decimal_odds,source_url,observed_at)
-                       VALUES('odds','fix','provider','SportyBet','UNDER_3.5','Under 3.5',3.5,1.72,'https://www.sportybet.com/ng/sport/football','2026-11-07T09:16:00+00:00')"""
-                )
-            aligned = _align_selection_to_offered(
-                {'fixture_id': 'fix', 'market': 'UNDER_4.5', 'selection': 'Under 4.5', 'decimal_odds': 1.9},
-                [3, 3.5],
-            )
-        finally:
-            db.DB = previous
-            temp.cleanup()
-        self.assertEqual(aligned['market'], 'UNDER_3.5')
-        self.assertEqual(aligned['decimal_odds'], 1.72)
+    def test_booking_keeps_the_exact_ticket_line(self):
+        self.assertEqual(_line_choices('4.5'), ['4.5'])
+        self.assertEqual(_line_choices(''), [])
 
     def test_retries_stop_for_access_challenges_and_the_attempt_limit(self):
         self.assertTrue(can_retry('FAILED', 1, 3, 'The page did not show one booking code'))

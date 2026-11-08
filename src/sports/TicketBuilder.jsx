@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertCircle, ArrowRight, BarChart3, Bot, CalendarDays, Check, CheckCircle2, ClipboardList, Clock3, Copy, Eye, History, Layers, RefreshCw, Settings2, Ticket, TrendingUp, XCircle, Zap } from 'lucide-react';
 import { get } from './api';
 import './ticket-builder.css';
@@ -126,6 +126,12 @@ function currentSlip(row) {
     && legs.every((leg) => openThisWeek(leg.starts_at));
 }
 
+function displayEligible(row) {
+  return (row.probability != null && row.probability > 70)
+    || row.label === 'High probability'
+    || (row.status === 'unverified_probability' && ['sure_odds', 'high_odds'].includes(row.parameters?.product));
+}
+
 function withinRange(createdAt, range) {
   if (range === 'All time') return true;
   const created = new Date(createdAt).getTime();
@@ -229,35 +235,70 @@ export default function TicketBuilder() {
   const [command, setCommand] = useState(null);
   const [now, setNow] = useState(Date.now());
   const [page, setPage] = useState(1);
+  const requestRef = useRef(0);
+  const inFlightRef = useRef(false);
 
-  async function load(options) {
+  async function load(options = {}) {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+    const requestId = ++requestRef.current;
     const quiet = options?.quiet;
     if (!quiet) setLoading(true);
-    const [ticketResult, codeResult, overviewResult, commandResult] = await Promise.allSettled([
-      get('/accumulator/tickets'),
-      get('/accumulator/booking-codes'),
-      get('/autonomous/overview'),
-      get('/accumulator/command'),
-    ]);
-    if (ticketResult.status === 'fulfilled') {
-      let rows = latestTickets(ticketResult.value);
-      const storedCodes = codeResult.status === 'fulfilled' ? codeResult.value || [] : [];
-      const present = new Set(rows.map((ticket) => ticket.id));
-      const missing = [...new Set(storedCodes.map((code) => code.accumulator_ticket_id).filter((id) => id && !present.has(id)))];
-      if (missing.length) {
-        const extras = await Promise.all(missing.map((id) => get(`/accumulator/tickets/${encodeURIComponent(id)}`).catch(() => null)));
-        rows = latestTickets([...rows, ...extras.filter(Boolean)]);
+    try {
+      const [ticketResult, codeResult, overviewResult, commandResult] = await Promise.allSettled([
+        get('/accumulator/tickets'),
+        get('/accumulator/booking-codes'),
+        get('/autonomous/overview'),
+        get('/accumulator/command'),
+      ]);
+      if (requestId !== requestRef.current) return;
+      if (ticketResult.status === 'fulfilled') {
+        let rows = latestTickets(ticketResult.value);
+        const storedCodes = codeResult.status === 'fulfilled' ? codeResult.value || [] : [];
+        const present = new Set(rows.map((ticket) => ticket.id));
+        const missing = [...new Set(storedCodes.map((code) => code.accumulator_ticket_id).filter((id) => id && !present.has(id)))];
+        if (missing.length) {
+          const extras = await Promise.all(missing.map((id) => get(`/accumulator/tickets/${encodeURIComponent(id)}`).catch(() => null)));
+          if (requestId !== requestRef.current) return;
+          rows = latestTickets([...rows, ...extras.filter(Boolean)]);
+        }
+        setRecords(rows);
       }
-      setRecords(rows);
+      if (codeResult.status === 'fulfilled') setCodes(codeResult.value || []);
+      if (overviewResult.status === 'fulfilled') setOverview(overviewResult.value);
+      if (commandResult.status === 'fulfilled') setCommand(commandResult.value);
+      const failures = [
+        ['Stored tickets', ticketResult],
+        ['Booking codes', codeResult],
+        ['Autonomous status', overviewResult],
+        ['Accumulator command', commandResult],
+      ].filter(([, result]) => result.status === 'rejected');
+      setError(failures.map(([label, result]) => `${label}: ${result.reason?.message || 'could not be loaded'}`).join(' · '));
+    } catch (loadError) {
+      if (requestId === requestRef.current) setError(loadError instanceof Error ? loadError.message : 'Ticket data could not be loaded');
+    } finally {
+      inFlightRef.current = false;
+      if (requestId === requestRef.current) setLoading(false);
     }
-    if (codeResult.status === 'fulfilled') setCodes(codeResult.value || []);
-    if (overviewResult.status === 'fulfilled') setOverview(overviewResult.value);
-    if (commandResult.status === 'fulfilled') setCommand(commandResult.value);
-    setError(ticketResult.status === 'fulfilled' ? '' : ticketResult.reason?.message || 'Stored tickets could not be loaded');
-    setLoading(false);
   }
 
-  useEffect(() => { load(); const timer = setInterval(() => load({quiet: true}), 60000); return () => clearInterval(timer); }, []);
+  useEffect(() => {
+    let active = true;
+    let timer;
+    let first = true;
+    const refresh = async () => {
+      if (!active) return;
+      await load({ quiet: !first });
+      first = false;
+      if (active) timer = setTimeout(refresh, 10000);
+    };
+    refresh();
+    return () => {
+      active = false;
+      clearTimeout(timer);
+      requestRef.current += 1;
+    };
+  }, []);
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
 
   const codeByTicket = useMemo(() => {
@@ -304,7 +345,7 @@ export default function TicketBuilder() {
     : [];
 
   const shown = useMemo(() => scopeRows.filter((row) => {
-    if (row.probability == null || row.probability <= 70) return false;
+    if (!displayEligible(row)) return false;
     const text = `${row.shownCode} ${row.id} ${(row.legs || []).map((leg) => `${leg.home} ${leg.away} ${leg.market}`).join(' ')}`.toLowerCase();
     const textOk = !queryText || text.includes(queryText);
     if ((status === 'All Status' || status === 'Combined') && !currentSlip(row)) return false;
@@ -324,7 +365,7 @@ export default function TicketBuilder() {
   const summary = overview?.summary || {};
   const verified = codes.filter((code) => code.status === 'verified' && code.verification_method === 'displayed').length;
   const expired = codes.filter((code) => code.status === 'expired').length;
-  const ready = (overview?.tickets || []).length;
+  const ready = rows.filter((row) => displayEligible(row) && currentSlip(row)).length;
   const awaiting = rows.filter((row) => currentSlip(row) && row.label === 'Awaiting code').length;
   const tierCounts = BANDS.map(([name]) => [name, rows.filter((row) => row.band === name).length]);
   const tierMax = Math.max(1, ...tierCounts.map((item) => item[1]));
@@ -339,7 +380,7 @@ export default function TicketBuilder() {
   }
 
   const stats = [
-    ['Tickets Built', ready, 'Ready this week, above 70%', Layers, 'blue'],
+    ['Tickets Built', ready, 'Current-week eligible slips', Layers, 'blue'],
     ['Codes Stored', codes.length, 'SportyBet codes on file', Ticket, 'green'],
     ['Verified', verified, 'Displayed and still valid', CheckCircle2, 'green'],
     ['Awaiting Code', awaiting, 'In this list', Clock3, 'blue'],
@@ -372,7 +413,7 @@ export default function TicketBuilder() {
     {error && <div className="tb-notice"><AlertCircle size={15} />{error}</div>}
     <div className="tb-stats">{stats.map(([label, value, sub, Icon, color]) => <div className={`tb-stat ${color}`} key={label}><Icon size={26} /><div><span>{label}</span><strong>{typeof value === 'number' ? value.toLocaleString('en-US') : value}</strong><small>{sub}</small></div></div>)}</div>
     <section className="tb-engine">
-      <div className="tb-engine-title"><Bot size={32} /><div><h2>Autonomous Ticket Engine</h2><p>Tickets are built from stored qualified selections. A booking code is kept only after SportyBet displays it.</p></div></div>
+      <div className="tb-engine-title"><Bot size={32} /><div><h2>Autonomous Ticket Engine</h2><p>Standard tickets require over 70% joint probability. High-probability selections are listed separately, with their full-ticket joint estimate shown. A booking code is kept only after SportyBet displays it.</p></div></div>
       <div className="tb-stages">{stages.map(([name, count, unit], index) => <div className="tb-stage-wrap" key={name}><div className="tb-stage"><CheckCircle2 size={15} /><b>{name}</b><small>{Number.isFinite(Number(count)) ? `${Number(count).toLocaleString('en-US')} ${unit}` : '—'}</small></div>{index < stages.length - 1 && <ArrowRight className="tb-stage-arrow" size={15} />}</div>)}</div>
     </section>
     <div className="tb-tabs" role="tablist">
@@ -387,13 +428,13 @@ export default function TicketBuilder() {
       <label className="tb-search">Search<input placeholder="Ticket, code, fixture or market" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
     </div>
     {tab === 'Generated Tickets' && <div className="tb-grid">
-      <Panel title="Automatically Generated Tickets" icon={Layers} action={<div className="tb-actions">{combinedTickets.length > 0 && <button type="button" onClick={() => { setStatus(status === 'Combined' ? 'All Status' : 'Combined'); setPage(1); setSelectedId(combinedTickets[0].id); }}>{status === 'Combined' ? 'All tickets' : 'Combined'}</button>}<span className="tb-mini">{loading ? 'Loading' : 'Stored records'}</span><button onClick={load}><RefreshCw size={14} /> Refresh</button></div>}>
+      <Panel title="Automatically Generated Tickets" icon={Layers} action={<div className="tb-actions">{combinedTickets.length > 0 && <button type="button" onClick={() => { setStatus(status === 'Combined' ? 'All Status' : 'Combined'); setPage(1); setSelectedId(combinedTickets[0].id); }}>{status === 'Combined' ? 'All tickets' : 'Combined'}</button>}<span className="tb-mini">{loading ? 'Loading' : 'Stored records'}</span><button onClick={() => load()}><RefreshCw size={14} /> Refresh</button></div>}>
         <div className="tb-table-wrap"><table><thead><tr><th>#</th><th>Ticket / Code</th><th>Sport</th><th>Selections</th><th>Combined Odds</th><th>AI Probability</th><th>Status</th><th>Registered</th><th>Action</th></tr></thead><tbody>
           {tableRows.map((row, index) => {
             const individualIndex = row.combined ? index : (currentPage - 1) * pageSize + (index - (currentPage === 1 ? visibleCombined.length : 0)) + 1;
             return <tr key={row.id} className={`${selected?.id === row.id ? 'selected' : ''} ${row.combined ? 'combined' : ''}`.trim()}><td>{row.combined ? `C${row.combinedPart}` : individualIndex}</td><td><strong>{row.shownCode || 'No code'}</strong>{row.combined && <div className="tb-sub">From {row.memberCount} tickets above 70%</div>}{memberIds.has(row.id) && <span className="tb-mark">Combined</span>}{row.shownCode && !row.combined && <button className="tb-icon" title="Copy code" onClick={() => copy(row.shownCode, row.shownCode)}><Copy size={13} /></button>}</td><td title={row.sportLabel}>{row.sportLabel === 'Basketball' ? '🏀' : row.sportLabel === 'Football' ? '⚽' : row.sportLabel === 'Ice hockey' ? '🏒' : '🌐'}</td><td>{row.leg_count}</td><td><strong>{oddsText(row.combined_odds)}</strong></td><td><Prob value={row.probability} /></td><td><Badge status={row.label} /></td><td>{lagosStamp(row.code?.created_at || row.created_at)}</td><td><button className="tb-view" onClick={() => { setSelectedId(row.id); setTab('Ticket Details'); }}><Eye size={14} /> View</button></td></tr>;
           })}
-        </tbody></table>{!tableRows.length && <div className="tb-empty">{loading ? 'Loading stored tickets…' : 'No stored ticket matches these filters.'}</div>}
+        </tbody></table>{!tableRows.length && <div className="tb-empty">{loading ? 'Loading stored tickets…' : 'No current ticket matches these filters. Standard tickets require over 70% joint probability; high-probability selection tickets are listed separately with their full-ticket estimate.'}</div>}
           {ranked.length > pageSize && <div className="tb-pager"><button type="button" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)}>Previous</button><span>{currentPage} / {pageCount}</span><button type="button" disabled={currentPage >= pageCount} onClick={() => setPage(currentPage + 1)}>Next</button></div>}
         </div>
       </Panel>

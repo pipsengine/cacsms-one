@@ -54,6 +54,17 @@ class BookingPreflightTests(unittest.TestCase):
         self.assertEqual(status['status'], 'qualified')
         self.assertEqual(status['publication_state'], 'READY_FOR_WINDOW')
 
+    def test_a_fresh_price_change_does_not_block_the_same_ticket_selection(self):
+        with db.connect() as connection:
+            self._ticket(connection, OUTSIDE - timedelta(minutes=2))
+            connection.execute("UPDATE sports_ai_odds_snapshots SET decimal_odds=4.25")
+            result = examine_ready_tickets(connection, OUTSIDE)
+            status = connection.execute('SELECT status, publication_state FROM sports_ai_accumulator_tickets').fetchone()
+        self.assertEqual(result['ready'], 1)
+        self.assertEqual(result['demoted'], 0)
+        self.assertEqual(status['status'], 'qualified')
+        self.assertEqual(status['publication_state'], 'READY_FOR_WINDOW')
+
     def test_a_review_ticket_with_a_stale_price_stays_out(self):
         with db.connect() as connection:
             self._ticket(connection, OUTSIDE - timedelta(minutes=40))
