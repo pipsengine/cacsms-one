@@ -283,7 +283,6 @@ export function KeyAlerts({data, nav}) {
 
 export default function CommandCentre({data, nav, run, loading, refresh}) {
   const view = data?.command_view || {};
-  const kpis = view.kpis || {};
   const [now, setNow] = React.useState(lagosClock);
   React.useEffect(() => {
     const timer = setInterval(() => setNow(lagosClock()), 30000);
@@ -305,14 +304,6 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
       </div>
     </header>
     <WorkflowBoard workflow={view.workflow} nav={nav} />
-    <section className="ccx-kpis">
-      <button onClick={() => nav('qualification')}><i className="green"><Target size={18}/></i><div><span>Qualified Opportunities</span><strong>{shown(kpis.qualified)}</strong><small>{kpis.qualified_new ? `+ ${fmt(kpis.qualified_new)} new` : 'Current decisions'}</small></div></button>
-      <button onClick={() => nav('tickets')}><i className="blue"><Layers3 size={18}/></i><div><span>Bet Slips Ready</span><strong>{shown(kpis.slips)}</strong><small>for booking codes</small></div></button>
-      <button onClick={() => nav('codes')}><i className="purple"><Hash size={18}/></i><div><span>Active Booking Codes</span><strong>{shown(kpis.codes)}</strong><small>{kpis.codes_on_qualified_ticket ? `${fmt(kpis.codes_on_qualified_ticket)} on a qualified ticket` : 'historical'}</small></div></button>
-      <button onClick={() => nav('results')}><i className="amber"><Trophy size={18}/></i><div><span>Settled Results</span><strong>{shown(kpis.settled)}</strong><small>{kpis.settled ? 'prospective' : 'awaiting finals'}</small></div></button>
-      <button onClick={() => nav('weekly-draw')}><i className="teal"><Goal size={18}/></i><div><span>Draw Opportunities</span><strong>{shown(kpis.draws)}</strong><small>this week</small></div></button>
-      <button onClick={() => nav('sources')}><i className="rose"><Dribbble size={18}/></i><div><span>Active Sports</span><strong>{shown(kpis.active_sports)}</strong><small>{(kpis.active_sport_names || []).join(', ') || 'None active'}</small></div></button>
-    </section>
     <div className="ccx-sure-row">
       <section className="ccx-card ccx-sure">
         <header><strong><Goal size={16}/>Sure Odds For (Today) <small>{view.sure_odds_date || 'Today'}</small></strong><button className="ccx-link" onClick={() => nav('tickets')}>View All</button></header>
