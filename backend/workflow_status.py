@@ -96,7 +96,7 @@ def workflow_board(connection, now=None, ready_slips=0, qualified_visible=0, win
                'Running' if fresh and odds_age is not None and odds_age < 20 * 60 else 'Completed' if odds_age is not None and odds_age < 6 * 3600 else 'Waiting',
                'Only a price SportyBet displayed is stored.'),
         _stage('Validate', 'Check data integrity', 'diagnostics', 'upcoming',
-               'Clear' if not issues else f'{_fmt(issues)} open issues',
+               _open_issues(issues),
                'Completed' if not issues else 'Attention',
                'A fixture with an open high-severity issue stays out of qualification.'),
         _stage('Analyse', 'Sport models on stored scores', 'football-analysis', 'upcoming',
@@ -230,6 +230,14 @@ def _parse(value):
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def _open_issues(issues):
+    count = int(issues or 0)
+    if count == 0:
+        return 'Clear'
+    label = 'issue' if count == 1 else 'issues'
+    return f'{_fmt(count)} open {label}'
 
 
 def _fmt(value):

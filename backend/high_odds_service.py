@@ -24,7 +24,7 @@ PRODUCT = 'autonomous_high_odds'
 _WORK_LOCK=threading.Lock()
 _BACKGROUND=None
 _WAKE=threading.Event()
-PRIMARY = '10-24.99'
+PRIMARY = '2-4.99'
 DEFAULTS = dict(min_legs=2, max_legs=16, min_leg_odds=1.01, max_per_competition=1, max_per_team=1,
                 min_probability=0.05, min_edge=0.01, min_completeness=0.5,
                 min_model_reliability=0.8, odds_max_age_minutes=15,
@@ -318,7 +318,9 @@ def generate_event(connection, event_id, now=None):
     settings = config(connection)
     pool, rejected, total = eligible(connection,current)
     reports = []
-    for category in sorted(categories(connection),key=lambda c:(c['priority'],c['min_odds'])):
+    # The 2.00–4.99 core is reserved first. Every other enabled category is
+    # still searched in this same pass, using the selections the core did not take.
+    for category in sorted(categories(connection),key=lambda c:(c['id']!=PRIMARY,c['priority'],c['min_odds'])):
         if connection.execute('SELECT 1 FROM sports_ai_high_odds_runs WHERE event_id=? AND category_id=?',(event_id,category['id'])).fetchone():
             continue
         # Search without a database write lock. Reserve the winning fixtures
@@ -628,4 +630,4 @@ def dashboard(connection, now=None, date_from=None, date_to=None, status=None, c
         'kpis':{'total':sum(c['total'] for c in summaries),'active':sum(c['active'] or 0 for c in summaries),
             'registered':registrations.get('registered',0),'pending':sum(registrations.get(k,0) for k in ('pending','queued','retry')),
             'settled':sum(c['settled'] for c in summaries)},'places_wager':False,
-        'note':'Flexible selection counts. Maximum combined odds 1,000. Each match is used on one active ticket. Joint probability assumes conditional independence after dependency checks; calibration sensitivity is not a confidence interval.'}
+        'note':'2.00–4.99 is the higher-probability core. All eight categories are searched in the same pass. Flexible selection counts. Maximum combined odds 1,000. Each match is used on one active ticket. Joint probability assumes conditional independence after dependency checks; calibration sensitivity is not a confidence interval.'}

@@ -13,7 +13,7 @@ from html import unescape
 from urllib.parse import urlsplit
 
 from acquisition import CollectionError
-from acquisition_engine import _normalize, _record
+from acquisition_engine import ARCHIVE_AFTER, MATCH_CLOSED, _normalize, _record, archived_settlement
 from booking_schedule import WAT
 
 LAGOS = WAT
@@ -105,6 +105,21 @@ _PAGE_SEGMENT = {
     'table_tennis': 'table-tennis', 'americanfootball': 'american-football',
     'rugby': 'rugby-union', 'counterstrike': 'esports',
 }
+
+
+def _supplementary_set_score(sport, home_score, away_score):
+    """A golden set is published beside the match. It is not the match score.
+
+    Volleyball results are set counts, such as 3:2. A golden set is first to
+    15 and is listed as its own row, such as 15:11.
+    """
+    if sport not in ('volleyball', 'beach_volleyball'):
+        return False
+    try:
+        home, away = int(home_score), int(away_score)
+    except (TypeError, ValueError):
+        return False
+    return max(home, away) >= 15 and abs(home - away) >= 2
 
 
 def _plain(fragment):
@@ -208,6 +223,9 @@ def parse_betexplorer_results(html, base_sport, page_url, observed_at, now):
         sport = _sport_for(base_sport, competition)
         if not sport:
             continue
+        home_score, away_score = int(score.group(1)), int(score.group(2))
+        if _supplementary_set_score(sport, home_score, away_score):
+            continue
         found.append({
             'external_id': link.group(2),
             'sport': sport,
@@ -215,8 +233,8 @@ def parse_betexplorer_results(html, base_sport, page_url, observed_at, now):
             'home': home,
             'away': away,
             'starts_at': kickoff.isoformat(),
-            'home_score': int(score.group(1)),
-            'away_score': int(score.group(2)),
+            'home_score': home_score,
+            'away_score': away_score,
             'source_url': 'https://www.betexplorer.com' + link.group(1),
             'observed_at': observed_at,
         })
@@ -550,14 +568,16 @@ def _fixture_id(connection, provider, record, date_only):
         return existing['id']
     import uuid
     kickoff = datetime.fromisoformat(record['starts_at'])
-    teams = {_normalize(record['home']), _normalize(record['away'])}
+    home, away = _normalize(record['home']), _normalize(record['away'])
     matches = []
     for candidate in connection.execute(
         """SELECT id, home, away, starts_at FROM sports_ai_fixtures
            WHERE sport=? AND starts_at BETWEEN ? AND ?""",
         (record['sport'], (kickoff - timedelta(hours=36)).isoformat(), (kickoff + timedelta(hours=36)).isoformat()),
     ):
-        if {_normalize(candidate['home']), _normalize(candidate['away'])} != teams:
+        # The same two clubs can play split squads at the same time, one at each
+        # home rink. Reversed home and away is a different match.
+        if _normalize(candidate['home']) != home or _normalize(candidate['away']) != away:
             continue
         try:
             candidate_time = datetime.fromisoformat(candidate['starts_at'].replace('Z', '+00:00'))
@@ -601,6 +621,60 @@ def _release_analysis_holds(connection, opened):
     return released
 
 
+REPAIR_SPORTS = ('basketball', 'tennis', 'volleyball')
+
+
+def repair_imported_settlements(connection, sports=REPAIR_SPORTS):
+    """Replace a shared catalogue timestamp with each match's close.
+
+    One stamp on matches kicked off more than 36 hours apart is the download
+    time. Training then treats every earlier final as still unknown. A settlement
+    time that belongs to one match is left unchanged. Football and ice hockey
+    already have settlement times that training can use, so they stay out of the
+    default set.
+    """
+    selected = tuple(sports)
+    if not selected:
+        return {'updated': 0, 'sports': []}
+    marks = ','.join('?' for _ in selected)
+    grouped = {}
+    for row in connection.execute(
+        f"""SELECT r.fixture_id, r.settled_at, f.starts_at
+            FROM sports_ai_results r
+            JOIN sports_ai_fixtures f ON f.id=r.fixture_id
+            WHERE r.status='final' AND f.sport IN ({marks})""",
+        selected,
+    ):
+        grouped.setdefault(row['settled_at'], []).append(row)
+    updated = 0
+    for items in grouped.values():
+        parsed = []
+        for item in items:
+            try:
+                kickoff = datetime.fromisoformat(str(item['starts_at']).replace('Z', '+00:00'))
+                settled = datetime.fromisoformat(str(item['settled_at']).replace('Z', '+00:00'))
+            except ValueError:
+                continue
+            if kickoff.tzinfo is None or settled.tzinfo is None:
+                continue
+            kickoff, settled = kickoff.astimezone(timezone.utc), settled.astimezone(timezone.utc)
+            parsed.append((item['fixture_id'], kickoff, settled))
+        if len(parsed) < 2 or max(item[1] for item in parsed) - min(item[1] for item in parsed) <= ARCHIVE_AFTER:
+            continue
+        for fixture_id, kickoff, settled in parsed:
+            if settled - kickoff <= ARCHIVE_AFTER:
+                continue
+            closed = kickoff + MATCH_CLOSED
+            if closed >= settled:
+                continue
+            connection.execute(
+                'UPDATE sports_ai_results SET settled_at=? WHERE fixture_id=?',
+                (closed.isoformat(), fixture_id),
+            )
+            updated += 1
+    return {'updated': updated, 'sports': list(selected)}
+
+
 def _store(connection, provider, rows, observed_at):
     import uuid
     from catalog_engine import sync_persisted_batch
@@ -611,7 +685,8 @@ def _store(connection, provider, rows, observed_at):
             records.append(_record(
                 provider['id'], row['external_id'], row['sport'], row['competition'],
                 row['home'], row['away'], row['starts_at'], observed_at, row['source_url'],
-                'FINISHED', row['home_score'], row['away_score'], observed_at,
+                'FINISHED', row['home_score'], row['away_score'],
+                archived_settlement(row['starts_at'], observed_at),
             ))
         except CollectionError:
             continue
@@ -627,10 +702,20 @@ def _store(connection, provider, rows, observed_at):
     now = observed_at
     for record in records:
         seen += 1
+        if _supplementary_set_score(record['sport'], record['home_score'], record['away_score']):
+            continue
         fixture_id = _fixture_id(connection, provider, record, date_only)
         previous = connection.execute(
             'SELECT id FROM sports_ai_fixtures WHERE id=?', (fixture_id,),
         ).fetchone()
+        existing_result = None
+        if previous:
+            existing_result = connection.execute(
+                'SELECT home_score, away_score FROM sports_ai_results WHERE fixture_id=?',
+                (fixture_id,),
+            ).fetchone()
+        stored = None if not existing_result else (existing_result['home_score'], existing_result['away_score'])
+        stored_side = stored is not None and _supplementary_set_score(record['sport'], *stored)
         if previous:
             connection.execute(
                 """UPDATE sports_ai_fixtures SET status=?, observed_at=?, updated_at=CURRENT_TIMESTAMP
@@ -658,14 +743,8 @@ def _store(connection, provider, rows, observed_at):
              record['observed_at'], now, record.get('time_precision', 'instant'),
              record.get('source_url', '')),
         )
-        existing_result = connection.execute(
-            'SELECT home_score, away_score FROM sports_ai_results WHERE fixture_id=?',
-            (fixture_id,),
-        ).fetchone()
-        if existing_result and (
-            existing_result['home_score'] != record['home_score']
-            or existing_result['away_score'] != record['away_score']
-        ):
+        incoming = (record['home_score'], record['away_score'])
+        if stored and stored != incoming and not (stored_side and not incoming_side):
             open_conflict = connection.execute(
                 """SELECT 1 FROM sports_ai_data_quality_issues
                    WHERE fixture_id=? AND issue_type='result_conflict' AND resolved_at IS NULL

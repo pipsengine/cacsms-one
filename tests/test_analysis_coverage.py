@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 import db
 from analysis_coverage import coverage_report, dataset_signature, record_attempt, refresh_models, repair_identities
-from history_browser import _blank_state, _advance, plan_visits
+from history_browser import _advance, _blank_state, plan_visits, repair_imported_settlements
 from prediction_engine import build_features, league_key, quoted_coverage_fixtures, run_analysis, train_model, upcoming_fixture_sql
 from sport_support import WINNER_SPORTS
 
@@ -158,6 +158,19 @@ class AnalysisCoverageTests(unittest.TestCase):
             for index in range(12):
                 self.fixture(c, when=self.now-timedelta(days=index+1), score=(2, 1), settled=self.now)
             self.assertEqual(train_model(c, 'tennis')['metrics']['fixtures_scored'], 0)
+
+    def test_a_repaired_catalogue_import_can_train(self):
+        with db.connect() as c:
+            for index in range(40):
+                self.fixture(
+                    c, when=self.now-timedelta(days=40-index), score=(2, 1),
+                    home='Player A', away='Player B', settled=self.now,
+                )
+            self.assertEqual(train_model(c, 'tennis')['metrics']['fixtures_scored'], 0)
+            self.assertGreater(repair_imported_settlements(c, ('tennis',))['updated'], 0)
+            trained = train_model(c, 'tennis')
+        self.assertGreater(trained['metrics']['fixtures_scored'], 30)
+        self.assertFalse(trained['active'])
 
     def test_model_refresh_uses_new_results_and_skips_unchanged_data(self):
         with db.connect() as c:

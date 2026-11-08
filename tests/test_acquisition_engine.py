@@ -392,9 +392,9 @@ class AcquisitionEngineTests(unittest.TestCase):
                 )
         self.assertEqual(batch['fixtures'][0]['sport'],'basketball')
         self.assertEqual(batch['fixtures'][0]['home_score'],99)
-        self.assertEqual(batch['fixtures'][0]['settled_at'],'2026-11-10T00:00:00+00:00')
+        self.assertEqual(batch['fixtures'][0]['settled_at'],'2026-11-01T08:00:00+00:00')
 
-    def test_sportsdataverse_missing_settlement_uses_observation_time(self):
+    def test_sportsdataverse_archive_without_a_settlement_closes_at_the_match(self):
         provider=self._provider(
             adapter='sportsdataverse_csv',
             config={'dataset_url':'https://raw.githubusercontent.com/sportsdataverse/example/main/games.csv'},
@@ -409,7 +409,7 @@ class AcquisitionEngineTests(unittest.TestCase):
                 batch=acquisition_engine._sportsdataverse_csv(
                     provider,json.loads(provider['config_json']),
                 )
-        self.assertEqual(batch['fixtures'][0]['settled_at'],observed)
+        self.assertEqual(batch['fixtures'][0]['settled_at'],'2026-11-02T06:00:00+00:00')
 
     def test_browser_permissions_reject_unapproved_and_private_hosts(self):
         with self.assertRaises(BrowserResearchError):

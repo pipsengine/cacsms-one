@@ -57,6 +57,22 @@ class WorkflowBoardTests(unittest.TestCase):
             again = workflow_board(connection, now)
         self.assertEqual(again['stages'][2]['status'], 'Completed')
         self.assertEqual(again['stages'][2]['count'], 'Clear')
+        with db.connect() as connection:
+            connection.execute(
+                """INSERT INTO sports_ai_fixtures
+                   (id,external_id,source,sport,competition,home,away,starts_at,status,statistics_json,odds_json,observed_at)
+                   VALUES('fx-1','ext-1','betexplorer','volleyball','Europe: Challenge Cup Women','Roeselare W','Charleroi W',?,'finished','{}','{}',?)""",
+                (now.isoformat(), now.isoformat()),
+            )
+            connection.execute(
+                """INSERT INTO sports_ai_data_quality_issues
+                   (id,fixture_id,severity,issue_type,details_json,created_at)
+                   VALUES('fx-issue','fx-1','high','result_conflict','{}',?)""",
+                (now.isoformat(),),
+            )
+            single = workflow_board(connection, now)
+        self.assertEqual(single['stages'][2]['status'], 'Attention')
+        self.assertEqual(single['stages'][2]['count'], '1 open issue')
 
 
 if __name__ == '__main__':

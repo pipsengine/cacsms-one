@@ -67,6 +67,24 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
+ARCHIVE_AFTER = timedelta(hours=36)
+MATCH_CLOSED = timedelta(hours=8)
+
+
+def archived_settlement(starts_at, observed_at):
+    """When a finished match was collected long after it ended, the score was already known.
+
+    A result saved within a day and a half keeps the collection time. An older
+    results page is an archive: the score is knowable once the match has closed,
+    not when the page was downloaded.
+    """
+    kickoff = datetime.fromisoformat(_as_utc(starts_at))
+    observed = datetime.fromisoformat(_as_utc(observed_at))
+    if observed - kickoff > ARCHIVE_AFTER:
+        return (kickoff + MATCH_CLOSED).isoformat()
+    return observed.isoformat()
+
+
 def _record_provider_failure(connection, provider_id, job_id, error):
     """Keep one open collection failure per provider. A repeated DNS miss is the same issue."""
     detail = json.dumps({'job_id': job_id, 'error': str(error)[:500]})
@@ -718,13 +736,16 @@ def _sportsdataverse_csv(provider, config, limit=MAX_RECORDS):
     fixtures = []
     for kickoff, external_id, home, away, home_score, away_score, normalized in chosen:
         season = _csv_value(normalized, 'season')
+        settlement = _csv_value(normalized, 'settled_at') or None
+        if home_score is not None and away_score is not None and not settlement:
+            settlement = archived_settlement(kickoff, observed)
         fixtures.append(_record(
             provider['provider_key'], external_id, 'basketball',
             normalized.get('competition') or (f'NBA {season}' if season else 'NBA'),
             home, away, kickoff, observed, url,
             'FINISHED' if home_score is not None else 'SCHEDULED',
             home_score, away_score,
-            _csv_value(normalized, 'settled_at') or None,
+            settlement,
         ))
     return {'fixtures': fixtures[:row_limit], 'standings': [], 'source_url': url, 'pages': 1}
 
