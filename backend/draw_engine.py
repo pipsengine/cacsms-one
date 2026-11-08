@@ -10,7 +10,11 @@ import json
 import math
 from datetime import datetime, timedelta, timezone
 
-from sport_support import GOAL_SPORTS, sql_in
+from sport_support import GOAL_SPORTS as SCORE_SPORTS, sql_in
+
+# Descriptive score frequencies remain available without a regulation-result
+# model. A match-winner model never supplies a draw probability for these rows.
+GOAL_SPORTS = SCORE_SPORTS + ('ice_hockey', 'handball', 'rugby', 'futsal')
 
 STATUS_KEY = 'draw_intelligence_status'
 REFRESH_HOURS = 6

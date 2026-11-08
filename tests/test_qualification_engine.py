@@ -123,7 +123,7 @@ class QualificationDecisionTests(unittest.TestCase):
         self.assertEqual(decide(row(expected_edge=0.71), disabled, NOW)['state'], 'QUALIFIED')
 
     def test_unmodelled_sport_produces_no_probability_claim(self):
-        result = decide(row(sport='tennis', market='HOME'), policy(), NOW)
+        result = decide(row(sport='unknown_sport', market='HOME'), policy(), NOW)
         self.assertEqual(result['state'], 'REJECTED')
         self.assertEqual(result['reason_code'], 'SPORT_NOT_MODELLED')
         self.assertIsNone(result['rank_score'])

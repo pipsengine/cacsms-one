@@ -115,7 +115,7 @@ class WeeklyDrawTicketTests(unittest.TestCase):
 
     def test_eight_pick_ticket_stays_in_simulation(self):
         kickoff = (NOW + timedelta(days=1)).isoformat()
-        eligible = [candidate(str(index), kickoff, f'Home {index}', f'Away {index}') for index in range(8)]
+        eligible = [candidate(str(index), kickoff, f'Home {index}', f'Away {index}') for index in range(15)]
         with db.connect() as connection:
             summary = build_tickets(connection, 'SATURDAY_ONLY', datetime(2026, 11, 7, 8, 0, tzinfo=timezone.utc), candidates={'eligible': eligible}, revalidate_first=False)
             ticket = connection.execute(

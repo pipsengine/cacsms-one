@@ -194,6 +194,10 @@ class AccumulatorMathTests(unittest.TestCase):
         first = next(item for item in result['tiers'] if item['tier_id'] == '1.50-1.99')
         third = next(item for item in result['tiers'] if item['tier_id'] == '3.00-4.99')
         self.assertTrue(all(len(ticket['legs']) == 1 for ticket in first['tickets']))
+        self.assertEqual(third['tickets'], [])
+        # A range can still use two fresh matches when searched on its own.
+        only_third = next(band for band in default_tier_policy()['tiers'] if band['id'] == '3.00-4.99')
+        third = optimize_candidates([left, right], _config(ranges=[only_third], min_legs=1, max_legs=4), self.now)['tiers'][0]
         self.assertEqual(len(third['tickets'][0]['legs']), 2)
         self.assertAlmostEqual(third['tickets'][0]['combined_odds'], 3.24)
         self.assertEqual(third['tickets'][0]['status'], 'qualified')
@@ -203,7 +207,7 @@ class AccumulatorMathTests(unittest.TestCase):
             decimal_odds=5.0, probability=0.22, settlement_kind='binary',
         )
         extreme = optimize_candidates(
-            [high_left, high_right], _config(ranges=default_tier_policy()['tiers'], min_legs=1, max_legs=2), self.now,
+            [high_left, high_right], _config(ranges=[band for band in default_tier_policy()['tiers'] if band['id']=='20.00-49.99'], min_legs=1, max_legs=2), self.now,
         )
         band = next(item for item in extreme['tiers'] if item['tier_id'] == '20.00-49.99')
         self.assertEqual(band['mode'], 'simulation')
@@ -253,7 +257,7 @@ class AccumulatorMathTests(unittest.TestCase):
         for index, sport in enumerate(('football', 'basketball', 'ice_hockey')):
             for league in range(4):
                 number = index * 4 + league
-                market = 'MONEYLINE_HOME' if sport == 'basketball' else 'HOME'
+                market = 'HOME' if sport == 'football' else 'MONEYLINE_HOME'
                 rows.append(_row(
                     opportunity_id=f'{sport}-{league}', fixture_id=f'{sport}-{league}',
                     sport=sport, competition=f'{sport} league {league}',
@@ -473,16 +477,16 @@ class AccumulatorPersistenceTests(unittest.TestCase):
         prediction_id = str(uuid.uuid4())
         connection.execute(
             """INSERT INTO sports_ai_engine_predictions
-               (id,run_id,fixture_id,model_id,feature_id,market,outcome,probability,settlement_json,explanation_json)
-               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+               (id,run_id,fixture_id,model_id,feature_id,market,outcome,probability,settlement_json,explanation_json,created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
             (prediction_id, self.run_id, fixture_id, self.football_model if sport == 'football' else self.basketball_model,
-             feature_id, market, market, probability, _binary(probability), '{}'),
+             feature_id, market, market, probability, _binary(probability), '{}', self.now.isoformat()),
         )
         quote_id = str(uuid.uuid4())
         connection.execute(
             """INSERT INTO sports_ai_odds_snapshots
                (id,fixture_id,provider_id,bookmaker,market,outcome,decimal_odds,source_url,observed_at)
-               VALUES(?,?,'provider-manual-odds','Book',?,?,?,'https://example.test/quote',?)""",
+               VALUES(?,?,'provider-manual-odds','SportyBet',?,?,?,'https://example.test/quote',?)""",
             (quote_id, fixture_id, market, market, odds, observed.isoformat()),
         )
         opportunity = opportunity_id or str(uuid.uuid4())
@@ -667,8 +671,9 @@ class AccumulatorPersistenceTests(unittest.TestCase):
         stored = {ticket['tier']: ticket for ticket in result['tickets']}
         self.assertEqual(stored[150]['leg_count'], 1)
         self.assertEqual(stored[150]['status'], 'qualified')
-        self.assertEqual(stored[200]['leg_count'], 2)
-        self.assertAlmostEqual(stored[200]['combined_odds'], 2.1)
+        self.assertNotIn(200, stored)
+        self.assertTrue(all(not ({leg['fixture_id'] for leg in left['legs']} & {leg['fixture_id'] for leg in right['legs']})
+                            for index, left in enumerate(result['tickets']) for right in result['tickets'][index+1:]))
         self.assertTrue(all(ticket['parameters']['tier_mode'] == 'standard' for ticket in result['tickets']))
         self.assertNotIn(50000, stored)
 

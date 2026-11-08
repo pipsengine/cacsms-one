@@ -1,3 +1,4 @@
+import SportOptions from './SportOptions';
 import {useEffect, useState} from 'react';
 import {useLiveReload} from './live';
 import {get, post} from './api';
@@ -83,7 +84,7 @@ function Filters({filters, onChange}) {
   const [draft, setDraft] = useState(filters);
   function update(key, value) { setDraft(current => ({...current, [key]: value})); }
   return <form className="sp-filter-bar" onSubmit={event => { event.preventDefault(); onChange(draft); }}>
-    <label>Sport<select value={draft.sport} onChange={event => update('sport', event.target.value)}><option value="">All</option><option value="football">Football</option><option value="basketball">Basketball</option></select></label>
+    <label>Sport<select value={draft.sport} onChange={event => update('sport', event.target.value)}><SportOptions emptyLabel="All sports" /></select></label>
     <label>Market<input value={draft.market} onChange={event => update('market', event.target.value)} placeholder="HOME" /></label>
     <label>Competition<input value={draft.competition} onChange={event => update('competition', event.target.value)} /></label>
     <label>Model version<input value={draft.model_version} onChange={event => update('model_version', event.target.value)} /></label>

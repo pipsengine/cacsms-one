@@ -3,6 +3,8 @@ import {useNavigate} from 'react-router-dom';
 import {BadgeCheck,BarChart3,ChevronDown,Clock3,Copy,Dribbble,Eye,Goal,Hash,Layers3,Link2,Play,RefreshCw,Target,TriangleAlert,Trophy,X} from 'lucide-react';
 import {get} from './api';
 import WorkflowBoard from './WorkflowBoard';
+import HighOddsTickets from './HighOddsTickets';
+import useLiveResource from './useLiveResource';
 import './command.css';
 
 const fmt = value => Number(value || 0).toLocaleString('en-US');
@@ -233,6 +235,7 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
   const view = data?.command_view || {};
   const kpis = view.kpis || {};
   const [sport, setSport] = React.useState('All');
+  const live = useLiveResource(`/high-odds/opportunities${sport === 'All' ? '' : `?sport=${encodeURIComponent(sport)}`}`);
   const [codeTab, setCodeTab] = React.useState('codes');
   const [copied, setCopied] = React.useState('');
   const [openTicket, setOpenTicket] = React.useState(null);
@@ -256,8 +259,8 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
       setCopied('');
     }
   }
-  const filters = ['All', 'Football', 'Basketball', 'Tennis'];
-  const rows = (view.opportunities || []).filter(row => sport === 'All' || row.sport_label === sport);
+  const filters = [{code:'All',name:'All'}, ...(live.data?.sports || []).filter(item => ['football','basketball','tennis','ice_hockey'].includes(item.code))];
+  const rows = live.data?.items || view.opportunities || [];
   const pipelineMax = Math.max(1, ...(view.pipeline || []).map(item => Number(item.count) || 0));
   const performance = view.performance || {};
   const windowLabel = view.publication_open ? 'Open now' : clock(view.next_window);
@@ -288,10 +291,11 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
     </section>
     <div className="ccx-primary">
       <section className="ccx-card">
-        <header><strong><Target size={16}/>Live Opportunities <small>(Top 10)</small></strong><div className="ccx-filters">{filters.map(name => <button key={name} className={sport === name ? 'on' : ''} onClick={() => setSport(name)}>{name}</button>)}<button className="ccx-link" onClick={() => nav('qualification')}>View All</button></div></header>
+        <header><strong><Target size={16}/>Live Opportunities <small>(Top 10)</small></strong><div className="ccx-filters">{filters.map(item => <button key={item.code} className={sport === item.code ? 'on' : ''} onClick={() => setSport(item.code)}>{item.name}</button>)}<select aria-label="Filter live opportunities by sport" value={sport} onChange={e=>setSport(e.target.value)}><option value="All">All sports</option>{(live.data?.sports||[]).map(item=><option key={item.code} value={item.code}>{item.name}</option>)}</select><button className="ccx-link" onClick={() => nav('qualification')}>View All</button></div></header>
+        <p className="ccx-high-note" role="status">{live.error || `Refreshes every 15 seconds · Updated ${wat(live.data?.generated_at)} WAT · Current qualified opportunities, ranked by probability`}</p>
         <div className="ccx-table-scroll"><table className="ccx-table"><thead><tr><th>#</th><th>Sport</th><th>Fixture</th><th>League</th><th>Start Date/Time</th><th>Market</th><th>Selection</th><th>AI Probability</th><th>Odds</th><th>Status</th></tr></thead><tbody>
           {rows.map((row, index) => <tr key={`${row.fixture_id || row.fixture}-${row.selection}`} onClick={() => openFixture(row)}><td>{index + 1}</td><td><span className="ccx-sport">{row.sport === 'basketball' ? <Dribbble size={13}/> : <Goal size={13}/>}{row.sport_label}</span></td><td>{row.fixture}</td><td>{row.competition || '—'}</td><td>{wat(row.starts_at)}{row.starts_at ? <small className="ccx-wat">WAT</small> : null}</td><td>{row.market}</td><td>{row.selection}</td><td><ProbBar value={row.probability}/></td><td className="ccx-odds">{row.odds == null ? '—' : Number(row.odds).toFixed(2)}</td><td><span className={`ccx-pill ${pillClass(row.status)}`}>{row.status}</span></td></tr>)}
-          {!rows.length && <tr><td colSpan="10">No matching opportunities.</td></tr>}
+          {!rows.length && <tr><td colSpan="10">{live.loading ? 'Checking current opportunities…' : live.data?.empty_reason || 'No current qualified opportunities.'}{(live.data?.qualification_reasons||[]).slice(0,3).map(item=><small style={{display:'block',marginTop:5}} key={item.reason_code}>{item.reason_code.replaceAll('_',' ')}: {item.total}</small>)}</td></tr>}
         </tbody></table></div>
       </section>
       <section className="ccx-card ccx-codes">
@@ -365,7 +369,7 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
         {!(view.alerts || []).length && <p className="ccx-empty">No alert is stored for this cycle.</p>}
       </section>
     </div>
-    <HighOdds board={view.high_odds}/>
+    <HighOddsTickets compact nav={nav}/>
     <footer className="ccx-engine"><span className={view.engine_online ? 'on' : 'off'}/>{view.engine_online ? 'Engine Online' : 'Engine idle'}<small>Last sync {when(view.updated_at)}</small><small>Next window {windowLabel} WAT</small></footer>
     {openTicket && <div className="ccx-modal-back" onClick={() => setOpenTicket(null)}><section className="ccx-modal" onClick={event => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Ticket detail">
       <header><div><span>Ticket {openTicket.ticket_no || '—'}</span><h2>{openTicket.code || 'No booking code'}</h2></div><button type="button" onClick={() => setOpenTicket(null)} aria-label="Close"><X size={16}/></button></header>
@@ -374,51 +378,6 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
       <div className="ccx-modal-legs">{(openTicket.legs || []).map((leg, index) => <p key={`${leg.home}-${leg.market}-${index}`}><b>{index + 1}. {leg.home} vs {leg.away}</b><span>{leg.market} · {leg.odds == null ? '—' : Number(leg.odds).toFixed(2)} · {leg.probability == null ? 'Selection probability not stored' : `${Number(leg.probability).toFixed(1)}%`} · {leg.result || 'pending'} · {wat(leg.starts_at)} WAT</span></p>)}{!(openTicket.legs || []).length && <p>No selections are stored on this ticket.</p>}</div>
     </section></div>}
   </div>;
-}
-
-function HighOdds({board}) {
-  const [open, setOpen] = React.useState(null);
-  const days = board?.days || [];
-  React.useEffect(() => {
-    if (!open) return undefined;
-    function onKey(event) { if (event.key === 'Escape') setOpen(null); }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open]);
-  return <section className="ccx-card ccx-high-odds" aria-label="High odds tickets">
-    <header><strong><Layers3 size={16}/>High Odds Tickets</strong></header>
-    <p className="ccx-high-note">{board?.note || 'Every selection is at least 80%. Fifteen to thirty selections when each price is 1.95 or below. Prices above 5.00 use eight selections or fewer so the combined odds clear 10,000.'}</p>
-    {days.map(day => <div key={day.day} className="ccx-high-day">
-      <h3>{day.day}<small>{day.date}</small></h3>
-      <div className="ccx-table-scroll ccx-card-scroll">
-        <table className="ccx-table">
-          <thead><tr><th>Ticket</th><th>Combined odds</th><th>Selections</th><th>Joint probability</th><th>Confidence</th><th>Booking code</th><th>How it was built</th></tr></thead>
-          <tbody>
-            {(day.tickets || []).map(ticket => {
-              const key = `${day.day}-${ticket.signature || ticket.target}`;
-              const ready = ticket.status === 'ready';
-              return <tr key={key} role={ready ? 'button' : undefined} tabIndex={ready ? 0 : undefined} onClick={() => ready && setOpen({...ticket, day: day.day, date: day.date})} onKeyDown={event => { if (ready && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setOpen({...ticket, day: day.day, date: day.date}); } }}>
-                  <td><b>{ticket.label}</b>{ticket.odds_band ? <small> · {ticket.odds_band}</small> : null}</td>
-                  <td className="ccx-odds">{ticket.combined_odds == null ? '—' : Number(ticket.combined_odds).toLocaleString('en-US', {maximumFractionDigits: 2})}</td>
-                  <td>{ready ? ticket.selection_count : '—'}</td>
-                  <td>{ticket.joint_probability == null ? '—' : `${Number(ticket.joint_probability).toFixed(1)}%`}</td>
-                  <td>{ticket.confidence == null ? '—' : `${Number(ticket.confidence).toFixed(1)}%`}</td>
-                  <td className={ticket.booking_code ? 'ccx-odds' : 'ccx-high-reason'}>{ticket.booking_code || (ready ? (ticket.booking_note || 'Waiting for SportyBet.') : '—')}</td>
-                  <td className="ccx-high-reason">{ready ? `Every selection is at least 80% and priced ${ticket.odds_band}. A selection is not repeated unless its probability is 100%.` : ticket.reason}</td>
-                </tr>;
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>)}
-    {!days.length && <p className="ccx-empty">Saturday and Sunday prices are not on this response yet.</p>}
-    {open && <div className="ccx-modal-back" onClick={() => setOpen(null)}><section className="ccx-modal ccx-high-modal" onClick={event => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="High odds ticket">
-      <header><div><span>{open.day} {open.date}</span><h2>{open.label}</h2></div><button type="button" onClick={() => setOpen(null)} aria-label="Close"><X size={16}/></button></header>
-      <p>{open.odds_band} · {open.selection_count} selections · combined odds {open.combined_odds == null ? '—' : Number(open.combined_odds).toLocaleString('en-US', {maximumFractionDigits: 2})} · joint probability {open.joint_probability == null ? '—' : `${Number(open.joint_probability).toFixed(1)}%`} · confidence {open.confidence == null ? '—' : `${Number(open.confidence).toFixed(1)}%`}</p>
-      <p>{open.booking_code ? `SportyBet booking code ${open.booking_code}` : (open.booking_note || 'Waiting for SportyBet.')} A code is stored only when SportyBet displays it.</p>
-      <div className="ccx-modal-legs">{(open.selections || []).map((leg, index) => <p key={`${leg.fixture}-${leg.market}-${index}`}><b>{index + 1}. {leg.fixture}</b><span>{leg.sport} · {leg.competition || 'League not stored'} · {leg.market} · {Number(leg.odds).toFixed(2)} · {Number(leg.probability).toFixed(1)}%{leg.confidence == null ? '' : ` · confidence ${Number(leg.confidence).toFixed(1)}%`} · {when(leg.starts_at)} WAT</span></p>)}</div>
-    </section></div>}
-  </section>;
 }
 
 const PREDICTION_GROUPS = {

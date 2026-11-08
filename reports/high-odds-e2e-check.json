@@ -1,0 +1,50 @@
+{
+  "categories": [
+    {
+      "category": "2-4.99",
+      "visible_tickets": 2,
+      "snapshot_opened": true
+    },
+    {
+      "category": "5-9.99",
+      "visible_tickets": 1,
+      "snapshot_opened": true
+    },
+    {
+      "category": "10-24.99",
+      "visible_tickets": 1,
+      "snapshot_opened": true
+    },
+    {
+      "category": "25-49.99",
+      "visible_tickets": 1,
+      "snapshot_opened": true
+    },
+    {
+      "category": "50-99.99",
+      "visible_tickets": 1,
+      "snapshot_opened": true
+    },
+    {
+      "category": "100-249.99",
+      "visible_tickets": 1,
+      "snapshot_opened": true
+    },
+    {
+      "category": "250-499.99",
+      "visible_tickets": 1,
+      "snapshot_opened": true
+    },
+    {
+      "category": "500-1000",
+      "visible_tickets": 1,
+      "snapshot_opened": true
+    }
+  ],
+  "page_errors": [],
+  "automatic_refresh": true,
+  "mobile_overflow": false,
+  "api_requests": 13,
+  "data_source": "isolated temporary test database",
+  "bookmaker_codes_created": 0
+}

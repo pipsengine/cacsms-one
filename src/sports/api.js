@@ -17,7 +17,7 @@ async function request(path,options={}){
   return response.json();
 }
 
-export function get(path){return request(path)}
+export function get(path,options={}){return request(path,options)}
 export function post(path,body,headers={}){
   return request(path,{
     method:'POST',

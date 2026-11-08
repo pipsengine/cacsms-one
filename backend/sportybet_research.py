@@ -88,6 +88,20 @@ def map_market(sport, market_label, selection_label, line=None, home=None, away=
     combined = f'{market} {selection}'.casefold()
     if any(marker in combined for marker in PERIOD_MARKERS):
         return {'supported': False, 'reason': 'A different period or statistic is not the full-match market.'}
+    from sport_support import WINNER_SPORTS
+    if sport in WINNER_SPORTS:
+        allowed = {'match winner', 'winner', 'moneyline', 'h2h', '2 way', '2-way', 'match_winner'}
+        winner_label = market.casefold()
+        if sport == 'ice_hockey':
+            winner_label = re.sub(r'\s*\((?:incl\.?|including) overtime\)\s*', '', winner_label)
+        if winner_label not in allowed:
+            return {'supported': False, 'reason': 'The outcome model supports full-match winner only.'}
+        pick = selection.casefold()
+        side = 'HOME' if pick in {'1', 'home', 'player 1', str(home or '').casefold()} else 'AWAY' if pick in {'2', 'away', 'player 2', str(away or '').casefold()} else None
+        if side:
+            return {'supported': True, 'canonical_market': f'MONEYLINE_{side}',
+                    'provider_market': 'full_match_winner' if sport == 'ice_hockey' else 'h2h', 'provider_outcome': side.lower(), 'line': None}
+        return {'supported': False, 'reason': 'The displayed winner is not an identified participant.'}
     if 'european' in combined or '3-way' in combined or '3 way' in combined:
         mapped = _european_handicap(sport, selection, line, market)
         if mapped:
@@ -350,7 +364,7 @@ def rank_fixtures(connection, observation, limit=5):
     sport = observation.get('sport')
     query = 'SELECT id,sport,competition,home,away,starts_at,status FROM sports_ai_fixtures'
     args = []
-    if sport in {'football', 'basketball'}:
+    if sport:
         query += ' WHERE sport=?'
         args.append(sport)
     ranked = []
@@ -398,6 +412,8 @@ def quote_age_status(observed_at, now, limit_minutes):
 def store_observations(connection, session_id, rows, source_url, observed_at):
     saved, duplicates = [], []
     for row in rows:
+        from sport_support import canonical_sport
+        row = {**row, 'sport': canonical_sport(row.get('sport'), row.get('competition'))}
         observation_id = str(uuid.uuid4())
         try:
             connection.execute(

@@ -1,0 +1,49 @@
+{
+  "policy": "one_active_ticket_per_match",
+  "retired_count": 8,
+  "retired": [
+    {
+      "ticket_id": "7425f668-64a1-41c7-a911-97a5821837eb",
+      "details_json": "{\"conflicts_with\": [\"b3b726cc-250d-4220-a255-438d07e71738\"], \"reason\": \"Retired from recommendations because a match is already on another active ticket. Original legs and booking-code evidence are preserved.\"}",
+      "created_at": "2026-11-08T04:46:02.552714+00:00"
+    },
+    {
+      "ticket_id": "d3ce346e-ccf4-4f3d-97a2-baeb17e1f0a7",
+      "details_json": "{\"conflicts_with\": [\"74f4b236-6624-4c4c-8fd8-e9eba9a5809c\", \"b3b726cc-250d-4220-a255-438d07e71738\"], \"reason\": \"Retired from recommendations because a match is already on another active ticket. Original legs and booking-code evidence are preserved.\"}",
+      "created_at": "2026-11-08T04:46:02.552714+00:00"
+    },
+    {
+      "ticket_id": "bfbee994-0be1-4fae-ae91-751fe21b0b58",
+      "details_json": "{\"conflicts_with\": [\"74f4b236-6624-4c4c-8fd8-e9eba9a5809c\", \"b3b726cc-250d-4220-a255-438d07e71738\"], \"reason\": \"Retired from recommendations because a match is already on another active ticket. Original legs and booking-code evidence are preserved.\"}",
+      "created_at": "2026-11-08T04:46:02.552714+00:00"
+    },
+    {
+      "ticket_id": "97c09662-246e-4ab1-b067-406fc37e2dbb",
+      "details_json": "{\"conflicts_with\": [\"74f4b236-6624-4c4c-8fd8-e9eba9a5809c\", \"b3b726cc-250d-4220-a255-438d07e71738\"], \"reason\": \"Retired from recommendations because a match is already on another active ticket. Original legs and booking-code evidence are preserved.\"}",
+      "created_at": "2026-11-08T04:46:02.552714+00:00"
+    },
+    {
+      "ticket_id": "397b3a26-7566-4b23-891b-3d2c8f8a7925",
+      "details_json": "{\"conflicts_with\": [\"74f4b236-6624-4c4c-8fd8-e9eba9a5809c\"], \"reason\": \"Retired from recommendations because a match is already on another active ticket. Original legs and booking-code evidence are preserved.\"}",
+      "created_at": "2026-11-08T04:46:02.552714+00:00"
+    },
+    {
+      "ticket_id": "3720fe5b-cd6a-42ec-9791-029267f08da2",
+      "details_json": "{\"conflicts_with\": [\"74f4b236-6624-4c4c-8fd8-e9eba9a5809c\", \"b3b726cc-250d-4220-a255-438d07e71738\"], \"reason\": \"Retired from recommendations because a match is already on another active ticket. Original legs and booking-code evidence are preserved.\"}",
+      "created_at": "2026-11-08T04:46:02.552714+00:00"
+    },
+    {
+      "ticket_id": "fdb9c418-2a19-4475-a61f-013d5388cf6c",
+      "details_json": "{\"conflicts_with\": [\"6baefe5f-2a4f-4d97-8e4b-7ae487084d73\", \"74f4b236-6624-4c4c-8fd8-e9eba9a5809c\"], \"reason\": \"Retired from recommendations because a match is already on another active ticket. Original legs and booking-code evidence are preserved.\"}",
+      "created_at": "2026-11-08T04:46:02.552714+00:00"
+    },
+    {
+      "ticket_id": "bdbfac3e-1c3f-4fdf-b99f-ec3b5345ef8d",
+      "details_json": "{\"conflicts_with\": [\"6baefe5f-2a4f-4d97-8e4b-7ae487084d73\", \"74f4b236-6624-4c4c-8fd8-e9eba9a5809c\", \"b3b726cc-250d-4220-a255-438d07e71738\"], \"reason\": \"Retired from recommendations because a match is already on another active ticket. Original legs and booking-code evidence are preserved.\"}",
+      "created_at": "2026-11-08T04:46:02.552714+00:00"
+    }
+  ],
+  "active_tickets_with_upcoming_matches": 3,
+  "reused_active_matches": [],
+  "booking_code_history_preserved": true
+}

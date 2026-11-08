@@ -60,7 +60,7 @@ function Sports() {
   return <div className="sp-acq-stack">
     <section className="sp-panel">
       <h3>Sports registry</h3>
-      <p className="sp-muted">Football and basketball already have collectors and models. Other sports stay empty until an authorized feed returns records. Counts below are stored rows, not estimates.</p>
+      <p className="sp-muted">Collectors store fixtures and observed results by sport. Models train on their own sport data and remain in research until validation passes. Counts below are stored records.</p>
       {loading && <p className="sp-muted">Loading sports…</p>}
       <div className="sp-table-scroll"><table className="sp-table"><thead><tr><th>Sport</th><th>Prediction</th><th>Acquisition</th><th>Leagues</th><th>Teams</th><th>Fixtures</th><th>Notes</th></tr></thead><tbody>
         {rows.map((row) => <tr key={row.code}><td>{row.name}</td><td>{row.prediction_status}</td><td>{row.acquisition_status}</td><td>{row.leagues}</td><td>{row.teams}</td><td>{row.fixtures}</td><td>{row.notes}</td></tr>)}
@@ -183,6 +183,7 @@ function Coverage() {
   const [busy, setBusy] = useState(false);
   const [perDay, setPerDay] = useState('0');
   const [loading, setLoading] = useState(true);
+  const [analysisSport, setAnalysisSport] = useState('');
 
   function refresh() {
     setLoading(true);
@@ -229,6 +230,19 @@ function Coverage() {
         <label>Held leagues released per day<input type="number" min="0" max="24" value={perDay} onChange={(event) => setPerDay(event.target.value)} /></label>
         <button className="sp-secondary" type="submit">Save backfill cap</button>
       </form>
+    </section>
+    <section className="sp-panel">
+      <div className="sp-panel-head"><div><h3>Analysis coverage</h3><p>Upcoming fixtures, model readiness and the reason each league is waiting.</p></div>
+        <label>Sport <select value={analysisSport} onChange={(event) => setAnalysisSport(event.target.value)}><option value="">All sports</option>{(data?.analysis?.models || []).map((row) => <option key={row.sport} value={row.sport}>{row.sport.replaceAll('_', ' ')}</option>)}</select></label>
+      </div>
+      <div className="sp-table-scroll"><table className="sp-table"><thead><tr><th>Sport</th><th>Model</th><th>Scored samples</th><th>Holdout samples</th><th>Calibration error</th><th>Validation detail</th></tr></thead><tbody>
+        {(data?.analysis?.models || []).filter((row) => !analysisSport || row.sport === analysisSport).map((row) => <tr key={row.sport}><td>{row.sport.replaceAll('_', ' ')}</td><td>{row.active ? 'Active' : row.status.replaceAll('_', ' ')}</td><td>{row.scored_fixtures}</td><td>{row.holdout_fixtures}</td><td>{row.calibration_error == null ? 'Awaiting validation' : row.calibration_error.toFixed(3)}</td><td>{row.active ? 'Validation passed' : (row.reasons || []).join(' ')}</td></tr>)}
+      </tbody></table></div>
+      <div className="sp-table-scroll"><table className="sp-table"><thead><tr><th>Sport</th><th>League</th><th>Upcoming</th><th>Analyzed</th><th>Stored finals</th><th>Progress</th></tr></thead><tbody>
+        {(data?.analysis?.leagues || []).filter((row) => !analysisSport || row.sport === analysisSport).map((row) => <tr key={`${row.sport}:${row.league_key}`}><td>{row.sport.replaceAll('_', ' ')}</td><td>{row.competition}</td><td>{row.fixtures}</td><td>{row.analyzed}</td><td>{row.final_results}</td><td>{Object.entries(row.reasons).map(([reason, count]) => `${reason.replaceAll('_', ' ')} (${count})`).join(', ')}</td></tr>)}
+      </tbody></table></div>
+      {!data && <p className="sp-muted">Loading analysis coverage…</p>}
+      {data && !data.analysis?.leagues?.length && <p className="sp-muted">No upcoming fixtures are stored.</p>}
     </section>
     <section className="sp-panel">
       <h3>Source health</h3>

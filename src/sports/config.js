@@ -1,10 +1,11 @@
 import{LayoutDashboard,Activity,CalendarDays,ChartNoAxesCombined,BrainCircuit,Goal,Dribbble,BarChart3,TrendingUp,ScanSearch,Ticket,Layers3,SlidersHorizontal,Hash,Bell,Mail,Clock3,History,ShieldCheck,Database,Settings2,Workflow,Target,BookOpen,ClipboardList,ChartColumnIncreasing,Users,FileClock,MonitorCheck,Code2,Search,Globe,Bot}from'lucide-react';
 export const groups=[
 {label:'COMMAND CENTRE',items:[['dashboard','Overview',LayoutDashboard],['activity','Activity & Audit',Activity],['monitor','System Monitoring',MonitorCheck],['autonomous','Autonomous Engine',Bot]]},
+{label:'ALL SPORTS INTELLIGENCE',items:[['all-sports-predictions','All Sports Predictions',Globe]]},
 {label:'FOOTBALL INTELLIGENCE',items:[['football-fixtures','Fixtures & Statistics',CalendarDays],['football-analysis','Match Analysis',BrainCircuit],['football-predictions','Predictions',Goal]]},
 {label:'BASKETBALL INTELLIGENCE',items:[['basketball-fixtures','Fixtures & Statistics',Dribbble],['basketball-analysis','Match Analysis',BrainCircuit],['basketball-predictions','Predictions',Target]]},
 {label:'VALUE INTELLIGENCE',items:[['market-scanner','Market Scanner',ScanSearch],['odds','Odds Intelligence',TrendingUp],['value','Value Opportunities',ChartNoAxesCombined],['qualification','AI Qualification Centre',ShieldCheck],['sportybet-browser','SportyBet Browser Operator',Globe]]},
-{label:'ACCUMULATOR CENTRE',items:[['tickets','Ticket Builder',Ticket],['weekly-draw','Weekly Draw Centre',CalendarDays],['daily-rollover','Daily Rollover Centre',Clock3],['tiers','Odds Tiers',Layers3],['optimizer','Ticket Optimizer',SlidersHorizontal]]},
+{label:'ACCUMULATOR CENTRE',items:[['tickets','Ticket Builder',Ticket],['high-odds','High Odds Tickets',TrendingUp],['weekly-draw','Weekly Draw Centre',CalendarDays],['daily-rollover','Daily Rollover Centre',Clock3],['tiers','Odds Tiers',Layers3],['optimizer','Ticket Optimizer',SlidersHorizontal]]},
 {label:'SPORTYBET CENTRE',items:[['betslip','Betslip Preparation',ClipboardList],['codes','Booking Codes',Hash],['code-history','Code History',History]]},
 {label:'PERFORMANCE',items:[['results','Match Results',ChartColumnIncreasing],['backtesting','Backtesting',BarChart3],['models','Model Accuracy',BrainCircuit]]},
 {label:'DATA ACQUISITION',items:[['diagnostics','Connection & Diagnostics',MonitorCheck],['sources','Source Management Centre',Database],['match-research','Match Research Centre',Search]]},

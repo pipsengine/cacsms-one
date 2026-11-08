@@ -3,6 +3,7 @@
 import json
 import uuid
 from datetime import datetime, timezone
+from sport_support import ANALYSED_SPORTS, GOAL_SPORTS, WINNER_SPORTS
 
 CORE_RATES = {
     'football': ('expected_home_goals', 'expected_away_goals'),
@@ -17,7 +18,11 @@ CONTEXT_FIELDS = {
     'injuries': ('injuries_out_home', 'injuries_out_away'),
     'lineups': ('lineup_known_home', 'lineup_known_away'),
 }
-MODELLED_SPORTS = ('football', 'basketball')
+MODELLED_SPORTS = ANALYSED_SPORTS
+CORE_RATES.update({sport: ('expected_home_goals', 'expected_away_goals') for sport in GOAL_SPORTS})
+CORE_RATES.update({sport: ('home_rating', 'away_rating', 'winner_probability') for sport in WINNER_SPORTS})
+CALIBRATED_MARKETS.update({sport: {'HOME', 'DRAW', 'AWAY'} for sport in GOAL_SPORTS})
+CALIBRATED_MARKETS.update({sport: {'MONEYLINE_HOME', 'MONEYLINE_AWAY'} for sport in WINNER_SPORTS})
 
 
 def utc_now():
@@ -52,7 +57,7 @@ def assess_market(sport, market, features, lifecycle, calibrated, completeness=N
         reasons.append('Stored scoring rates are present.')
     else:
         missing.append('scoring_rates')
-        reasons.append('Scoring rates are missing, so the market is not suitable.')
+        reasons.append('No trained model features are available, so the market is not suitable.' if sport in WINNER_SPORTS else 'Scoring rates are missing, so the market is not suitable.')
     if calibrated or market in CALIBRATED_MARKETS.get(sport, ()):
         if calibrated and market in CALIBRATED_MARKETS.get(sport, ()):
             score += 25

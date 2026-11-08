@@ -652,7 +652,7 @@ def build_acquisition_router(auth_dependency):
     @router.get('/research/matches')
     def research_matches(
         limit: int = Query(default=500, ge=1, le=1000),
-        sport: str | None = Query(default=None, pattern=r'^(football|basketball)$'),
+        sport: str | None = Query(default=None, pattern=r'^[a-z][a-z0-9_]{0,40}$'),
         q: str | None = Query(default=None, max_length=200),
         user=Depends(auth_dependency),
     ):

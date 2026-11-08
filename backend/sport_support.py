@@ -6,9 +6,25 @@ score. A probability is produced only after that sport's own model passes the
 existing holdout gates. This module does not invent a score or a price.
 """
 
-GOAL_SPORTS = ('football', 'frauenfussball', 'ice_hockey', 'efootball', 'vfootball')
-WINNER_SPORTS = ('tennis', 'table_tennis', 'tischtennis', 'volleyball', 'mma')
-ANALYSED_SPORTS = GOAL_SPORTS + ('basketball',)
+GOAL_SPORTS = ('football', 'frauenfussball', 'efootball', 'vfootball')
+WINNER_SPORTS = (
+    'tennis', 'table_tennis', 'volleyball', 'mma', 'baseball', 'handball', 'ice_hockey',
+    'cricket', 'americanfootball', 'badminton', 'boxing', 'darts', 'counterstrike',
+    'dota2', 'ebasketball', 'futsal', 'lol', 'rugby', 'snooker',
+    'beach_volleyball', 'basketball_3x3', 'eice_hockey', 'etennis',
+)
+ANALYSED_SPORTS = GOAL_SPORTS + ('basketball',) + WINNER_SPORTS
+PIPELINE_VERSION = 'coverage-v3'
+
+
+def canonical_sport(sport, competition=''):
+    import re
+    code = str(sport or '').lower()
+    code = {'tischtennis': 'table_tennis', 'icehockey': 'ice_hockey',
+            'american_football': 'americanfootball'}.get(code, code)
+    if code == 'football' and re.search(r'\b(women|woman|ladies|frauen|female)\b', competition or '', re.I):
+        return 'frauenfussball'
+    return code
 
 COLLECTED_SPORTS = {
     'efootball': 'Efootball',
@@ -22,13 +38,13 @@ COLLECTED_SPORTS = {
 
 
 def recognised(sport):
-    code = str(sport or '').lower()
+    code = canonical_sport(sport)
     return code in ANALYSED_SPORTS or code in WINNER_SPORTS
 
 
 def coverage_status(sport, active_models, active_markets):
     """Active only when this sport has a validated active model and an active market."""
-    code = str(sport or '').lower()
+    code = canonical_sport(sport)
     known = {str(item).lower() for item in active_models}
     if code in known and active_markets:
         return 'Active'

@@ -283,6 +283,12 @@ def refresh_market_registry(connection, now=None):
                         parent_active, version, temperature, dependence,
                     ))
                 records.append(_correct_score_row(holdout, rho, version))
+        elif sport in WINNER_SPORTS:
+            winner_rows = _result_rows(sport, model, quote_counts, 'MONEYLINE_HOME', 'Home/player 1', 'MONEYLINE_AWAY', 'Away/player 2')
+            if not model:
+                for record in winner_rows:
+                    record['status'] = 'research'
+            records.extend(winner_rows)
         else:
             records.extend(_result_rows(
                 sport, model, quote_counts, 'MONEYLINE_HOME', 'Home moneyline', 'MONEYLINE_AWAY', 'Away moneyline',
@@ -307,7 +313,7 @@ def refresh_market_registry(connection, now=None):
                 'normal_points', version, 'research',
                 {'holdout_rows_with_half': half_ready, 'reason': 'Half rates exist on the holdout, and no half-time result is stored to settle them.'},
             ))
-        if holdout:
+        if holdout and sport not in WINNER_SPORTS:
             known_keys = {item['market_key'] for item in records if item['sport'] == sport}
             for key in _extra_keys(sport, quote_counts, known_keys):
                 records.append(_derived_row(
@@ -652,6 +658,8 @@ def _quote_counts(connection):
 
 
 def _canonical(sport, market, outcome, line):
+    if sport == 'ice_hockey' and str(market or '').lower() in ('h2h', 'moneyline'):
+        return None
     from sportybet_research import map_market
     mapped = map_market(sport, market, outcome, line)
     if mapped.get('supported') and mapped.get('canonical_market'):
@@ -659,6 +667,8 @@ def _canonical(sport, market, outcome, line):
     market = str(market or '').lower()
     outcome = str(outcome or '')
     if market == 'h2h':
+        if sport == 'ice_hockey':
+            return None
         goal = sport in GOAL_SPORTS
         if outcome == 'draw':
             return 'DRAW' if goal else None
@@ -666,6 +676,8 @@ def _canonical(sport, market, outcome, line):
             return 'HOME' if goal else 'MONEYLINE_HOME'
         if outcome == 'away':
             return 'AWAY' if goal else 'MONEYLINE_AWAY'
+    if market == 'full_match_winner' and sport in WINNER_SPORTS:
+        return 'MONEYLINE_HOME' if outcome == 'home' else 'MONEYLINE_AWAY' if outcome == 'away' else None
     if market == 'totals' and outcome.upper() in ('OVER', 'UNDER') and line is not None:
         return f'{outcome.upper()}_{float(line):g}'
     if market == 'spreads' and outcome:

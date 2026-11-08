@@ -9,6 +9,7 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
+from html import unescape
 from urllib.parse import urlsplit
 
 from acquisition import CollectionError
@@ -33,6 +34,11 @@ BETEXPLORER_SPORTS = (
     ('volleyball', 'volleyball'),
     ('handball', 'handball'),
     ('baseball', 'baseball'),
+    ('table-tennis', 'table_tennis'), ('badminton', 'badminton'),
+    ('american-football', 'americanfootball'), ('rugby-union', 'rugby'),
+    ('futsal', 'futsal'), ('snooker', 'snooker'), ('darts', 'darts'),
+    ('mma', 'mma'), ('boxing', 'boxing'), ('cricket', 'cricket'),
+    ('esports', 'esports'),
 )
 MODELLED_HISTORY = (
     ('football', 'football'),
@@ -75,7 +81,7 @@ def _table_rows(html):
             continue
         head, _, body = part[:end].partition('>')
         yield head, body
-_TOURNAMENT = re.compile(r'class="table-main__tournament"[^>]*>(.*?)</a>', re.I | re.S)
+_TOURNAMENT = re.compile(r'class="[^"\n]*\btable-main__tournament(?:\s[^"\n]*)?"[^>]*>(.*?)</a>', re.I | re.S)
 _DT = re.compile(r'data-dt="(\d+),(\d+),(\d+),(\d+),(\d+)"')
 _RESULT = re.compile(
     r'class="table-main__result".*?<strong>\s*(\d{1,3})\s*:\s*(\d{1,3})\s*</strong>',
@@ -87,7 +93,7 @@ _TEAMS = re.compile(
     r'class="table-main__tt".*?<strong>(.*?)</strong>\s*-\s*([^<]+)</a>',
     re.I | re.S,
 )
-_HREF = re.compile(r'href="(/(?:football|basketball|hockey|tennis|volleyball|handball|baseball)/[^"]+/([A-Za-z0-9]{4,})/)"')
+_HREF = re.compile(r'href="(/[a-z-]+/[^"]+/([A-Za-z0-9]{4,})/)"')
 _TAGS = re.compile(r'<[^>]+>')
 _SW_TIME = re.compile(r'(\d{1,2})\.(\d{1,2})\.\s+(\d{1,2}):(\d{2})')
 _LEAGUE_HREF = re.compile(r'href="(/[a-z0-9-]+/[a-z0-9-]+/)"')
@@ -96,11 +102,13 @@ _PAGE_SEGMENT = {
     'football': 'football', 'frauenfussball': 'football', 'basketball': 'basketball',
     'ice_hockey': 'hockey', 'tennis': 'tennis', 'volleyball': 'volleyball',
     'handball': 'handball', 'baseball': 'baseball',
+    'table_tennis': 'table-tennis', 'americanfootball': 'american-football',
+    'rugby': 'rugby-union', 'counterstrike': 'esports',
 }
 
 
 def _plain(fragment):
-    return ' '.join(_TAGS.sub(' ', fragment or '').replace('\xa0', ' ').split())
+    return ' '.join(unescape(_TAGS.sub(' ', fragment or '')).replace('\xa0', ' ').split())
 
 
 def _blocked(title, text):
@@ -125,9 +133,45 @@ def _kickoff(year, month, day, hour, minute, now):
 
 
 def _sport_for(base_sport, competition):
-    if base_sport == 'football' and _WOMEN.search(competition or ''):
-        return 'frauenfussball'
-    return base_sport
+    from sport_support import canonical_sport
+    if base_sport == 'esports':
+        text = (competition or '').casefold()
+        for code, labels in (
+            ('counterstrike', ('counter-strike', 'counter strike', 'cs2')),
+            ('dota2', ('dota 2', 'dota2')),
+            ('lol', ('league of legends',)),
+            ('efootball', ('efootball', 'e-football', 'esoccer')),
+            ('ebasketball', ('ebasketball', 'nba 2k', 'nba2k')),
+        ):
+            if any(label in text for label in labels):
+                return code
+        return None
+    return canonical_sport(base_sport, competition)
+
+
+def _player_names(home, away, href):
+    """Expand abbreviated player labels only when the event's own slug agrees."""
+    slug = href.strip('/').split('/')[-2].split('-')
+    def prefix(label, parts):
+        tokens = re.findall(r'[a-z]+', label.casefold())
+        if len(tokens) < 2:
+            return None
+        if len(tokens[-1]) == 1:
+            family, initial = tokens[:-1], tokens[-1]
+        elif len(tokens[0]) == 1:
+            family, initial = tokens[1:], tokens[0]
+        else:
+            return None
+        n = len(family)
+        if parts[:n] != family or len(parts) <= n or not parts[n].startswith(initial):
+            return None
+        return n + 1
+    n = prefix(home, slug)
+    if n:
+        m = prefix(away, slug[n:])
+        if m and n + m == len(slug):
+            return ' '.join(slug[:n]).title(), ' '.join(slug[n:]).title()
+    return home, away
 
 
 def parse_betexplorer_results(html, base_sport, page_url, observed_at, now):
@@ -155,13 +199,18 @@ def parse_betexplorer_results(html, base_sport, page_url, observed_at, now):
         segment = _PAGE_SEGMENT.get(base_sport, base_sport)
         if not home or not away or home == away or not link or not link.group(1).startswith(f'/{segment}/'):
             continue
+        if base_sport in ('tennis', 'table_tennis', 'badminton'):
+            home, away = _player_names(home, away, link.group(1))
         day, month, year, hour, minute = stamp.groups()
         kickoff = _kickoff(year, month, day, hour, minute, now)
         if kickoff is None:
             continue
+        sport = _sport_for(base_sport, competition)
+        if not sport:
+            continue
         found.append({
             'external_id': link.group(2),
-            'sport': _sport_for(base_sport, competition),
+            'sport': sport,
             'competition': competition,
             'home': home,
             'away': away,
@@ -363,7 +412,7 @@ def wanted_league_keys(connection):
     from prediction_engine import league_key, upcoming_fixture_sql
     from sport_support import ANALYSED_SPORTS, sql_in
     finished = {
-        (row['sport'], row['competition'])
+        (row['sport'], league_key(row['competition']))
         for row in connection.execute(
             """SELECT DISTINCT f.sport, f.competition
                FROM sports_ai_fixtures f
@@ -376,9 +425,9 @@ def wanted_league_keys(connection):
             WHERE {upcoming_fixture_sql('f')}
               AND f.sport IN ({sql_in(ANALYSED_SPORTS)})""",
     ):
-        if (row['sport'], row['competition']) in finished:
+        if (row['sport'], league_key(row['competition'])) in finished:
             continue
-        keys.add(league_key(row['competition']))
+        keys.add((row['sport'], league_key(row['competition'])))
     return keys
 
 
@@ -398,7 +447,7 @@ def _soccerway_due(item, state, wanted, now):
     if seen is None:
         return True
     age = now - seen
-    if league_key(item['name']) in wanted:
+    if league_key(item['name']) in wanted or ('football', league_key(item['name'])) in wanted or ('frauenfussball', league_key(item['name'])) in wanted:
         return age >= timedelta(hours=24)
     return age >= timedelta(days=7)
 
@@ -438,20 +487,19 @@ def _history_days(state, sports, day_key, sport_key, pages, now):
 
 def plan_visits(state, wanted, now):
     """Result pages for leagues that still have no finished score, then the general walk."""
+    # Reserve general capacity even while priority leagues have missing results.
+    visits = _history_days(state, BETEXPLORER_SPORTS, 'day_offset', 'sport_index', BETEXPLORER_PER_PASS, now)
     if wanted:
-        visits = _history_days(
+        visits += _history_days(
             state, MODELLED_HISTORY, 'priority_day', 'priority_sport', PRIORITY_PAGES, now,
         )
         soccerway_limit = SOCCERWAY_WAITING
     else:
-        visits = _history_days(
-            state, BETEXPLORER_SPORTS, 'day_offset', 'sport_index', BETEXPLORER_PER_PASS, now,
-        )
         soccerway_limit = 1
     from prediction_engine import league_key
     catalog = _soccerway_catalog(state)
     due = [item for item in catalog if _soccerway_due(item, state, wanted, now)]
-    due.sort(key=lambda item: (0 if league_key(item['name']) in wanted else 1, catalog.index(item)))
+    due.sort(key=lambda item: (0 if league_key(item['name']) in wanted or ('football', league_key(item['name'])) in wanted else 1, catalog.index(item)))
     for item in due[:soccerway_limit]:
         path = item['path'] if item['path'].endswith('/') else item['path'] + '/'
         results = path if path == '/full-time/' else path + 'results/'
@@ -548,6 +596,7 @@ def _release_analysis_holds(connection, opened):
                 "DELETE FROM sports_ai_prediction_jobs WHERE idempotency_key=?",
                 (f"insufficient:{row['id']}",),
             )
+            connection.execute('DELETE FROM sports_ai_analysis_coverage WHERE fixture_id=?', (row['id'],))
             released += 1
     return released
 
@@ -766,7 +815,7 @@ def _read_with_playwright(visits):
     return pages
 
 
-def collect_match_history(now=None, reader=None):
+def collect_match_history(now=None, reader=None, force=False):
     """Browse the next history pages and store the finished scores they display."""
     from db import connect
     current = now or datetime.now(timezone.utc)
@@ -783,7 +832,7 @@ def collect_match_history(now=None, reader=None):
             'soccerway': _provider(connection, 'soccerway'),
         }
         gap = MIN_GAP_WHEN_WAITING if wanted else MIN_GAP
-        if last_run and current < last_run + gap:
+        if not force and last_run and current < last_run + gap:
             return {'status': 'waiting', 'saved': 0, 'places_wager': False}
         if cooldown and current < cooldown:
             return {'status': 'cooldown', 'saved': 0, 'places_wager': False, 'until': cooldown.isoformat()}
@@ -814,7 +863,8 @@ def collect_match_history(now=None, reader=None):
             blocked_key = 'betexplorer' if visit['kind'] == 'betexplorer' else 'soccerway'
             break
         if page.get('error') and not page.get('skip'):
-            break
+            state = _advance(state, visit, current)
+            continue
         if visit['kind'] == 'betexplorer':
             rows = parse_betexplorer_results(html, visit['sport'], visit['url'], observed, current)
             leagues = []
@@ -828,7 +878,7 @@ def collect_match_history(now=None, reader=None):
         rendered = 'event__match' in html or 'table-main__result' in html
         if rows or rendered or page.get('skip'):
             accepted.append((visit, rows))
-            state = _advance(state, visit, current)
+        state = _advance(state, visit, current)
     for visit, rows in accepted:
         provider = providers['betexplorer' if visit['kind'] == 'betexplorer' else 'soccerway']
         with connect() as connection:

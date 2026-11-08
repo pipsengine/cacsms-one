@@ -1,3 +1,4 @@
+import SportOptions from './SportOptions';
 import {useEffect, useState} from 'react';
 import {get, post} from './api';
 
@@ -83,7 +84,7 @@ export default function QualificationCentre({product = 'booking', tab = 0}) {
       {['QUALIFIED', 'MONITORING', 'REJECTED', 'AWAITING_DATA', 'EXPIRED', 'SUSPENDED'].map(name => <article className="sp-kpi" key={name}><span>{name}</span><strong>{counts[name] || 0}</strong></article>)}
     </div>
     <div className="sp-filter-bar">
-      <label>Sport<select value={sport} onChange={event => setSport(event.target.value)}><option value="">All</option><option value="football">Football</option><option value="basketball">Basketball</option></select></label>
+      <label>Sport<select value={sport} onChange={event => setSport(event.target.value)}><SportOptions emptyLabel="All sports" /></select></label>
       <label>Market<input value={market} onChange={event => setMarket(event.target.value)} placeholder="HOME, DRAW, AWAY"/></label>
       <label>Competition<input value={competition} onChange={event => setCompetition(event.target.value)} placeholder="League"/></label>
       <button className="sp-primary" type="button" onClick={revalidate} disabled={busy}>{busy ? 'Checking…' : 'Revalidate stored selections'}</button>

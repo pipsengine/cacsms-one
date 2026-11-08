@@ -1180,6 +1180,7 @@ def list_errors(connection, limit=100):
 
 
 def coverage(connection):
+    from analysis_coverage import coverage_report
     sports = connection.execute('SELECT COUNT(*) FROM sports_ai_sports').fetchone()[0]
     leagues = connection.execute('SELECT COUNT(*) FROM sports_ai_leagues').fetchone()[0]
     teams = connection.execute('SELECT COUNT(*) FROM sports_ai_teams').fetchone()[0]
@@ -1220,4 +1221,5 @@ def coverage(connection):
         'backfill': _policy(connection),
         'last_discovery': dict(last) if last else None,
         'providers': providers,
+        'analysis': coverage_report(connection),
     }

@@ -50,6 +50,7 @@ FIND_ODDS = '''(args) => {
     }
     if (!prices.length) continue;
     const explicit = prices.some(({node}) => node.hasAttribute('data-outcome') || node.hasAttribute('data-selection'));
+    if (args.two_way && !explicit && prices.length !== 2) continue;
     let matches = [];
     if (explicit) {
       matches = prices.filter(({node}) => {
@@ -176,6 +177,12 @@ def create_job(connection, selections, high_odds=False):
         raise ValueError('A booking needs a sport on every selection')
     signature = _signature(selections)
     ticket_id = selections[0].get('ticket_id')
+    if ticket_id:
+        from ticket_diversity import assert_available
+        ticket = connection.execute('SELECT family_id,status,parameters_json FROM sports_ai_accumulator_tickets WHERE id=?', (ticket_id,)).fetchone()
+        if ticket and json.loads(ticket['parameters_json'] or '{}').get('diversity_retired'):
+            raise ValueError('This ticket was retired because a match is already allocated to another ticket.')
+        assert_available(connection, selections, ignore_family=ticket['family_id'] if ticket else None)
     if ticket_id:
         linked = connection.execute(
             """SELECT id, status FROM sports_ai_booking_jobs
@@ -543,8 +550,21 @@ def create_sure_odds_job(connection, ticket_id):
 
 
 def _store_displayed_code(connection, ticket_id, code, evidence):
+    existing = connection.execute(
+        "SELECT accumulator_ticket_id FROM sports_ai_booking_codes WHERE code=? AND bookmaker='SportyBet'",
+        (code,),
+    ).fetchall()
+    if any(row['accumulator_ticket_id'] != ticket_id for row in existing):
+        raise ValueError('SportyBet returned a code already registered to another ticket')
+    if existing:
+        return
     from qualification_engine import ticket_is_bookable
-    if not ticket_is_bookable(connection, ticket_id) and not _high_odds_ticket(connection, ticket_id) and not _sure_odds_ticket(connection, ticket_id):
+    optimized = connection.execute('SELECT 1 FROM sports_ai_high_odds_tickets WHERE ticket_id=?',(ticket_id,)).fetchone()
+    if optimized:
+        from high_odds_service import validate_snapshot
+        if validate_snapshot(connection,ticket_id):
+            raise ValueError('Finalized high-odds ticket no longer passes registration checks')
+    if not optimized and not ticket_is_bookable(connection, ticket_id) and not _high_odds_ticket(connection, ticket_id) and not _sure_odds_ticket(connection, ticket_id):
         raise ValueError('A displayed code is stored only when every leg has a current QUALIFIED decision')
     moment = _now().isoformat()
     expiry = connection.execute(
@@ -566,6 +586,8 @@ FOCUS_MARKET = '''(args) => {
   const family = args.family || '';
   const labels = family === 'handicap'
     ? ['2 Way Handicap', 'Handicap', 'Asian Handicap', 'Spread']
+    : family === 'winner'
+      ? ['Winner (incl. overtime)', 'Winner', 'Match Winner', 'Moneyline']
     : family === 'double'
       ? ['Double Chance']
       : ['O/U', 'Over/Under', 'Goals Over/Under', '2 Way & O/U', '3 Way & O/U'];
@@ -583,8 +605,8 @@ FOCUS_MARKET = '''(args) => {
     return rows[token.length][word.length] <= 2;
   };
   const tokens = value => {
-    const all = fold(value).split(' ').filter(Boolean);
-    const kept = all.filter(token => !skip.has(token) && token.length > 1);
+    const all = fold(value).split(' ').map(token => token.replace(/\\./g, '')).filter(Boolean);
+    const kept = all.filter(token => !skip.has(token) && !/^\\d+$/.test(token));
     return kept.length ? kept : all;
   };
   const present = (blob, token) => blob.split(' ').some(word => near(token, word.replace(/\\./g, '')));
@@ -770,7 +792,7 @@ REVEAL_FIXTURE = '''(args) => {
     if (box.left < 0 || box.width < 36 || box.width > 420 || box.height < 8 || box.height > 64) continue;
     if (!tournament && (box.left > 420 || box.width > 320)) continue;
     const text = labelOf(item);
-    const label = text.split(' ').filter(word => word && !/^\\d+$/.test(word));
+    const label = text.split(' ').filter(Boolean);
     if (!label.length) continue;
     if (!compTokens.includes('srl') && label.includes('srl')) continue;
     if (!compTokens.includes('simulated') && label.includes('simulated')) continue;
@@ -804,17 +826,14 @@ async def _reveal_fixture(page, item):
         'competition': item.get('competition') or '',
     }
     result = await page.evaluate(REVEAL_FIXTURE, payload)
-    for _ in range(3):
+    for _ in range(6):
         if result.get('visible') or result.get('clicked') == 'search' or not result.get('clicked'):
             break
-        clicked = result.get('clicked')
         await page.locator('[data-sports-ai-league="1"]').click()
         await page.wait_for_timeout(1500)
         result = await page.evaluate(REVEAL_FIXTURE, payload)
         if result.get('visible'):
             return result
-        if result.get('clicked') == clicked:
-            break
     if result.get('clicked') == 'search':
         box = page.locator('input[placeholder*="Search" i], input[type="search"]').first
         await box.fill(item.get('home') or '')
@@ -837,7 +856,7 @@ SWITCH_LINE = '''(args) => {
     return rows[token.length][word.length] <= 2;
   };
   const tokens = value => {
-    const all = fold(value).split(' ').filter(Boolean);
+    const all = fold(value).split(' ').map(token => token.replace(/\\./g, '')).filter(Boolean);
     const kept = all.filter(token => !skip.has(token) && !/^\\d+$/.test(token));
     return kept.length ? kept : all;
   };
@@ -887,9 +906,7 @@ PICK_LINE = '''(line) => {
     const distance = box => Math.abs(box.top - anchor.bottom) + Math.abs(box.left - anchor.left);
     return distance(left.getBoundingClientRect()) - distance(right.getBoundingClientRect());
   });
-  const pools = lists.length
-    ? lists.map(list => [...list.querySelectorAll('.af-select-item')])
-    : [[...document.querySelectorAll('.af-select-item')]];
+  const pools = lists.slice(0, 1).map(list => [...list.querySelectorAll('.af-select-item')]);
   for (const pool of pools) {
     const matches = pool.filter(item => {
       const shown = numeric(item.innerText || '');
@@ -898,7 +915,7 @@ PICK_LINE = '''(line) => {
     const node = matches.find(item => {
       const box = item.getBoundingClientRect();
       return box.width > 4 && box.height > 4;
-    }) || matches[0];
+    });
     if (!node) continue;
     node.scrollIntoView({block: 'center', inline: 'nearest'});
     node.setAttribute('data-sports-ai-line-option', '1');
@@ -1006,6 +1023,8 @@ async def _switch_line(page, item):
 async def _focus_market(page, item):
     market = item.get('market') if isinstance(item, dict) else item
     family = _market_family(market)
+    if str(market or '').startswith('MONEYLINE_'):
+        family = 'winner'
     if family == 'result':
         return ''
     payload = {'family': family}
@@ -1031,18 +1050,22 @@ async def prepare_slip(page, selections, book=True, skip_unpriced=False):
     skipped = []
     for index, item in enumerate(selections):
         marker = f'pick-{index}'
-        async def find_price():
+        async def find_price(focus=True):
             family = _market_family(item.get('market'))
             if family != 'result':
-                await _focus_market(page, item)
+                if focus:
+                    await _focus_market(page, item)
                 return await page.evaluate(FIND_LINE, {
                     'home': item['home'], 'away': item['away'], 'odds': float(item['decimal_odds']),
                     'line': item.get('_page_line') or _market_line(item.get('market')),
                     'side': _market_side(item.get('market')), 'marker': marker,
                 })
+            if focus and str(item.get('market') or '').startswith('MONEYLINE_'):
+                await _focus_market(page, item)
             return await page.evaluate(FIND_ODDS, {
                 'home': item['home'], 'away': item['away'], 'selection': item.get('selection') or '',
                 'side': _market_side(item.get('market')), 'marker': marker,
+                'two_way': str(item.get('market') or '').startswith('MONEYLINE_'),
             })
         hits = await find_price()
         revealed = {}
@@ -1051,7 +1074,7 @@ async def prepare_slip(page, selections, book=True, skip_unpriced=False):
             hits = await find_price()
         if hits.get('matched') != 1 and hits.get('line_visible') is False and _market_line(item.get('market')):
             await _switch_line(page, item)
-            hits = await find_price()
+            hits = await find_price(focus=False)
         if hits['matched'] == 1:
             control = await page.evaluate(INSPECT, f'[data-sports-ai-pick="{marker}"]')
             name = (control or {}).get('name') or ''
@@ -1122,10 +1145,16 @@ async def request_displayed_code(page, selections, seen):
 
 
 async def _open_sport(page, sport, page_url=None, reuse=False):
+    sport = 'football' if sport == 'frauenfussball' else sport
     labels = {'football': 'Football', 'basketball': 'Basketball'}
+    if sport not in labels:
+        with connect() as connection:
+            registered=connection.execute('SELECT name FROM sports_ai_sports WHERE code=?',(sport,)).fetchone()
+        if registered: labels[sport]=registered['name']
     if reuse:
         clicked = await page.evaluate(
             '''(label) => {
+              if (!label) return false;
               const link = [...document.querySelectorAll('a')].find(node => (node.innerText || '').trim() === label && node.getBoundingClientRect().width > 0);
               if (!link) return false;
               link.click();
@@ -1138,6 +1167,17 @@ async def _open_sport(page, sport, page_url=None, reuse=False):
             await page.wait_for_selector('.match-row, article', timeout=20000)
             return
     url = page_url or dict(SECTIONS).get(sport)
+    if not url:
+        from urllib.parse import urlsplit, urlunsplit
+        with connect() as connection:
+            source = connection.execute(
+                """SELECT q.source_url FROM sports_ai_odds_snapshots q
+                   JOIN sports_ai_fixtures f ON f.id=q.fixture_id
+                   WHERE f.sport=? AND q.bookmaker='SportyBet' ORDER BY q.observed_at DESC LIMIT 1""", (sport,),
+            ).fetchone()
+        parsed = urlsplit(source['source_url']) if source else None
+        if parsed and parsed.scheme == 'https' and parsed.hostname == 'www.sportybet.com' and parsed.path.startswith('/ng/sport/'):
+            url = urlunsplit(('https', 'www.sportybet.com', '/'.join(parsed.path.split('/')[:4]), '', ''))
     if not url:
         raise RuntimeError('No public page is configured for this sport')
     response = await page.goto(url, wait_until='domcontentloaded', timeout=45000)
@@ -1206,6 +1246,7 @@ async def execute_job(job_id, page_url=None):
     from playwright.async_api import async_playwright
     session_id = None
     with connect() as connection:
+        connection.execute('BEGIN IMMEDIATE')
         job = connection.execute('SELECT * FROM sports_ai_booking_jobs WHERE id=?', (job_id,)).fetchone()
         if not job:
             raise ValueError('Booking job not found')
@@ -1213,8 +1254,25 @@ async def execute_job(job_id, page_url=None):
             return {'id': job_id, 'status': job['status'], 'places_wager': False}
         attempt = int(job['attempt'] or 0) + 1
         if attempt > int(job['max_attempts'] or 3):
+            _set_job(connection,job_id,'FAILED',error='Retry limit reached',reason_code='RETRY_EXHAUSTED')
             return {'id': job_id, 'status': 'FAILED', 'error': 'Retry limit reached', 'places_wager': False}
         selections = json.loads(job['selections_json'])
+        from high_odds_service import validate_snapshot
+        optimized_id = next((item.get('ticket_id') for item in selections if item.get('ticket_id')),None)
+        problems = validate_snapshot(connection,optimized_id) if optimized_id else []
+        if problems:
+            _set_job(connection,job_id,'FAILED',error='; '.join(problems),reason_code='SNAPSHOT_REVALIDATION')
+            return {'id':job_id,'status':'FAILED','error':'; '.join(problems),'places_wager':False}
+        from ticket_diversity import assert_available, TicketExposureConflict
+        linked_id = selections[0].get('ticket_id') if selections else None
+        linked_ticket = connection.execute('SELECT family_id,parameters_json FROM sports_ai_accumulator_tickets WHERE id=?', (linked_id,)).fetchone() if linked_id else None
+        try:
+            if linked_ticket and json.loads(linked_ticket['parameters_json'] or '{}').get('diversity_retired'):
+                raise TicketExposureConflict('This ticket was retired because its matches overlap another active ticket.')
+            assert_available(connection, selections, ignore_family=linked_ticket['family_id'] if linked_ticket else None)
+        except TicketExposureConflict as exc:
+            _set_job(connection, job_id, 'FAILED', error=str(exc), reason_code='FIXTURE_EXPOSURE')
+            return {'id': job_id, 'status': 'FAILED', 'reason_code': 'FIXTURE_EXPOSURE', 'error': str(exc), 'places_wager': False}
         session_id = _open_session(connection, job_id)
         connection.execute(
             """UPDATE sports_ai_booking_jobs
@@ -1223,10 +1281,12 @@ async def execute_job(job_id, page_url=None):
         )
         ticket_id = next((item.get('ticket_id') for item in selections if item.get('ticket_id')), None)
         _log_booking(connection, job_id, 'prepare', 'Opening the public SportyBet page', ticket_id=ticket_id, session_id=session_id, detail={'attempt': attempt})
+    def page_sport(item):
+        return 'football' if item.get('sport') == 'frauenfussball' else item.get('sport')
     sports = []
     for item in selections:
-        if item.get('sport') not in sports:
-            sports.append(item.get('sport'))
+        if page_sport(item) not in sports:
+            sports.append(page_sport(item))
     try:
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=True)
@@ -1239,7 +1299,7 @@ async def execute_job(job_id, page_url=None):
                 flexible = _flexible_high_odds(selections)
                 for index, sport in enumerate(sports):
                     await _open_sport(page, sport, page_url if len(sports) == 1 else None, reuse=index > 0)
-                    group = [item for item in selections if item.get('sport') == sport]
+                    group = [item for item in selections if page_sport(item) == sport]
                     part = await prepare_slip(page, group, book=False, skip_unpriced=flexible)
                     skipped.extend(part.get('skipped') or [])
                     if part['status'] != 'SELECTED':
@@ -1255,6 +1315,8 @@ async def execute_job(job_id, page_url=None):
                             'error': 'SportyBet is not showing enough of these lines to book the ticket.',
                         }
                     else:
+                        from high_odds_service import check_displayed_prices
+                        check_displayed_prices(optimized_id, booked, seen)
                         result = await request_displayed_code(page, booked, seen)
                         result['skipped'] = [item for item in selections if item.get('fixture_id') not in clicked]
                 EVIDENCE.mkdir(parents=True, exist_ok=True)

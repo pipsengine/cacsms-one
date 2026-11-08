@@ -6,8 +6,9 @@ import math
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 
-from sport_support import ANALYSED_SPORTS, GOAL_SPORTS, sql_in
+from sport_support import ANALYSED_SPORTS, GOAL_SPORTS, WINNER_SPORTS, PIPELINE_VERSION, sql_in
 from prediction_math import (
     apply_isotonic,
     apply_sigmoid,
@@ -37,7 +38,7 @@ def upcoming_fixture_sql(alias='f'):
     return (
         f"{alias}.status='scheduled' AND ("
         f"({dated} AND date({alias}.starts_at)>={today})"
-        f" OR (NOT ({dated}) AND {alias}.starts_at>datetime('now'))"
+        f" OR (NOT ({dated}) AND julianday({alias}.starts_at)>julianday('now'))"
         f")"
     )
 
@@ -53,6 +54,7 @@ def upcoming_order_sql(alias='f'):
 
 _SEASON_TEXT = re.compile(r'\b20\d{2}(?:\s*/\s*\d{2,4})?\b')
 _LEAGUE_RULES = (
+    (('liga portugal 2', 'liga portugal ii', 'segunda liga', 'ligapro'), 'portugal-2'),
     (('2 fussball bundesliga', '2 bundesliga', 'bundesliga 2'), 'bundesliga-2'),
     (('1 fussball bundesliga', '1 bundesliga', 'deutsche bundesliga', 'germany bundesliga', 'bundesliga'), 'bundesliga-1'),
     (('efl cup', 'league cup', 'carabao'), 'efl-cup'),
@@ -75,15 +77,50 @@ _LEAGUE_RULES = (
 )
 
 
+@lru_cache(maxsize=20000)
 def league_key(competition):
     """Identity of a league across season labels. Cups stay separate from league seasons."""
-    text = str(competition or '').casefold().replace('ß', 'ss').replace('ü', 'u')
+    import unicodedata
+    text = str(competition or '').casefold().replace('ß', 'ss')
+    text = ''.join(char for char in unicodedata.normalize('NFKD', text) if not unicodedata.combining(char))
     text = _SEASON_TEXT.sub(' ', text)
     text = re.sub(r'[^a-z0-9]+', ' ', text).strip()
+    women = bool(re.search(r'\b(women|woman|ladies|frauen|female)\b', text))
+    age = re.search(r'\b(?:u|under)\s*(\d{2})\b', text)
+    suffix = (':women' if women else '') + (f':u{age.group(1)}' if age else '')
+    defaults = {
+        'bundesliga-1': {'germany', 'german', 'deutsche', '1 fussball', '1'},
+        'bundesliga-2': {'germany', 'german', '2 fussball', '2'},
+        'premier-league': {'england', 'english'}, 'championship': {'england', 'english'},
+        'serie-a': {'italy', 'italian'}, 'la-liga': {'spain', 'spanish'},
+        'ligue-1': {'france', 'french'}, 'primeira': {'portugal', 'portuguese'},
+        'portugal-2': {'portugal', 'portuguese'}, 'eredivisie': {'netherlands', 'dutch'},
+        'eliteserien': {'norway', 'norwegian'}, 'nba': {'usa', 'united states'},
+        'fa-cup': {'england', 'english'}, 'efl-cup': {'england', 'english'},
+        'dfb-pokal': {'germany', 'german'}, 'copa-del-rey': {'spain', 'spanish'},
+        'ucl': {'international clubs uefa', 'europe uefa', 'europe', 'uefa'},
+        'uel': {'international clubs uefa', 'europe uefa', 'europe', 'uefa'},
+        'uecl': {'international clubs uefa', 'europe uefa', 'europe', 'uefa'},
+    }
     for needles, key in _LEAGUE_RULES:
-        if any(needle in text for needle in needles):
-            return key
+        for needle in needles:
+            match = re.search(r'\b' + re.escape(needle) + r'\b', text)
+            if not match:
+                continue
+            prefix = text[:match.start()].strip()
+            # Retain an unfamiliar country/competition prefix. A shared league
+            # label must never join Ghana to England or Serie A to a youth cup.
+            prefix = '' if prefix in defaults.get(key, set()) else prefix
+            trailing = text[match.end():].strip()
+            trailing = re.sub(r'\b(women|woman|ladies|frauen|female|u\s*\d{2}|under\s*\d{2})\b', '', trailing).strip()
+            if trailing:
+                return text
+            return (prefix.replace(' ', '-') + ':' if prefix else '') + key + suffix
     return text
+
+
+def league_family(competition):
+    return next((part for part in league_key(competition).split(':') if part in DOMESTIC_KEYS | EUROPEAN_KEYS), '')
 
 
 _CLUB_PREFIXES = {
@@ -106,6 +143,7 @@ _CHAR_FOLDS = (
 )
 
 
+@lru_cache(maxsize=100000)
 def _team_tokens(name):
     text = str(name or '').casefold()
     for source, target in _CHAR_FOLDS:
@@ -217,7 +255,7 @@ def _final_rows(connection, sport, cutoff, keys):
         (sport,),
     ):
         row = dict(raw)
-        if league_key(row['competition']) not in keys:
+        if league_family(row['competition']) not in keys:
             continue
         try:
             row['_kickoff'] = parse_time(row['starts_at'])
@@ -288,10 +326,12 @@ MODEL_NAMES = {
     'efootball': 'sports-ai-efootball-ensemble',
     'vfootball': 'sports-ai-vfootball-ensemble',
 }
+MODEL_NAMES.update({sport: f'sports-ai-{sport.replace("_", "-")}-winner' for sport in WINNER_SPORTS})
 VERSION = '2'
 MIN_TEAM_GAMES = 3
 MIN_VALIDATION_FIXTURES = 30
 MAX_CONCURRENT_JOBS = 1
+MAX_TRAINING_FIXTURES = 600
 GOAL_FLOOR, GOAL_CEILING = 0.05, 6.5
 POINT_FLOOR, POINT_CEILING = 60.0, 170.0
 FOOTBALL_RIDGE_COLUMNS = (
@@ -322,6 +362,7 @@ FOOTBALL_MARKETS += tuple(
 )
 
 
+@lru_cache(maxsize=100000)
 def parse_time(value):
     result = datetime.fromisoformat(value.replace('Z', '+00:00')) if isinstance(value, str) else value
     if result.tzinfo is None:
@@ -418,6 +459,9 @@ def _stat_number(statistics, metrics, *keys):
 
 def build_features(connection, fixture):
     """Historical rows with kickoff and settlement strictly before the fixture cutoff."""
+    if fixture['sport'] in WINNER_SPORTS:
+        from winner_model import build_winner_features
+        return build_winner_features(connection, fixture)
     cutoff = parse_time(fixture['starts_at'])
     half_life = _half_life_days(connection)
     league_names = competitions_for_league(connection, fixture['sport'], fixture['competition'])
@@ -477,10 +521,10 @@ def build_features(connection, fixture):
         def side_rates(team, games, all_games, venue):
             if len(games) >= MIN_TEAM_GAMES:
                 return all_games, games, history
-            if not history and league_key(fixture['competition']) not in (DOMESTIC_KEYS | EUROPEAN_KEYS):
+            if not history and league_family(fixture['competition']) not in (DOMESTIC_KEYS | EUROPEAN_KEYS):
                 return None, None, None
             pools = [('stored league matches', DOMESTIC_KEYS, True)]
-            if league_key(fixture['competition']) in EUROPEAN_KEYS:
+            if league_family(fixture['competition']) in EUROPEAN_KEYS:
                 pools.insert(0, ('European club matches', EUROPEAN_KEYS, False))
             for label, keys, split_league in pools:
                 rows = _final_rows(connection, fixture['sport'], cutoff, keys)
@@ -654,6 +698,7 @@ def build_features(connection, fixture):
         league_strength = (sum(competition_totals) / len(competition_totals)) / (sum(sport_totals) / len(sport_totals))
 
     features.update({
+        'pipeline_version': PIPELINE_VERSION,
         'home_rest_days': rest(home_all), 'away_rest_days': rest(away_all),
         'home_games': len(home_all), 'away_games': len(away_all),
         'home_games_7d': recent_count(home_all, 7), 'away_games_7d': recent_count(away_all, 7),
@@ -718,6 +763,7 @@ def build_features(connection, fixture):
     missing = sorted(key for key, value in features.items() if value is None)
     present = len(features) - len(missing)
     fingerprint_source = json.dumps({
+        'pipeline_version': PIPELINE_VERSION,
         'ids': [row['id'] for row in history],
         'scores': [[row['home_score'], row['away_score'], row['settled_at']] for row in history],
         'half_life': half_life,
@@ -983,6 +1029,9 @@ def basketball_market(features, market):
 
 
 def market_probability(sport, market, features, rho=0.0, temperature=1.0, dependence=1.0):
+    if sport in WINNER_SPORTS:
+        from winner_model import winner_market
+        return winner_market(market, features, temperature)
     if sport in GOAL_SPORTS:
         return football_market(features, market, rho, temperature, dependence)
     if sport == 'basketball':
@@ -1228,6 +1277,10 @@ def basketball_monte_carlo_market(features, market, draws=2000):
 
 
 def _outcome_probabilities(sport, features, home_score, away_score, rho, family, ridge, booster):
+    if sport in WINNER_SPORTS:
+        if home_score == away_score:
+            return None, None
+        return [features['winner_probability'], 1 - features['winner_probability']], 0 if home_score > away_score else 1
     rates = _family_rates(features, sport, 'baseline' if family == 'monte_carlo' else family, ridge, booster)
     if not rates or rates[0] is None:
         return None, None
@@ -1243,11 +1296,11 @@ def _outcome_probabilities(sport, features, home_score, away_score, rho, family,
         if not settlement:
             return None, None
         probabilities = [settlement['p_win'], max(0.0, 1 - settlement['p_win'] - settlement['p_push'])]
-        actual = int(home_score > away_score)
+        actual = 0 if home_score > away_score else 1
     else:
         home = market_probability('basketball', 'MONEYLINE_HOME', adjusted)
         probabilities = [home['p_win'], 1 - home['p_win']]
-        actual = int(home_score > away_score)
+        actual = 0 if home_score > away_score else 1
     if any(value is None or not math.isfinite(value) or value < 0 for value in probabilities):
         return None, None
     return probabilities, actual
@@ -1268,6 +1321,8 @@ def _mean_logloss(sport, rows, rho, family, ridge, booster):
 
 
 def _fit_structural_models(sport, train_rows):
+    if sport in WINNER_SPORTS:
+        return 0.0, None, None
     tuples = [(row['features'], row['home_score'], row['away_score']) for row in train_rows]
     rho = _fit_dixon_coles_rho(tuples) if sport in GOAL_SPORTS else 0.0
     columns = FOOTBALL_RIDGE_COLUMNS if sport in GOAL_SPORTS else BASKETBALL_RIDGE_COLUMNS
@@ -1310,13 +1365,32 @@ def _walk_forward(sport, observations):
 
 
 def train_model(connection, sport):
+    if sport not in ANALYSED_SPORTS:
+        raise ValueError(f'No outcome definition is registered for {sport}')
+    from analysis_coverage import dataset_signature
+    training_signature = dataset_signature(connection, sport)
     fixtures = [dict(row) for row in connection.execute(
         """SELECT f.*,r.home_score,r.away_score,r.settled_at
            FROM sports_ai_fixtures f JOIN sports_ai_results r ON r.fixture_id=f.id
-           WHERE f.sport=? AND r.status='final' ORDER BY f.starts_at""", (sport,),
+           WHERE f.sport=? AND r.status='final'
+             AND julianday(f.starts_at)<julianday('now') AND julianday(r.settled_at)<=julianday('now')
+           ORDER BY julianday(f.starts_at) DESC""", (sport,),
     )]
+    from feature_reader import FeatureReader
+    reader = FeatureReader(connection)
     observations = []
+    first_settled = connection.execute(
+        """SELECT MIN(julianday(r.settled_at)) FROM sports_ai_fixtures f
+           JOIN sports_ai_results r ON r.fixture_id=f.id WHERE f.sport=? AND r.status='final'""", (sport,),
+    ).fetchone()[0]
     for fixture in fixtures:
+        if sport in WINNER_SPORTS and fixture['home_score'] == fixture['away_score']:
+            continue
+        if sport == 'cricket':
+            winner = json.loads(fixture.get('statistics_json') or '{}').get('match_winner')
+            if winner not in ('home', 'away'):
+                continue
+            fixture['home_score'], fixture['away_score'] = (1, 0) if winner == 'home' else (0, 1)
         try:
             kickoff = parse_time(fixture['starts_at'])
             settled = parse_time(fixture['settled_at'])
@@ -1324,7 +1398,9 @@ def train_model(connection, sport):
             continue
         if settled < kickoff:
             continue
-        built = build_features(connection, fixture)
+        if first_settled is None or kickoff.timestamp() / 86400 + 2440587.5 <= first_settled:
+            continue
+        built = build_features(reader, fixture)
         if not built:
             continue
         observations.append({
@@ -1332,6 +1408,9 @@ def train_model(connection, sport):
             'away_score': fixture['away_score'], 'fixture_id': fixture['id'],
             'kickoff': fixture['starts_at'], 'missing': built['missing'],
         })
+        if len(observations) >= MAX_TRAINING_FIXTURES:
+            break
+    observations.sort(key=lambda row: parse_time(row['kickoff']))
     count = len(observations)
     train_end = int(count * .5) if count >= 40 else int(count * .7)
     calibration_end = int(count * .7)
@@ -1347,11 +1426,11 @@ def train_model(connection, sport):
             continue
         if family == 'monte_carlo' and sport != 'basketball':
             continue
-        loss = _mean_logloss(sport, holdout, rho, family, ridge, booster)
+        loss = _mean_logloss(sport, calibration_rows, rho, family, ridge, booster)
         if loss is not None:
             family_losses[family] = loss
     if not family_losses:
-        family_losses['baseline'] = _mean_logloss(sport, holdout, rho, 'baseline', None, None)
+        family_losses['baseline'] = _mean_logloss(sport, calibration_rows, rho, 'baseline', None, None)
     usable = {name: loss for name, loss in family_losses.items() if loss is not None}
     if usable:
         best_loss = min(usable.values())
@@ -1362,16 +1441,26 @@ def train_model(connection, sport):
         selected_family = min(usable, key=usable.get)
     else:
         ensemble_weights, selected_family = {'baseline': 1.0}, 'baseline'
+    # Deploy the family actually scored on the untouched holdout. Averaging
+    # scoring rates here would create a different, unvalidated predictor.
+    ensemble_weights = {selected_family: 1.0}
+    # Select families on calibration data; the chronological holdout is used
+    # only for the final validation metrics.
+    family_losses = {
+        family: _mean_logloss(sport, holdout, rho, family, ridge, booster)
+        for family in family_losses
+    }
     temperature_rows = calibration_rows or train_rows
+    temperature_samples = [
+        _outcome_probabilities(sport, row['features'], row['home_score'], row['away_score'], rho, 'baseline', None, None)
+        for row in temperature_rows
+    ]
     temperature, best_temperature_loss = 1.0, float('inf')
     for step in range(50, 201, 2):
         candidate = step / 100
         loss = 0.0
         scored = 0
-        for row in temperature_rows:
-            probabilities, actual = _outcome_probabilities(
-                sport, row['features'], row['home_score'], row['away_score'], rho, 'baseline', None, None,
-            )
+        for probabilities, actual in temperature_samples:
             if not probabilities:
                 continue
             calibrated = _temperature(probabilities, candidate)
@@ -1404,6 +1493,7 @@ def train_model(connection, sport):
     metrics = calibration_metrics(samples)
     metrics.update({
         'fixtures_scored': count, 'calibration_fixtures': len(temperature_rows),
+        'available_finals': len(fixtures), 'training_fixture_limit': MAX_TRAINING_FIXTURES,
         'holdout_fixtures': len(holdout),
         'multiclass_log_loss': multiclass_logloss / len(holdout) if holdout else None,
         'family_log_loss': family_losses,
@@ -1429,6 +1519,8 @@ def train_model(connection, sport):
     window = {'start': min(timestamps) if timestamps else None, 'end': max(timestamps) if timestamps else None}
     feature_schema = sorted({key for row in observations for key in row['features']}) if observations else []
     params = {
+        'pipeline_version': PIPELINE_VERSION,
+        'outcome_family': 'winner' if sport in WINNER_SPORTS else 'score',
         'calibration': calibration_method, 'temperature': temperature,
         'sigmoid': sigmoid_model, 'isotonic': isotonic_blocks,
         'fit_partition': 'chronological 50/20/30 when 40 or more fixtures, otherwise 70/30',
@@ -1436,6 +1528,7 @@ def train_model(connection, sport):
         'ensemble_weights': ensemble_weights, 'ridge': ridge,
         'gradient_boosting': booster, 'feature_schema': feature_schema,
     }
+    params['dataset_signature'] = training_signature
     created = datetime.now(timezone.utc).isoformat()
     status = 'validated' if validated else 'insufficient_data'
     artifact = f'sqlite:sports_ai_model_registry:{model_id}'
@@ -1504,23 +1597,8 @@ def ensure_goal_sport_models(connection):
     Tennis, table tennis, volleyball and MMA stay untrained until a winner model
     exists for that sport. Training does not activate a model.
     """
-    trained = []
-    for sport in ('frauenfussball', 'ice_hockey', 'efootball', 'vfootball'):
-        existing = connection.execute(
-            'SELECT id FROM sports_ai_model_registry WHERE sport=? LIMIT 1', (sport,),
-        ).fetchone()
-        if existing:
-            continue
-        finals = connection.execute(
-            """SELECT COUNT(*) FROM sports_ai_fixtures f
-               JOIN sports_ai_results r ON r.fixture_id=f.id
-               WHERE f.sport=? AND r.status='final'""",
-            (sport,),
-        ).fetchone()[0]
-        if finals < MIN_VALIDATION_FIXTURES:
-            continue
-        trained.append(train_model(connection, sport))
-    return trained
+    from analysis_coverage import refresh_models
+    return refresh_models(connection)
 
 
 def normalize_quote_market(sport, fixture, quote):
@@ -1528,12 +1606,16 @@ def normalize_quote_market(sport, fixture, quote):
     home, away = fixture['home'].casefold(), fixture['away'].casefold()
     pick = outcome.casefold()
     if key in ('h2h', 'moneyline'):
+        if sport == 'ice_hockey':
+            return None  # Legacy h2h quotes did not retain regulation/OT scope.
         if pick in ('draw', 'tie'):
             return 'DRAW' if sport in GOAL_SPORTS else None
         if pick in ('home', 'moneyline_home') or pick == home:
             return 'HOME' if sport in GOAL_SPORTS else 'MONEYLINE_HOME'
         if pick in ('away', 'moneyline_away') or pick == away:
             return 'AWAY' if sport in GOAL_SPORTS else 'MONEYLINE_AWAY'
+    if key == 'full_match_winner' and sport in WINNER_SPORTS:
+        return 'MONEYLINE_HOME' if pick == 'home' else 'MONEYLINE_AWAY' if pick == 'away' else None
     if key in ('totals', 'total'):
         match = re.fullmatch(r'(OVER|UNDER)_(-?\d+(?:\.\d+)?)', outcome.upper())
         if match:
@@ -1550,13 +1632,15 @@ def normalize_quote_market(sport, fixture, quote):
         if side:
             return f'{side}_SPREAD_{float(line):g}'
     from sportybet_research import map_market
-    mapped = map_market(sport, quote['market'], quote['outcome'], quote.get('line'))
+    mapped = map_market(sport, quote['market'], quote['outcome'], quote.get('line'), fixture['home'], fixture['away'])
     if mapped.get('supported'):
         return mapped['canonical_market']
     return None
 
 
 def _outcomes(sport, features=None):
+    if sport in WINNER_SPORTS:
+        return ['MONEYLINE_HOME', 'MONEYLINE_AWAY']
     if sport in GOAL_SPORTS:
         markets = list(FOOTBALL_MARKETS)
         for line in ('-1.5', '-1', '-0.75', '-0.5', '-0.25', '0', '0.25', '0.5', '0.75', '1', '1.5'):
@@ -1603,7 +1687,11 @@ def _blend(left, right, weight):
 
 
 def settle_market(sport, market, features, parameters):
+    if sport in WINNER_SPORTS:
+        return dict(features), market_probability(sport, market, features, temperature=float(parameters.get('temperature') or 1.0))
     weights = parameters.get('ensemble_weights') or {'baseline': 1.0}
+    if parameters.get('pipeline_version') == PIPELINE_VERSION and parameters.get('selected_family'):
+        weights = {parameters['selected_family']: 1.0}
     rho = float(parameters.get('dixon_coles_rho') or 0.0)
     home = away = used = 0.0
     for family, weight in weights.items():
@@ -1631,6 +1719,8 @@ def settle_market(sport, market, features, parameters):
 
 
 def _scorelines(sport, features, rho):
+    if sport in WINNER_SPORTS:
+        return []
     if sport in GOAL_SPORTS:
         ranked = sorted(_football_score_grid(features, rho), key=lambda item: item[2], reverse=True)[:8]
         return [{'home_goals': home, 'away_goals': away, 'probability': probability} for home, away, probability in ranked]
@@ -1645,6 +1735,12 @@ def _scorelines(sport, features, rho):
 
 
 def _explain(sport, market, features, settlement, missing):
+    if sport in WINNER_SPORTS:
+        return (
+            f"{market} win probability {settlement['p_win']:.3f} uses this sport's chronological match-winner ratings. "
+            + features['history_basis'],
+            [{'name': 'match_winner_rating', 'home': features['home_rating'], 'away': features['away_rating']}], missing,
+        )
     if sport in GOAL_SPORTS:
         summary = (
             f"{market} probability {settlement['p_win']:.3f} uses opponent-adjusted expected goals "
@@ -1715,11 +1811,24 @@ def rotate_by_league(rows, limit):
     buckets = {}
     for row in rows:
         buckets.setdefault((row['sport'], row['competition']), []).append(row)
+    # Interleave sports, then leagues. Alphabetically early sports must not
+    # consume the entire bounded batch before the next sport gets a turn.
+    sports = sorted({key[0] for key in buckets})
+    ordered = []
+    league_index = 0
+    while True:
+        keys = [sorted((key for key in buckets if key[0] == sport),
+                       key=lambda key: (buckets[key][0].get('last_analysis_attempt') or '', key[1])) for sport in sports]
+        layer = [pool[league_index] for pool in keys if league_index < len(pool)]
+        if not layer:
+            break
+        ordered.extend(layer)
+        league_index += 1
     chosen = []
     index = 0
     while len(chosen) < limit:
         progressed = False
-        for key in sorted(buckets):
+        for key in ordered:
             pool = buckets[key]
             if index < len(pool):
                 chosen.append(pool[index])
@@ -1737,40 +1846,41 @@ def _not_recently_skipped_sql(alias='f'):
     return (
         f"NOT EXISTS (SELECT 1 FROM sports_ai_prediction_jobs j "
         f"WHERE j.idempotency_key='insufficient:' || {alias}.id "
-        f"AND j.finished_at > datetime('now','-45 minutes'))"
+        f"AND julianday(j.finished_at) > julianday('now','-45 minutes')) "
+        f"AND NOT EXISTS (SELECT 1 FROM sports_ai_analysis_coverage a "
+        f"WHERE a.fixture_id={alias}.id AND julianday(a.retry_after)>julianday('now') "
+        f"AND a.pipeline_version='{PIPELINE_VERSION}')"
     )
 
 
 def quoted_coverage_fixtures(connection, now=None, limit=8):
-    """Upcoming fixtures whose league already has stored results, one league at a time.
+    """Fair first attempts and bounded retries across upcoming sports and leagues.
 
     Today's kickoffs are taken before later days. A SportyBet price is not
     required to store the prediction. A price older than the configured window
     stays unqualified.
     """
     current = now or datetime.now(timezone.utc)
-    history = {}
-    for row in connection.execute(
-        f"""SELECT DISTINCT f.sport, f.competition
-           FROM sports_ai_fixtures f
-           JOIN sports_ai_results r ON r.fixture_id=f.id AND r.status='final'
-           WHERE f.sport IN ({sql_in(ANALYSED_SPORTS)})""",
-    ):
-        history.setdefault(row['sport'], set()).add(league_key(row['competition']))
+    current_ids = [row['id'] for row in connection.execute(
+        "SELECT id FROM sports_ai_model_registry WHERE json_extract(parameters_json,'$.pipeline_version')=?",
+        (PIPELINE_VERSION,),
+    )]
+    model_marks = ','.join('?' for _ in current_ids) or 'NULL'
     rows = [dict(row) for row in connection.execute(
-        f"""SELECT f.* FROM sports_ai_fixtures f
+        f"""SELECT f.*,a.attempted_at AS last_analysis_attempt FROM sports_ai_fixtures f
+            LEFT JOIN sports_ai_analysis_coverage a ON a.fixture_id=f.id
             WHERE {upcoming_fixture_sql('f')}
               AND f.sport IN ({sql_in(ANALYSED_SPORTS)})
               AND lower(COALESCE(f.competition,'')) NOT LIKE '%srl%'
               AND lower(COALESCE(f.competition,'')) NOT LIKE '%simulated%'
-              AND NOT EXISTS (SELECT 1 FROM sports_ai_engine_predictions p WHERE p.fixture_id=f.id)
+              AND NOT EXISTS (SELECT 1 FROM sports_ai_engine_predictions p
+                JOIN sports_ai_feature_snapshots s ON s.id=p.feature_id
+                WHERE p.fixture_id=f.id AND p.model_id IN ({model_marks})
+                  AND json_extract(s.features_json,'$.pipeline_version')='{PIPELINE_VERSION}')
               AND {_not_recently_skipped_sql('f')}
-            ORDER BY f.sport, f.competition, {upcoming_order_sql('f')}""",
+            ORDER BY f.sport, f.competition, {upcoming_order_sql('f')}""", current_ids,
     )]
-    covered = [
-        row for row in rows
-        if league_key(row['competition']) in history.get(row['sport'], ())
-    ]
+    covered = rows
     lagos = timezone(timedelta(hours=1))
     today = current.astimezone(lagos).date()
     current_day = []
@@ -1781,9 +1891,14 @@ def quoted_coverage_fixtures(connection, now=None, limit=8):
             current_day.append(row)
         else:
             later.append(row)
-    chosen = rotate_by_league(current_day, max(1, int(limit)))
-    if len(chosen) < limit:
-        chosen.extend(rotate_by_league(later, limit - len(chosen)))
+    chosen = []
+    # Complete a first pass across every league before retrying older gaps.
+    for pool in ([row for row in current_day if not row.get('last_analysis_attempt')],
+                 [row for row in later if not row.get('last_analysis_attempt')],
+                 [row for row in current_day if row.get('last_analysis_attempt')],
+                 [row for row in later if row.get('last_analysis_attempt')]):
+        if len(chosen) < max(1, limit):
+            chosen.extend(rotate_by_league(pool, max(1, limit) - len(chosen)))
     return chosen
 
 
@@ -1791,7 +1906,7 @@ def record_result_gaps(connection, now=None):
     """Name competitions that have an upcoming fixture and no finished score of their own."""
     current = now or datetime.now(timezone.utc)
     finished = {
-        (row['sport'], row['competition'])
+        (row['sport'], league_key(row['competition']))
         for row in connection.execute(
             """SELECT DISTINCT f.sport, f.competition
                FROM sports_ai_fixtures f
@@ -1807,7 +1922,7 @@ def record_result_gaps(connection, now=None):
             ORDER BY f.sport, f.competition""",
     ):
         key = (row['sport'], row['competition'])
-        if key in finished or key in seen:
+        if (row['sport'], league_key(row['competition'])) in finished or key in seen:
             continue
         seen.add(key)
         waiting.append({'sport': row['sport'], 'competition': row['competition']})
@@ -1844,16 +1959,16 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None, cover
         model = connection.execute(
             'SELECT * FROM sports_ai_model_registry WHERE sport=? AND active=1', (sport,),
         ).fetchone()
-        if not model and sport in ('football', 'basketball'):
+        if not model:
             model = connection.execute(
                 'SELECT * FROM sports_ai_model_registry WHERE sport=? ORDER BY created_at DESC LIMIT 1', (sport,),
             ).fetchone()
-        if not model and sport in ('football', 'basketball'):
+        if not model and any(fixture['sport'] == sport for fixture in fixtures):
             train_model(connection, sport)
             model = connection.execute(
                 'SELECT * FROM sports_ai_model_registry WHERE sport=? ORDER BY created_at DESC LIMIT 1', (sport,),
             ).fetchone()
-        if model and (sport in ('football', 'basketball') or model['active']):
+        if model:
             models[sport] = dict(model)
     settings_row = connection.execute(
         "SELECT value_json FROM sports_ai_settings WHERE key='engine'",
@@ -1874,18 +1989,23 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None, cover
     stats = {'predictions': 0, 'opportunities': 0, 'qualified': 0, 'skipped': {}, 'snapshots_reused': 0}
     from market_registry import active_keys
     active_markets = active_keys(connection)
+    from feature_reader import FeatureReader
+    feature_reader = FeatureReader(connection)
     for fixture in fixtures:
+        from analysis_coverage import record_attempt
         if deadline and datetime.now(timezone.utc) > deadline:
             raise TimeoutError('Prediction job exceeded its timeout')
         if fixture['sport'] not in models:
             stats['skipped']['sport_not_modelled'] = stats['skipped'].get('sport_not_modelled', 0) + 1
+            record_attempt(connection, fixture, 'model_refresh_pending', 'This sport is queued for its own model training.')
             continue
         model = models.get(fixture['sport'])
         if not model:
             continue
         try:
-            built = build_features(connection, fixture)
+            built = build_features(feature_reader, fixture)
             if not built:
+                record_attempt(connection, fixture, 'insufficient_history', 'At least three settled prior matches for each team/player in this competition are required.', model['id'])
                 stats['skipped']['insufficient_history'] = stats['skipped'].get('insufficient_history', 0) + 1
                 moment = datetime.now(timezone.utc).isoformat()
                 connection.execute(
@@ -1985,8 +2105,8 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None, cover
                 registry_active = (fixture['sport'], market) in active_markets
                 market_calibrated=(
                     model['active'] and
-                    ((fixture['sport']=='football' and market in ('HOME','DRAW','AWAY'))
-                     or (fixture['sport']=='basketball' and market in ('MONEYLINE_HOME','MONEYLINE_AWAY'))
+                    ((fixture['sport'] in GOAL_SPORTS and market in ('HOME','DRAW','AWAY'))
+                     or (fixture['sport'] in ('basketball',) + WINNER_SPORTS and market in ('MONEYLINE_HOME','MONEYLINE_AWAY'))
                      or registry_active)
                 )
                 prediction_id = str(uuid.uuid4())
@@ -2119,7 +2239,9 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None, cover
                          rank,uncertainty,built['completeness']),
                     )
                     stats['opportunities'] += 1
+            record_attempt(connection, fixture, 'analyzed', 'Inference completed with stored source evidence.', model['id'])
         except (ValueError,TypeError,KeyError,OverflowError) as error:
+            record_attempt(connection, fixture, 'analysis_failed', str(error), model['id'])
             kind = type(error).__name__
             stats['skipped'][kind] = stats['skipped'].get(kind, 0) + 1
         finally:
@@ -2310,7 +2432,7 @@ def rollback_model(connection, model_id):
         (model['sport'], model_id),
     ).fetchone()
     restored = None
-    if previous:
+    if previous and previous['id'] not in set(_governance_state(connection).get('blocked_ids') or []):
         metrics = json.loads(previous['metrics_json'])
         eligible = (
             previous['calibration_status'] == 'validated'
@@ -2560,6 +2682,9 @@ def price_quoted_board(connection, now=None, limit=40):
             continue
         features = json.loads(snapshot['features_json'])
         parameters = json.loads(fixture['parameters_json'] or '{}')
+        if parameters.get('pipeline_version') == PIPELINE_VERSION and features.get('pipeline_version') != PIPELINE_VERSION:
+            summary['rejected'] += 1
+            continue
         quotes = [dict(row) for row in connection.execute(
             """SELECT * FROM sports_ai_odds_snapshots
                WHERE fixture_id=? AND bookmaker='SportyBet' AND observed_at>=?
@@ -2740,7 +2865,7 @@ def reprice_active_batch(connection, actor, audit, limit=20, now=None):
                 calibrated = _temperature(base, temperature)
                 probability = min(1 - 1e-6, max(1e-6, calibrated[markets.index(market)]))
                 settlement = {'p_win': probability, 'p_half_win': 0.0, 'p_push': 0.0, 'p_half_loss': 0.0, 'p_loss': 1 - probability}
-            elif market in ('MONEYLINE_HOME', 'MONEYLINE_AWAY'):
+            elif fixture['sport'] == 'basketball' and market in ('MONEYLINE_HOME', 'MONEYLINE_AWAY'):
                 raw = market_probability('basketball', 'MONEYLINE_HOME', adjusted)['p_win']
                 calibrated = _temperature([raw, 1 - raw], temperature)
                 probability = calibrated[0 if market == 'MONEYLINE_HOME' else 1]

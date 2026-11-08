@@ -6,7 +6,8 @@ import re
 from datetime import datetime, timedelta, timezone
 
 from booking_schedule import WAT, opportunity_week
-from high_odds_board import high_odds_board
+from high_odds_board import sure_odds_board
+from high_odds_service import dashboard as high_odds_dashboard, live_opportunities
 from workflow_status import workflow_board
 from display_policy import DRAW_PROBABILITY, LIVE_LIMIT, LIVE_PROBABILITY, SLIP_PROBABILITY, confidence_from_metrics
 from sport_support import GOAL_SPORTS, sql_in
@@ -102,7 +103,8 @@ def command_view(connection, now=None):
     local = current.astimezone(WAT)
     day_start = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
     week_start, week_end = opportunity_week(current)
-    opportunities = _opportunities(connection, current, week_end)
+    live=live_opportunities(connection,current)
+    opportunities = live['items']
     draws = _draws(connection, week_start.astimezone(timezone.utc), week_end.astimezone(timezone.utc))
     sure_odds_date = f"{local.strftime('%a')}, {local.day} {local.strftime('%b %Y')}"
     draw_count = connection.execute(
@@ -132,16 +134,7 @@ def command_view(connection, now=None):
             online = (current - beat).total_seconds() < 120
         except ValueError:
             online = False
-    qualified_visible = connection.execute(
-        """SELECT COUNT(*) FROM (
-             SELECT d.fixture_id FROM sports_ai_qualification_decisions d
-             JOIN sports_ai_engine_predictions p ON p.id=d.prediction_id
-             JOIN sports_ai_fixtures f ON f.id=d.fixture_id
-             WHERE d.state='QUALIFIED' AND p.probability>? AND f.starts_at>? AND f.starts_at<?
-             GROUP BY d.fixture_id
-           )""",
-        (LIVE_PROBABILITY, current.isoformat(), week_end.astimezone(timezone.utc).isoformat()),
-    ).fetchone()[0]
+    qualified_visible = live['qualified_count']
     qualified_new = connection.execute(
         """SELECT COUNT(*) FROM (
              SELECT d.fixture_id FROM sports_ai_qualification_decisions d
@@ -182,7 +175,8 @@ def command_view(connection, now=None):
     if not stages.get('ODDS_FRESH'):
         alerts.append({'id': 'odds', 'message': 'No SportyBet price is inside 15 minutes.'})
     active_names = [item['name'] for item in sports if item['status'] == 'Active']
-    high_odds = high_odds_board(connection, current)
+    sure_board = sure_odds_board(connection,current)
+    high_odds = high_odds_dashboard(connection,current)
     preview = os.environ.get('SPORTS_LOCAL_PREVIEW', '0') == '1'
     return {
         'environment': 'Development (Preview)' if preview else 'Development',
@@ -190,7 +184,7 @@ def command_view(connection, now=None):
         'updated_at': None if not heartbeat else heartbeat['heartbeat_at'],
         'places_wager': False,
         'kpis': {
-            'qualified': qualified_visible,
+            'qualified': live['qualified_count'],
             'qualified_new': qualified_new,
             'slips': slip_count,
             'codes': centre['counts']['active'],
@@ -202,7 +196,7 @@ def command_view(connection, now=None):
         },
         'opportunities': opportunities,
         'draws': draws,
-        'sure_odds': _sure_tickets(high_odds, current),
+        'sure_odds': _sure_tickets(sure_board, current),
         'sure_odds_date': sure_odds_date,
         'sports': sports,
         'codes': codes,

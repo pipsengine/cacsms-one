@@ -29,6 +29,8 @@ from learning_engine import build_learning_router
 app=FastAPI(title='CACSMS Sports AI module',version='1.0.0')
 router=APIRouter(prefix='/api/sports-ai',tags=['Sports AI'])
 lock=threading.RLock()
+from sport_support import ANALYSED_SPORTS, GOAL_SPORTS, WINNER_SPORTS
+SportCode = Literal[ANALYSED_SPORTS]
 initialize()
 
 def _assert_production_configuration():
@@ -112,7 +114,7 @@ def authorize(request:Request, permission, admin_key=None):
 
 class FixtureIn(BaseModel):
     external_id:str=Field(min_length=1,max_length=160)
-    sport:Literal['football','basketball']
+    sport:SportCode
     competition:str=Field(min_length=1,max_length=200)
     home:str=Field(min_length=1,max_length=200)
     away:str=Field(min_length=1,max_length=200)
@@ -147,7 +149,7 @@ class OddsQuoteIn(BaseModel):
     observed_at:datetime
 
 class TrainingIn(BaseModel):
-    sport:Literal['football','basketball']|None=None
+    sport:SportCode|None=None
 
 def allrows(c,query,args=()):return [dict(x) for x in c.execute(query,args).fetchall()]
 def audit(c,actor,action,details):
@@ -601,8 +603,8 @@ def fixtures(
     fixture_id: str | None = None,
     user=Depends(auth),
 ):
-    if sport and sport not in ('football', 'basketball'):
-        raise HTTPException(422, 'Sport must be football or basketball')
+    if sport and not re.fullmatch(r'[a-z][a-z0-9_]{0,40}', sport):
+        raise HTTPException(422, 'Invalid sport code')
     now = datetime.now(timezone.utc)
     window_sql, window_args, order = _fixture_window(window, now)
     filters, args = [], []
@@ -711,8 +713,8 @@ def fixtures_board(
     analysis: str = 'all',
     user=Depends(auth),
 ):
-    if sport not in ('football', 'basketball'):
-        raise HTTPException(422, 'Sport must be football or basketball')
+    if not re.fullmatch(r'[a-z][a-z0-9_]{0,40}', sport):
+        raise HTTPException(422, 'Invalid sport code')
     if view not in ('upcoming', 'results', 'standings', 'opportunities', 'tickets', 'logs'):
         raise HTTPException(422, 'Unknown fixtures view')
     if analysis not in ('all', 'analysed', 'pending'):
@@ -1041,11 +1043,15 @@ def analysis(user=Depends(auth)):
 
 @router.post('/training/run')
 def training_run(payload:TrainingIn,user=Depends(auth)):
-    sports=[payload.sport] if payload.sport else ['football','basketball']
-    with lock,connect() as c:
-        models=[train_model(c,sport) for sport in sports]
-        audit(c,user,'models.training',{'sports':sports,
-              'model_ids':[model['model_id'] for model in models]})
+    sports=[payload.sport] if payload.sport else list(ANALYSED_SPORTS)
+    models=[]
+    with lock:
+        for sport in sports:
+            with connect() as c:
+                models.append(train_model(c,sport))
+        with connect() as c:
+            audit(c,user,'models.training',{'sports':sports,
+                  'model_ids':[model['model_id'] for model in models]})
     return {'models':models}
 
 @router.get('/models')
@@ -1237,7 +1243,7 @@ def prediction_engine_run(
 
 @router.get('/opportunities')
 def opportunities(
-    sport:Literal['football','basketball']|None=None,
+    sport:SportCode|None=None,
     market:str|None=None,
     status:Literal['under_analysis','awaiting_odds','awaiting_calibration','qualified','rejected','expired','suspended']|None=None,
     bookmaker:str|None=None,
@@ -1365,10 +1371,11 @@ def _prediction_market_sql(market_group, market):
 
 
 def _prediction_filters(sport, market_group, market, team, competition, status, starts_after, starts_before):
-    if sport and sport not in ('football', 'basketball'):
-        raise HTTPException(422, 'Sport must be football or basketball')
+    if sport and not re.fullmatch(r'[a-z][a-z0-9_]{0,40}', sport):
+        raise HTTPException(422, 'Invalid sport code')
     market_sql = _prediction_market_sql(market_group, market)
     filters, args = [upcoming_fixture_sql('f')], []
+    market_sql = f"({market_sql}) AND NOT EXISTS (SELECT 1 FROM sports_ai_settings setting, json_each(json_extract(setting.value_json,'$.blocked_ids')) blocked WHERE setting.key='model_governance' AND blocked.value=p2.model_id)"
     if sport:
         filters.append('f.sport=?')
         args.append(sport)
@@ -1407,7 +1414,7 @@ def _store_prediction_summary(key, sport, market_group):
 
 
 @router.get('/predictions/summary')
-def prediction_summary(sport: Literal['football', 'basketball'], market_group: str | None = None, user=Depends(auth)):
+def prediction_summary(sport: SportCode, market_group: str | None = None, user=Depends(auth)):
     key = (sport, market_group or '')
     with _SUMMARY_LOCK:
         hit = _SUMMARY_CACHE.get(key)
@@ -1432,6 +1439,8 @@ def _build_prediction_summary(sport, market_group):
         if sport == 'basketball'
         else [('result', '1X2 & Double Chance', 'result'), ('goals', 'Goals & BTTS', 'goals'), ('handicap', 'Handicaps', 'handicap')]
     )
+    if sport in WINNER_SPORTS:
+        families = [('moneyline', 'Match winner', 'moneyline')]
     with connect() as c:
         analysed = c.execute(
             f"""SELECT COUNT(*) FROM sports_ai_fixtures f
@@ -1629,11 +1638,7 @@ def predictions(
                 LEFT JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
                 WHERE {where}"""
             total = c.execute(
-                f"""SELECT COUNT(*) FROM sports_ai_fixtures f
-                    WHERE {where} AND EXISTS (
-                      SELECT 1 FROM sports_ai_engine_predictions p2
-                      WHERE p2.fixture_id=f.id AND {market_sql}
-                    )""",
+                f'SELECT COUNT(*) {joined}',
                 args,
             ).fetchone()[0]
             rows = allrows(c, f"""
@@ -1847,7 +1852,7 @@ def analysis_runs(user=Depends(auth)):
 
 @router.get('/engine/predictions')
 def engine_predictions(
-    sport:Literal['football','basketball']|None=None,
+    sport:SportCode|None=None,
     user=Depends(auth),
 ):
     with connect() as c:
@@ -1963,6 +1968,8 @@ def autonomous_control(body:AutonomousControl,request:Request,x_sports_admin_key
 app.include_router(router)
 app.include_router(build_acquisition_router(auth))
 app.include_router(build_accumulator_router(auth, require_admin_key))
+from high_odds_api import build_high_odds_router
+app.include_router(build_high_odds_router(auth, require_admin_key))
 app.include_router(build_operations_router(auth, require_admin_key))
 app.include_router(build_sportybet_router(auth, require_admin_key))
 app.include_router(build_browser_router(auth))

@@ -1,3 +1,4 @@
+import SportOptions from './SportOptions';
 import React from 'react';
 import {get, post} from './api';
 import './sportybet.css';
@@ -125,7 +126,7 @@ export default function SportyBetOperator({tab = 0}) {
       <header><h3>Record a visible quote</h3></header>
       <p className="sbo-note">Use this only for a price you can see in the open SportyBet page. It stays unconfirmed until you approve it.</p>
       <form className="sbo-form" onSubmit={record}>
-        <select value={form.sport} onChange={event => setForm({...form, sport: event.target.value})}><option value="football">Football</option><option value="basketball">Basketball</option></select>
+        <select value={form.sport} onChange={event => setForm({...form, sport: event.target.value})}><SportOptions /></select>
         <input placeholder="Competition" value={form.competition} onChange={event => setForm({...form, competition: event.target.value})}/>
         <input placeholder="Home" required value={form.home} onChange={event => setForm({...form, home: event.target.value})}/>
         <input placeholder="Away" required value={form.away} onChange={event => setForm({...form, away: event.target.value})}/>
@@ -139,7 +140,7 @@ export default function SportyBetOperator({tab = 0}) {
     {(tab === 1 || tab === 2 || tab === 3) && <section className="sbo-card">
       <header><h3>{tab === 3 ? 'Matching and validation' : 'Odds observations'}</h3></header>
       <div className="sbo-filters">
-        <select value={sport} onChange={event => { setSport(event.target.value); setPage(1); }}><option value="">All sports</option><option value="football">Football</option><option value="basketball">Basketball</option></select>
+        <select value={sport} onChange={event => { setSport(event.target.value); setPage(1); }}><SportOptions emptyLabel="All sports" /></select>
         <select value={confirmation} onChange={event => { setConfirmation(event.target.value); setPage(1); }}><option value="">Any confirmation</option><option value="proposed">Proposed</option><option value="confirmed">Confirmed</option><option value="rejected">Rejected</option></select>
       </div>
       <div className="sbo-table-wrap"><table className="sbo-table"><thead><tr><th>Fixture</th><th>Market</th><th>Odds</th><th>Confirmation</th><th>Match</th><th>Value</th></tr></thead><tbody>

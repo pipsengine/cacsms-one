@@ -208,6 +208,10 @@ class AcquisitionEngineTests(unittest.TestCase):
         self.assertEqual(batch['fixtures'][0]['home_score'],3)
         self.assertEqual(batch['fixtures'][0]['away_score'],1)
         self.assertEqual(batch['fixtures'][0]['status'],'finished')
+        import acquisition
+        with patch.object(acquisition,'_request',return_value=(json.dumps(payload).encode(),{})):
+            legacy,_=acquisition._openligadb({'league':'bl1','season':2026},'openligadb')
+        self.assertEqual(legacy[0]['result'],(3,1))
 
     def test_openligadb_does_not_store_a_score_before_the_match_is_finished(self):
         provider=self._provider(config={'league':'DEL2','season':2026})
@@ -224,6 +228,10 @@ class AcquisitionEngineTests(unittest.TestCase):
         self.assertIsNone(batch['fixtures'][0].get('home_score'))
         self.assertIsNone(batch['fixtures'][0].get('away_score'))
         self.assertEqual(batch['fixtures'][0]['status'],'scheduled')
+        import acquisition
+        with patch.object(acquisition,'_request',return_value=(json.dumps(payload).encode(),{})):
+            legacy,_=acquisition._openligadb({'league':'DEL2','season':2026},'openligadb')
+        self.assertNotIn('result',legacy[0])
 
     def test_openfootball_normalizes_both_documented_score_shapes(self):
         provider=self._provider(provider_key='test-openfootball')

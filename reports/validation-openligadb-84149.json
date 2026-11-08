@@ -1,0 +1,70 @@
+{
+  "matchID": 84149,
+  "matchDateTime": "2026-10-23T19:30:00",
+  "timeZoneID": "W. Europe Standard Time",
+  "leagueId": 5962,
+  "leagueName": "DEL2 Hauptrunde",
+  "leagueSeason": 2026,
+  "leagueShortcut": "DEL2",
+  "matchDateTimeUTC": "2026-10-23T17:30:00Z",
+  "group": {
+    "groupName": "11. Spieltag",
+    "groupOrderID": 11,
+    "groupID": 52239
+  },
+  "team1": {
+    "teamId": 332,
+    "teamName": "Dresdner Eisl\u00f6wen",
+    "shortName": "Dresdner",
+    "teamIconUrl": "https://upload.wikimedia.org/wikipedia/en/2/20/Dresdner_Eisl%C3%B6wen_logo.png",
+    "teamGroupName": null,
+    "tla": null,
+    "wikidataId": null
+  },
+  "team2": {
+    "teamId": 6449,
+    "teamName": "Starbulls Rosenheim",
+    "shortName": "SBR",
+    "teamIconUrl": "https://assets.holema.de/core/image/GIYTEXZRGAYF6X3FMYZWMOBW",
+    "teamGroupName": null,
+    "tla": null,
+    "wikidataId": null
+  },
+  "lastUpdateDateTime": "2026-10-25T18:51:13.617",
+  "matchIsFinished": false,
+  "matchResults": [
+    {
+      "resultID": 130390,
+      "resultName": "1.Drittel",
+      "pointsTeam1": 0,
+      "pointsTeam2": 0,
+      "resultOrderID": 1,
+      "resultTypeID": 1,
+      "resultTypeKind": "HalfTime",
+      "resultDescription": "Ergebnis nach Ende der ersten Halbzeit"
+    },
+    {
+      "resultID": 130391,
+      "resultName": "2.Drittel",
+      "pointsTeam1": 0,
+      "pointsTeam2": 0,
+      "resultOrderID": 2,
+      "resultTypeID": 1,
+      "resultTypeKind": "HalfTime",
+      "resultDescription": "Ergebnis nach Ende der zweiten Halbzeit"
+    },
+    {
+      "resultID": 130392,
+      "resultName": "3.Drittel",
+      "pointsTeam1": 0,
+      "pointsTeam2": 0,
+      "resultOrderID": 3,
+      "resultTypeID": 2,
+      "resultTypeKind": "After90Minutes",
+      "resultDescription": "Ergebnis nach Ende der offiziellen Spielzeit"
+    }
+  ],
+  "goals": [],
+  "location": null,
+  "numberOfViewers": null
+}

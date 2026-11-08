@@ -1,0 +1,7292 @@
+{
+  "leagues": [
+    {
+      "sport": "americanfootball",
+      "competition": "USA NCAA, Regular Season",
+      "league_key": "usa ncaa regular season",
+      "fixtures": 16,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 16
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "americanfootball",
+      "competition": "USA NFL",
+      "league_key": "usa nfl",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 10
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "badminton",
+      "competition": "International Korea Open, Doubles",
+      "league_key": "international korea open doubles",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "badminton",
+      "competition": "International Korea Open, Mixed Doubles",
+      "league_key": "international korea open mixed doubles",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "badminton",
+      "competition": "International Korea Open, Singles",
+      "league_key": "international korea open singles",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "badminton",
+      "competition": "International Korea Open, Women, Doubles",
+      "league_key": "international korea open women doubles",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "badminton",
+      "competition": "International Korea Open, Women, Singles",
+      "league_key": "international korea open women singles",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "badminton",
+      "competition": "International Norwegian International, MS",
+      "league_key": "international norwegian international ms",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "baseball",
+      "competition": "Republic of Korea KBO League",
+      "league_key": "republic of korea kbo league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "baseball",
+      "competition": "Venezuela LVBP",
+      "league_key": "venezuela lvbp",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "insufficient_history": 1
+      },
+      "final_results": 7
+    },
+    {
+      "sport": "basketball",
+      "competition": "Argentina LNB",
+      "league_key": "argentina lnb",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Argentina Liga Argentina",
+      "league_key": "argentina liga argentina",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Argentina Liga Femenina, Women",
+      "league_key": "argentina liga femenina women",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "insufficient_history": 1,
+        "queued": 1
+      },
+      "final_results": 34
+    },
+    {
+      "sport": "basketball",
+      "competition": "Australia NBL",
+      "league_key": "australia nbl",
+      "fixtures": 2,
+      "analyzed": 1,
+      "reasons": {
+        "insufficient_history": 1,
+        "research_prediction": 1
+      },
+      "final_results": 21
+    },
+    {
+      "sport": "basketball",
+      "competition": "Australia WNBL",
+      "league_key": "australia wnbl",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Austria Zweite Liga",
+      "league_key": "austria zweite liga",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "insufficient_history": 3
+      },
+      "final_results": 17
+    },
+    {
+      "sport": "basketball",
+      "competition": "Bahrain Premier League",
+      "league_key": "bahrain:premier-league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "insufficient_history": 1
+      },
+      "final_results": 11
+    },
+    {
+      "sport": "basketball",
+      "competition": "Belgium Belgium Championship Women",
+      "league_key": "belgium-belgium:championship:women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Bosnia and Herzegovina 1st Division",
+      "league_key": "bosnia and herzegovina 1st division",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Brazil NBB",
+      "league_key": "brazil nbb",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 46
+    },
+    {
+      "sport": "basketball",
+      "competition": "Bulgaria NBL",
+      "league_key": "bulgaria nbl",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 20
+    },
+    {
+      "sport": "basketball",
+      "competition": "Chinese Taipei TPBL",
+      "league_key": "chinese taipei tpbl",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Croatia Premijer Liga, Women",
+      "league_key": "croatia premijer liga women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 14
+    },
+    {
+      "sport": "basketball",
+      "competition": "Croatia Premijer liga",
+      "league_key": "croatia premijer liga",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 15
+    },
+    {
+      "sport": "basketball",
+      "competition": "Cyprus Division A",
+      "league_key": "cyprus division a",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 13
+    },
+    {
+      "sport": "basketball",
+      "competition": "Czechia 1. Liga",
+      "league_key": "czechia 1 liga",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Czechia NBL",
+      "league_key": "czechia nbl",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Denmark Basketligaen",
+      "league_key": "denmark basketligaen",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 17
+    },
+    {
+      "sport": "basketball",
+      "competition": "England SLB",
+      "league_key": "england slb",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 2
+    },
+    {
+      "sport": "basketball",
+      "competition": "Finland 1 Division",
+      "league_key": "finland 1 division",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Finland 1. Division B",
+      "league_key": "finland 1 division b",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Finland Korisliiga",
+      "league_key": "finland korisliiga",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 26
+    },
+    {
+      "sport": "basketball",
+      "competition": "Finland Korisliiga, Women",
+      "league_key": "finland korisliiga women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 10
+    },
+    {
+      "sport": "basketball",
+      "competition": "France LNB Elite",
+      "league_key": "france lnb elite",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Georgia Superleague",
+      "league_key": "georgia superleague",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 12
+    },
+    {
+      "sport": "basketball",
+      "competition": "Germany BBL",
+      "league_key": "germany bbl",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 22
+    },
+    {
+      "sport": "basketball",
+      "competition": "Germany Pro A",
+      "league_key": "germany pro a",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 23
+    },
+    {
+      "sport": "basketball",
+      "competition": "Germany Pro B",
+      "league_key": "germany pro b",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Greece Basketball League",
+      "league_key": "greece basketball league",
+      "fixtures": 9,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 9
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Hungary NB I. A",
+      "league_key": "hungary nb i a",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 26
+    },
+    {
+      "sport": "basketball",
+      "competition": "Iceland Iceland First Division",
+      "league_key": "iceland iceland first division",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Iceland Urvalsdeild",
+      "league_key": "iceland urvalsdeild",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 1
+    },
+    {
+      "sport": "basketball",
+      "competition": "International BNXT League",
+      "league_key": "international bnxt league",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "International Estonian-Latvian League",
+      "league_key": "international estonian latvian league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "International Eurocup",
+      "league_key": "international eurocup",
+      "fixtures": 8,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 8
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "International Euroleague",
+      "league_key": "international euroleague",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 5
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "International Liga ABA",
+      "league_key": "international liga aba",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "International United League",
+      "league_key": "international united league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Israel Super League",
+      "league_key": "israel super league",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 15
+    },
+    {
+      "sport": "basketball",
+      "competition": "Italy Serie A",
+      "league_key": "serie-a",
+      "fixtures": 7,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 7
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Italy Serie A2",
+      "league_key": "italy serie a2",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 5
+      },
+      "final_results": 34
+    },
+    {
+      "sport": "basketball",
+      "competition": "Italy Serie B",
+      "league_key": "italy serie b",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 10
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Japan B League One",
+      "league_key": "japan b league one",
+      "fixtures": 10,
+      "analyzed": 1,
+      "reasons": {
+        "queued": 9,
+        "research_prediction": 1
+      },
+      "final_results": 66
+    },
+    {
+      "sport": "basketball",
+      "competition": "Japan B League Premier",
+      "league_key": "japan b league premier",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 68
+    },
+    {
+      "sport": "basketball",
+      "competition": "Japan W League Premier",
+      "league_key": "japan w league premier",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Lebanon First Division",
+      "league_key": "lebanon first division",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Lithuania LKL",
+      "league_key": "lithuania lkl",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 14
+    },
+    {
+      "sport": "basketball",
+      "competition": "Lithuania NKL",
+      "league_key": "lithuania nkl",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 53
+    },
+    {
+      "sport": "basketball",
+      "competition": "NBA 2027",
+      "league_key": "nba",
+      "fixtures": 1063,
+      "analyzed": 1,
+      "reasons": {
+        "research_prediction": 1,
+        "queued": 1062
+      },
+      "final_results": 258
+    },
+    {
+      "sport": "basketball",
+      "competition": "New Zealand National Basketball League, Women",
+      "league_key": "new zealand national basketball league women",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Norway BLNO",
+      "league_key": "norway blno",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 15
+    },
+    {
+      "sport": "basketball",
+      "competition": "Poland 1. Liga",
+      "league_key": "poland 1 liga",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 19
+    },
+    {
+      "sport": "basketball",
+      "competition": "Poland PLK",
+      "league_key": "poland plk",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Portugal LPB",
+      "league_key": "portugal lpb",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 16
+    },
+    {
+      "sport": "basketball",
+      "competition": "Portugal Proliga",
+      "league_key": "portugal proliga",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 22
+    },
+    {
+      "sport": "basketball",
+      "competition": "Puerto Rico BSNF, Women",
+      "league_key": "puerto rico bsnf women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Republic of Korea KBL",
+      "league_key": "republic of korea kbl",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Republic of Korea WKBL",
+      "league_key": "republic of korea wkbl",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Romania Liga Nationala",
+      "league_key": "romania liga nationala",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Serbia KLS",
+      "league_key": "serbia kls",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Spain Liga ACB",
+      "league_key": "spain liga acb",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 6
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Spain Primera FEB",
+      "league_key": "spain primera feb",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 23
+    },
+    {
+      "sport": "basketball",
+      "competition": "Spain Segunda FEB",
+      "league_key": "spain segunda feb",
+      "fixtures": 7,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 7
+      },
+      "final_results": 31
+    },
+    {
+      "sport": "basketball",
+      "competition": "Sweden SBL",
+      "league_key": "sweden sbl",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Sweden Superettan",
+      "league_key": "sweden superettan",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 22
+    },
+    {
+      "sport": "basketball",
+      "competition": "Switzerland NLB",
+      "league_key": "switzerland nlb",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Switzerland SB League",
+      "league_key": "switzerland sb league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 14
+    },
+    {
+      "sport": "basketball",
+      "competition": "Turkiye Super Lig",
+      "league_key": "turkiye super lig",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Turkiye TBL",
+      "league_key": "turkiye tbl",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Turkiye TKBL, Women",
+      "league_key": "turkiye tkbl women",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "USA NCAA, Regular Season",
+      "league_key": "usa ncaa regular season",
+      "fixtures": 17,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 17
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "basketball",
+      "competition": "Uruguay LUB",
+      "league_key": "uruguay lub",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "boxing",
+      "competition": "International International Matchups",
+      "league_key": "international international matchups",
+      "fixtures": 11,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 11
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "counterstrike",
+      "competition": "BLAST Blast Premier Series",
+      "league_key": "blast blast premier series",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "counterstrike",
+      "competition": "ESL Intel Extreme Masters China",
+      "league_key": "esl intel extreme masters china",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "counterstrike",
+      "competition": "European Pro League European Pro League Series",
+      "league_key": "european pro league european pro league series",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "counterstrike",
+      "competition": "United21 United21",
+      "league_key": "united21 united21",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "cricket",
+      "competition": "Australia Big Bash League, Women",
+      "league_key": "australia big bash league women",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "cricket",
+      "competition": "Hong Kong, China Hong Kong Premier League",
+      "league_key": "hong-kong-china-hong-kong:premier-league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "cricket",
+      "competition": "International ODI Series Australia vs England",
+      "league_key": "international odi series australia vs england",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "cricket",
+      "competition": "International ODI Series New Zealand vs India",
+      "league_key": "international odi series new zealand vs india",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "cricket",
+      "competition": "International Test Series Pakistan vs Sri Lanka",
+      "league_key": "international test series pakistan vs sri lanka",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "cricket",
+      "competition": "International Victoria T20 Series, Women",
+      "league_key": "international victoria t20 series women",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "cricket",
+      "competition": "International Youth U19 Asia Cup",
+      "league_key": "international youth u19 asia cup",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "cricket",
+      "competition": "Nepal Nepal Premier League",
+      "league_key": "nepal-nepal:premier-league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "cricket",
+      "competition": "Simulated Reality League Big Bash League SRL",
+      "league_key": "simulated reality league big bash league srl",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "cricket",
+      "competition": "Simulated Reality League Caribbean Premier League SRL",
+      "league_key": "simulated reality league caribbean premier league srl",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "cricket",
+      "competition": "Simulated Reality League Pakistan Super League SRL",
+      "league_key": "simulated reality league pakistan super league srl",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "cricket",
+      "competition": "Simulated Reality League Premier League SRL",
+      "league_key": "simulated reality league premier league srl",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "cricket",
+      "competition": "Simulated Reality League SA T20 League SRL",
+      "league_key": "simulated reality league sa t20 league srl",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "cricket",
+      "competition": "Simulated Reality League Super Smash SRL",
+      "league_key": "simulated reality league super smash srl",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "cricket",
+      "competition": "Simulated Reality League T20 International SRL",
+      "league_key": "simulated reality league t20 international srl",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "cricket",
+      "competition": "South Africa T20 Series Division Two South Africa, Women",
+      "league_key": "south africa t20 series division two south africa women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "cricket",
+      "competition": "South Africa T20 Series South Africa, Women",
+      "league_key": "south africa t20 series south africa women",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "cricket",
+      "competition": "South Africa T20 South Africa Cup",
+      "league_key": "south africa t20 south africa cup",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "cricket",
+      "competition": "United Arab Emirates Abu Dhabi T10",
+      "league_key": "united arab emirates abu dhabi t10",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "cricket",
+      "competition": "Zimbabwe Pro50 Championship",
+      "league_key": "zimbabwe-pro50:championship",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "darts",
+      "competition": "International ADC Global Championship",
+      "league_key": "international-adc-global:championship",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "darts",
+      "competition": "International Modus Super Series",
+      "league_key": "international modus super series",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 10
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "ebasketball",
+      "competition": "ESportsBattle ESportsBattle E-Basketball (format 4x5 mins, OT-3 mins)",
+      "league_key": "esportsbattle esportsbattle e basketball format 4x5 mins ot 3 mins",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 5
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "ebasketball",
+      "competition": "ESportsBattle ESportsBattle E-Basketball European Conference (format 4x5 mins, OT-3 mins)",
+      "league_key": "esportsbattle esportsbattle e basketball european conference format 4x5 mins ot 3 mins",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "ebasketball",
+      "competition": "NextGen eBasket eBasket NBA League",
+      "league_key": "nextgen ebasket ebasket nba league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "efootball",
+      "competition": "EA Sports FC Esoccer H2H GG League",
+      "league_key": "ea sports fc esoccer h2h gg league",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "efootball",
+      "competition": "ESportsBattle Bundesliga",
+      "league_key": "esportsbattle:bundesliga-1",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 10
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "efootball",
+      "competition": "ESportsBattle Champions League A",
+      "league_key": "esportsbattle champions league a",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 6
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "efootball",
+      "competition": "ESportsBattle Champions League B",
+      "league_key": "esportsbattle champions league b",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "efootball",
+      "competition": "ESportsBattle Europa League",
+      "league_key": "esportsbattle:uel",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 10
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "efootball",
+      "competition": "ESportsBattle LaLiga 2x6",
+      "league_key": "esportsbattle laliga 2x6",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "efootball",
+      "competition": "ESportsBattle MLS",
+      "league_key": "esportsbattle mls",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "efootball",
+      "competition": "ESportsBattle Premier League 2x6",
+      "league_key": "esportsbattle premier league 2x6",
+      "fixtures": 9,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 9
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "efootball",
+      "competition": "ESportsBattle Volta Champions League A",
+      "league_key": "esportsbattle volta champions league a",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "efootball",
+      "competition": "ESportsBattle Volta FA Cup",
+      "league_key": "esportsbattle-volta:fa-cup",
+      "fixtures": 8,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 8
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "efootball",
+      "competition": "ESportsBattle Volta International A",
+      "league_key": "esportsbattle volta international a",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "efootball",
+      "competition": "ESportsBattle Volta World Cup C",
+      "league_key": "esportsbattle volta world cup c",
+      "fixtures": 8,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 8
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "efootball",
+      "competition": "ESportsBattle World Cup A",
+      "league_key": "esportsbattle world cup a",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "efootball",
+      "competition": "GT Sports League GT Leagues",
+      "league_key": "gt sports league gt leagues",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 6
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "efootball",
+      "competition": "Virtual E\u0421omp Asian Champions League (Virtual eComp)",
+      "league_key": "virtual e omp asian champions league virtual ecomp",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 10
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "efootball",
+      "competition": "Virtual E\u0421omp CONMEBOL Libertadores (Virtual eComp)",
+      "league_key": "virtual e omp conmebol libertadores virtual ecomp",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "efootball",
+      "competition": "Virtual E\u0421omp Champions League (Virtual eComp)",
+      "league_key": "virtual e omp champions league virtual ecomp",
+      "fixtures": 8,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 8
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "efootball",
+      "competition": "Virtual E\u0421omp International (Virtual eComp)",
+      "league_key": "virtual e omp international virtual ecomp",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 5
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "efootball",
+      "competition": "Virtual E\u0421omp La Liga (Virtual eComp)",
+      "league_key": "virtual e omp la liga virtual ecomp",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 10
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "efootball",
+      "competition": "eAdriatic League eAdriatic League",
+      "league_key": "eadriatic league eadriatic league",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "1. Fu\u00dfball-Bundesliga 2026/2027",
+      "league_key": "bundesliga-1",
+      "fixtures": 257,
+      "analyzed": 4,
+      "reasons": {
+        "analyzed": 5,
+        "queued": 252
+      },
+      "final_results": 1237
+    },
+    {
+      "sport": "football",
+      "competition": "2. Fu\u00dfball-Bundesliga 2026/2027",
+      "league_key": "bundesliga-2",
+      "fixtures": 210,
+      "analyzed": 1,
+      "reasons": {
+        "analyzed": 3,
+        "queued": 207
+      },
+      "final_results": 803
+    },
+    {
+      "sport": "football",
+      "competition": "Albania Kategoria Superiore",
+      "league_key": "albania kategoria superiore",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Albania Kategoria e Pare",
+      "league_key": "albania kategoria e pare",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "insufficient_history": 1
+      },
+      "final_results": 13
+    },
+    {
+      "sport": "football",
+      "competition": "Algeria Ligue 1",
+      "league_key": "algeria:ligue-1",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "insufficient_history": 1,
+        "queued": 4
+      },
+      "final_results": 5
+    },
+    {
+      "sport": "football",
+      "competition": "Andorra Primera Divisio",
+      "league_key": "andorra primera divisio",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 2
+    },
+    {
+      "sport": "football",
+      "competition": "Angola Girabola",
+      "league_key": "angola girabola",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 11
+    },
+    {
+      "sport": "football",
+      "competition": "Argentina Copa Argentina",
+      "league_key": "argentina copa argentina",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Argentina Primera LPF",
+      "league_key": "argentina primera lpf",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 1
+    },
+    {
+      "sport": "football",
+      "competition": "Argentina Primera Nacional",
+      "league_key": "argentina primera nacional",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 5
+      },
+      "final_results": 14
+    },
+    {
+      "sport": "football",
+      "competition": "Argentina Torneo Federal A",
+      "league_key": "argentina torneo federal a",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Armenia Premier League",
+      "league_key": "armenia:premier-league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 10
+    },
+    {
+      "sport": "football",
+      "competition": "Australia A-League",
+      "league_key": "australia a league",
+      "fixtures": 7,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 7
+      },
+      "final_results": 9
+    },
+    {
+      "sport": "football",
+      "competition": "Australia Australian Championship",
+      "league_key": "australia-australian:championship",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 7
+    },
+    {
+      "sport": "football",
+      "competition": "Austria 2. Liga",
+      "league_key": "austria 2 liga",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 10
+    },
+    {
+      "sport": "football",
+      "competition": "Austria Amateur Burgenlandliga",
+      "league_key": "austria amateur burgenlandliga",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Austria Amateur Regionalliga West",
+      "league_key": "austria amateur regionalliga west",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Austria Amateur Salzburger Liga",
+      "league_key": "austria amateur salzburger liga",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Austria Amateur Wiener Stadtliga",
+      "league_key": "austria amateur wiener stadtliga",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Austria Bundesliga",
+      "league_key": "austria:bundesliga-1",
+      "fixtures": 9,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 9
+      },
+      "final_results": 7
+    },
+    {
+      "sport": "football",
+      "competition": "Azerbaijan Premier League",
+      "league_key": "azerbaijan:premier-league",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 6
+    },
+    {
+      "sport": "football",
+      "competition": "Belarus Vysshaya Liga",
+      "league_key": "belarus vysshaya liga",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 11
+    },
+    {
+      "sport": "football",
+      "competition": "Belgium Challenger Pro League",
+      "league_key": "belgium challenger pro league",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 10
+    },
+    {
+      "sport": "football",
+      "competition": "Belgium Nationale 1 ACFF",
+      "league_key": "belgium nationale 1 acff",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Belgium Nationale 1 VV",
+      "league_key": "belgium nationale 1 vv",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Belgium Pro League",
+      "league_key": "belgium pro league",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Bolivia Division Profesional",
+      "league_key": "bolivia division profesional",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 10
+    },
+    {
+      "sport": "football",
+      "competition": "Bosnia and Herzegovina Premijer Liga",
+      "league_key": "bosnia and herzegovina premijer liga",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Bosnia and Herzegovina Prva Liga, Fed BiH",
+      "league_key": "bosnia and herzegovina prva liga fed bih",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Brazil Brasileiro Serie A",
+      "league_key": "brazil-brasileiro:serie-a",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 10
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Brazil Brasileiro Serie B",
+      "league_key": "brazil brasileiro serie b",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 6
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Brazil Carioca, Serie B2",
+      "league_key": "brazil carioca serie b2",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Brazil Copa Parana",
+      "league_key": "brazil copa parana",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 1
+    },
+    {
+      "sport": "football",
+      "competition": "Brazil Copa Santa Catarina",
+      "league_key": "brazil copa santa catarina",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 4
+    },
+    {
+      "sport": "football",
+      "competition": "Brazil Copa do Brasil",
+      "league_key": "brazil copa do brasil",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 2
+    },
+    {
+      "sport": "football",
+      "competition": "Brazil Mineiro, Segunda Divisao",
+      "league_key": "brazil mineiro segunda divisao",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Brazil Pernambucano",
+      "league_key": "brazil pernambucano",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 20
+    },
+    {
+      "sport": "football",
+      "competition": "Brazil Sergipano, Serie A2",
+      "league_key": "brazil sergipano serie a2",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Brazil U20 Paulista",
+      "league_key": "brazil u20 paulista",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Bulgaria Parva Liga",
+      "league_key": "bulgaria parva liga",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Bulgaria Vtora Liga",
+      "league_key": "bulgaria vtora liga",
+      "fixtures": 9,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 9
+      },
+      "final_results": 7
+    },
+    {
+      "sport": "football",
+      "competition": "Cambodia Cambodian Premier League",
+      "league_key": "cambodia-cambodian:premier-league",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Cameroon Elite One",
+      "league_key": "cameroon elite one",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 9
+    },
+    {
+      "sport": "football",
+      "competition": "Chile Primera Division",
+      "league_key": "chile primera division",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 6
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Chile Segunda Division",
+      "league_key": "chile segunda division",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 4
+    },
+    {
+      "sport": "football",
+      "competition": "China China League 2",
+      "league_key": "china china league 2",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "China Chinese Super League",
+      "league_key": "china chinese super league",
+      "fixtures": 8,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 8
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Colombia Copa DIMAYOR",
+      "league_key": "colombia copa dimayor",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Colombia Liga DIMAYOR",
+      "league_key": "colombia liga dimayor",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 6
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Costa Rica Liga de Ascenso",
+      "league_key": "costa rica liga de ascenso",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 9
+    },
+    {
+      "sport": "football",
+      "competition": "Costa Rica Primera Division",
+      "league_key": "costa rica primera division",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 5
+      },
+      "final_results": 7
+    },
+    {
+      "sport": "football",
+      "competition": "Croatia HNL",
+      "league_key": "croatia hnl",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 4
+    },
+    {
+      "sport": "football",
+      "competition": "Croatia Prva NL",
+      "league_key": "croatia prva nl",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 8
+    },
+    {
+      "sport": "football",
+      "competition": "Cyprus 1st Division",
+      "league_key": "cyprus 1st division",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Cyprus 2nd Division",
+      "league_key": "cyprus 2nd division",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Czechia 1. Liga",
+      "league_key": "czechia 1 liga",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Czechia CFL",
+      "league_key": "czechia cfl",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 6
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Czechia Divize A",
+      "league_key": "czechia divize a",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Czechia Divize B",
+      "league_key": "czechia divize b",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Czechia Divize C",
+      "league_key": "czechia divize c",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Czechia Divize D",
+      "league_key": "czechia divize d",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Czechia Divize E",
+      "league_key": "czechia divize e",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Czechia Divize F",
+      "league_key": "czechia divize f",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Czechia FNL",
+      "league_key": "czechia fnl",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Czechia MSFL",
+      "league_key": "czechia msfl",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Czechia U19 1. Liga",
+      "league_key": "czechia u19 1 liga",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "DFB Pokal 2026/2027",
+      "league_key": "dfb-pokal",
+      "fixtures": 11,
+      "analyzed": 2,
+      "reasons": {
+        "analyzed": 2,
+        "queued": 9
+      },
+      "final_results": 182
+    },
+    {
+      "sport": "football",
+      "competition": "Denmark 1. Division",
+      "league_key": "denmark 1 division",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Denmark 2nd Division",
+      "league_key": "denmark 2nd division",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 8
+    },
+    {
+      "sport": "football",
+      "competition": "Denmark Superliga",
+      "league_key": "denmark superliga",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 8
+    },
+    {
+      "sport": "football",
+      "competition": "Ecuador LigaPro Primera A",
+      "league_key": "ecuador ligapro primera a",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 6
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Egypt Egypt Cup",
+      "league_key": "egypt egypt cup",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 9
+    },
+    {
+      "sport": "football",
+      "competition": "El Salvador Primera Division",
+      "league_key": "el salvador primera division",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 5
+    },
+    {
+      "sport": "football",
+      "competition": "England EFL Cup",
+      "league_key": "efl-cup",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 71
+    },
+    {
+      "sport": "football",
+      "competition": "England EFL Trophy",
+      "league_key": "england efl trophy",
+      "fixtures": 19,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 19
+      },
+      "final_results": 4
+    },
+    {
+      "sport": "football",
+      "competition": "England FA Cup",
+      "league_key": "fa-cup",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 5
+      },
+      "final_results": 28
+    },
+    {
+      "sport": "football",
+      "competition": "England League One",
+      "league_key": "england league one",
+      "fixtures": 7,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 7
+      },
+      "final_results": 158
+    },
+    {
+      "sport": "football",
+      "competition": "England League Two",
+      "league_key": "england league two",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 10
+      },
+      "final_results": 165
+    },
+    {
+      "sport": "football",
+      "competition": "England National League",
+      "league_key": "england national league",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 10
+      },
+      "final_results": 190
+    },
+    {
+      "sport": "football",
+      "competition": "English Championship 2026/27",
+      "league_key": "championship",
+      "fixtures": 372,
+      "analyzed": 1,
+      "reasons": {
+        "analyzed": 1,
+        "queued": 371
+      },
+      "final_results": 1389
+    },
+    {
+      "sport": "football",
+      "competition": "English Premier League 2026/27",
+      "league_key": "premier-league",
+      "fixtures": 282,
+      "analyzed": 2,
+      "reasons": {
+        "analyzed": 2,
+        "queued": 280
+      },
+      "final_results": 905
+    },
+    {
+      "sport": "football",
+      "competition": "Estonia Esiliiga",
+      "league_key": "estonia esiliiga",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 4
+    },
+    {
+      "sport": "football",
+      "competition": "Estonia Esiliiga B",
+      "league_key": "estonia esiliiga b",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 6
+    },
+    {
+      "sport": "football",
+      "competition": "Finland Veikkausliiga",
+      "league_key": "finland veikkausliiga",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 3
+    },
+    {
+      "sport": "football",
+      "competition": "France National 1",
+      "league_key": "france national 1",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "France U19 National",
+      "league_key": "france u19 national",
+      "fixtures": 9,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 9
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "French Ligue 1 2026/27",
+      "league_key": "ligue-1",
+      "fixtures": 227,
+      "analyzed": 2,
+      "reasons": {
+        "queued": 225,
+        "analyzed": 2
+      },
+      "final_results": 740
+    },
+    {
+      "sport": "football",
+      "competition": "Georgia Erovnuli Liga",
+      "league_key": "georgia erovnuli liga",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Germany 3. Liga",
+      "league_key": "germany 3 liga",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 17
+    },
+    {
+      "sport": "football",
+      "competition": "Germany Amateur Regionalliga Bavaria",
+      "league_key": "germany amateur regionalliga bavaria",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Germany Amateur Regionalliga North",
+      "league_key": "germany amateur regionalliga north",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Germany Amateur Regionalliga Northeast",
+      "league_key": "germany amateur regionalliga northeast",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Ghana Premier League",
+      "league_key": "ghana:premier-league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 8
+    },
+    {
+      "sport": "football",
+      "competition": "Greece Gamma Ethniki",
+      "league_key": "greece gamma ethniki",
+      "fixtures": 16,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 16
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Greece Greece Cup",
+      "league_key": "greece greece cup",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Greece Super League",
+      "league_key": "greece super league",
+      "fixtures": 12,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 12
+      },
+      "final_results": 9
+    },
+    {
+      "sport": "football",
+      "competition": "Greece Super League 2",
+      "league_key": "greece super league 2",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 6
+      },
+      "final_results": 8
+    },
+    {
+      "sport": "football",
+      "competition": "Greece U19 Super League",
+      "league_key": "greece u19 super league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Guatemala Liga Nacional",
+      "league_key": "guatemala liga nacional",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 14
+    },
+    {
+      "sport": "football",
+      "competition": "Honduras Liga Nacional",
+      "league_key": "honduras liga nacional",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 10
+    },
+    {
+      "sport": "football",
+      "competition": "Hong Kong, China 1. Division",
+      "league_key": "hong kong china 1 division",
+      "fixtures": 7,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 7
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Hong Kong, China Premier League",
+      "league_key": "hong-kong-china:premier-league",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Hungary NB I",
+      "league_key": "hungary nb i",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 7
+    },
+    {
+      "sport": "football",
+      "competition": "Hungary NB II",
+      "league_key": "hungary nb ii",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 8
+    },
+    {
+      "sport": "football",
+      "competition": "Hungary NB III",
+      "league_key": "hungary nb iii",
+      "fixtures": 9,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 9
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "India Bangalore Super Division",
+      "league_key": "india bangalore super division",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Indonesia Championship",
+      "league_key": "indonesia:championship",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 5
+      },
+      "final_results": 10
+    },
+    {
+      "sport": "football",
+      "competition": "Indonesia Super League",
+      "league_key": "indonesia super league",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 17
+    },
+    {
+      "sport": "football",
+      "competition": "International Clubs CAF Super Cup",
+      "league_key": "international clubs caf super cup",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "International Clubs CONMEBOL Libertadores",
+      "league_key": "international clubs conmebol libertadores",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "International Clubs CONMEBOL Sudamericana",
+      "league_key": "international clubs conmebol sudamericana",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "International Clubs UEFA Champions League",
+      "league_key": "ucl",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 10
+      },
+      "final_results": 8
+    },
+    {
+      "sport": "football",
+      "competition": "International Clubs UEFA Europa League",
+      "league_key": "uel",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 10
+      },
+      "final_results": 10
+    },
+    {
+      "sport": "football",
+      "competition": "International Int. Friendly Games",
+      "league_key": "international int friendly games",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "International SAFF Championship",
+      "league_key": "international-saff:championship",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "International UEFA Nations League",
+      "league_key": "international-uefa:nations",
+      "fixtures": 26,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 26
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Iran Azadegan League",
+      "league_key": "iran azadegan league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 9
+    },
+    {
+      "sport": "football",
+      "competition": "Iran Pro League",
+      "league_key": "iran pro league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Iraq Stars League",
+      "league_key": "iraq stars league",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 12
+    },
+    {
+      "sport": "football",
+      "competition": "Ireland FAI Cup",
+      "league_key": "ireland fai cup",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Ireland Leinster Senior League, Senior Division",
+      "league_key": "ireland leinster senior league senior division",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Israel Liga Alef",
+      "league_key": "israel liga alef",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Israel National League",
+      "league_key": "israel national league",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Israel Premier League",
+      "league_key": "israel:premier-league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Italian Serie A 2026/27",
+      "league_key": "serie-a",
+      "fixtures": 276,
+      "analyzed": 2,
+      "reasons": {
+        "queued": 274,
+        "analyzed": 2
+      },
+      "final_results": 905
+    },
+    {
+      "sport": "football",
+      "competition": "Italy Serie B",
+      "league_key": "italy serie b",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 13
+    },
+    {
+      "sport": "football",
+      "competition": "Italy Serie C, Group A",
+      "league_key": "italy serie c group a",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 5
+      },
+      "final_results": 12
+    },
+    {
+      "sport": "football",
+      "competition": "Italy Serie C, Group B",
+      "league_key": "italy serie c group b",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 6
+      },
+      "final_results": 13
+    },
+    {
+      "sport": "football",
+      "competition": "Italy Serie C, Group C",
+      "league_key": "italy serie c group c",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 5
+      },
+      "final_results": 13
+    },
+    {
+      "sport": "football",
+      "competition": "Italy Serie D, Group A",
+      "league_key": "italy serie d group a",
+      "fixtures": 8,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 8
+      },
+      "final_results": 6
+    },
+    {
+      "sport": "football",
+      "competition": "Italy Serie D, Group B",
+      "league_key": "italy serie d group b",
+      "fixtures": 8,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 8
+      },
+      "final_results": 11
+    },
+    {
+      "sport": "football",
+      "competition": "Italy Serie D, Group C",
+      "league_key": "italy serie d group c",
+      "fixtures": 9,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 9
+      },
+      "final_results": 3
+    },
+    {
+      "sport": "football",
+      "competition": "Italy Serie D, Group D",
+      "league_key": "italy serie d group d",
+      "fixtures": 9,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 9
+      },
+      "final_results": 9
+    },
+    {
+      "sport": "football",
+      "competition": "Italy Serie D, Group E",
+      "league_key": "italy serie d group e",
+      "fixtures": 8,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 8
+      },
+      "final_results": 11
+    },
+    {
+      "sport": "football",
+      "competition": "Italy Serie D, Group F",
+      "league_key": "italy serie d group f",
+      "fixtures": 9,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 9
+      },
+      "final_results": 8
+    },
+    {
+      "sport": "football",
+      "competition": "Italy Serie D, Group G",
+      "league_key": "italy serie d group g",
+      "fixtures": 9,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 9
+      },
+      "final_results": 7
+    },
+    {
+      "sport": "football",
+      "competition": "Italy Serie D, Group H",
+      "league_key": "italy serie d group h",
+      "fixtures": 9,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 9
+      },
+      "final_results": 8
+    },
+    {
+      "sport": "football",
+      "competition": "Italy Serie D, Group I",
+      "league_key": "italy serie d group i",
+      "fixtures": 9,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 9
+      },
+      "final_results": 10
+    },
+    {
+      "sport": "football",
+      "competition": "Ivory Coast Ligue 1",
+      "league_key": "ivory-coast:ligue-1",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 7
+    },
+    {
+      "sport": "football",
+      "competition": "Jamaica Premier League",
+      "league_key": "jamaica:premier-league",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 9
+    },
+    {
+      "sport": "football",
+      "competition": "Japan J1 League",
+      "league_key": "japan j1 league",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 17
+    },
+    {
+      "sport": "football",
+      "competition": "Japan J2 League",
+      "league_key": "japan j2 league",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 5
+      },
+      "final_results": 20
+    },
+    {
+      "sport": "football",
+      "competition": "Japan J3 League",
+      "league_key": "japan j3 league",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 26
+    },
+    {
+      "sport": "football",
+      "competition": "Japan Japan Football League",
+      "league_key": "japan japan football league",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Jordan Jordan League",
+      "league_key": "jordan jordan league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Kenya Premier League",
+      "league_key": "kenya:premier-league",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 10
+      },
+      "final_results": 14
+    },
+    {
+      "sport": "football",
+      "competition": "Kosovo Superliga",
+      "league_key": "kosovo superliga",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 5
+    },
+    {
+      "sport": "football",
+      "competition": "Kuwait Premier League",
+      "league_key": "kuwait:premier-league",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 6
+    },
+    {
+      "sport": "football",
+      "competition": "Latvia Virsliga",
+      "league_key": "latvia virsliga",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 5
+      },
+      "final_results": 3
+    },
+    {
+      "sport": "football",
+      "competition": "Lebanon Premier League",
+      "league_key": "lebanon:premier-league",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 5
+    },
+    {
+      "sport": "football",
+      "competition": "Lithuania TOPLYGA",
+      "league_key": "lithuania toplyga",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 5
+    },
+    {
+      "sport": "football",
+      "competition": "Luxembourg Coupe de Luxembourg",
+      "league_key": "luxembourg coupe de luxembourg",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Malaysia FA Cup",
+      "league_key": "malaysia:fa-cup",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 1
+    },
+    {
+      "sport": "football",
+      "competition": "Mali Ligue 1",
+      "league_key": "mali:ligue-1",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Malta Challenge League",
+      "league_key": "malta challenge league",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 6
+    },
+    {
+      "sport": "football",
+      "competition": "Malta Premier League",
+      "league_key": "malta:premier-league",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 4
+    },
+    {
+      "sport": "football",
+      "competition": "Mexico Liga MX",
+      "league_key": "mexico liga mx",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 11
+    },
+    {
+      "sport": "football",
+      "competition": "Mexico Liga Premier Serie A",
+      "league_key": "mexico-liga-premier:serie-a",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 14
+    },
+    {
+      "sport": "football",
+      "competition": "Mexico Liga Primera Premier",
+      "league_key": "mexico liga primera premier",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Mexico Liga de Expansion MX",
+      "league_key": "mexico liga de expansion mx",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 9
+    },
+    {
+      "sport": "football",
+      "competition": "Mexico U21 Liga MX",
+      "league_key": "mexico u21 liga mx",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Moldova Super Liga",
+      "league_key": "moldova super liga",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 6
+    },
+    {
+      "sport": "football",
+      "competition": "Montenegro 1. CFL",
+      "league_key": "montenegro 1 cfl",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Montenegro 2. CFL",
+      "league_key": "montenegro 2 cfl",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Morocco Botola Pro D1",
+      "league_key": "morocco botola pro d1",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Morocco Botola Pro D2",
+      "league_key": "morocco botola pro d2",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Netherlands Derde Divisie",
+      "league_key": "netherlands derde divisie",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 5
+      },
+      "final_results": 17
+    },
+    {
+      "sport": "football",
+      "competition": "Netherlands Eerste Divisie",
+      "league_key": "netherlands eerste divisie",
+      "fixtures": 7,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 7
+      },
+      "final_results": 7
+    },
+    {
+      "sport": "football",
+      "competition": "Netherlands Eredivisie 2026/27",
+      "league_key": "eredivisie",
+      "fixtures": 208,
+      "analyzed": 2,
+      "reasons": {
+        "queued": 206,
+        "analyzed": 2
+      },
+      "final_results": 776
+    },
+    {
+      "sport": "football",
+      "competition": "New Zealand National League",
+      "league_key": "new zealand national league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 6
+    },
+    {
+      "sport": "football",
+      "competition": "Nicaragua Liga de Ascenso",
+      "league_key": "nicaragua liga de ascenso",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Nigeria Premier League",
+      "league_key": "nigeria:premier-league",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "North Macedonia 1. MFL",
+      "league_key": "north macedonia 1 mfl",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 6
+    },
+    {
+      "sport": "football",
+      "competition": "Northern Ireland Premiership",
+      "league_key": "northern ireland premiership",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 6
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Norway 1st Division",
+      "league_key": "norway 1st division",
+      "fixtures": 8,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 8
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Norway Eliteserien",
+      "league_key": "eliteserien",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 6
+      },
+      "final_results": 202
+    },
+    {
+      "sport": "football",
+      "competition": "Panama Liga Panamena",
+      "league_key": "panama liga panamena",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Paraguay Division de Honor",
+      "league_key": "paraguay division de honor",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Peru Liga 1",
+      "league_key": "peru liga 1",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 17
+    },
+    {
+      "sport": "football",
+      "competition": "Peru Liga Femenina",
+      "league_key": "peru liga femenina",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Philippines Philippines Footb. League",
+      "league_key": "philippines philippines footb league",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Poland 1. Liga",
+      "league_key": "poland 1 liga",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Poland CLJ",
+      "league_key": "poland clj",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 5
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Poland Ekstraklasa",
+      "league_key": "poland ekstraklasa",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 15
+    },
+    {
+      "sport": "football",
+      "competition": "Poland II Liga",
+      "league_key": "poland ii liga",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Poland III Liga, Group 1",
+      "league_key": "poland iii liga group 1",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Poland III Liga, Group 3",
+      "league_key": "poland iii liga group 3",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Poland III Liga, Group 4",
+      "league_key": "poland iii liga group 4",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Portugal Campeonato de Portugal",
+      "league_key": "portugal campeonato de portugal",
+      "fixtures": 26,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 26
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Portugal Liga Portugal",
+      "league_key": "primeira",
+      "fixtures": 2,
+      "analyzed": 1,
+      "reasons": {
+        "analyzed": 1,
+        "queued": 1
+      },
+      "final_results": 93
+    },
+    {
+      "sport": "football",
+      "competition": "Portugal Liga Portugal 2",
+      "league_key": "portugal-2",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4,
+        "insufficient_history": 1
+      },
+      "final_results": 11
+    },
+    {
+      "sport": "football",
+      "competition": "Portugal Liga Portugal 3",
+      "league_key": "portugal liga portugal 3",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Portugal U19 Campeonato Nacional",
+      "league_key": "portugal u19 campeonato nacional",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Portugal U23 Liga Next Gen",
+      "league_key": "portugal u23 liga next gen",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Portuguese Primeira Liga 2026/27",
+      "league_key": "portuguese primeira liga",
+      "fixtures": 212,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 212
+      },
+      "final_results": 674
+    },
+    {
+      "sport": "football",
+      "competition": "Qatar Stars League",
+      "league_key": "qatar stars league",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Republic of Korea K-League 1",
+      "league_key": "republic of korea k league 1",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Republic of Korea K-League 2",
+      "league_key": "republic of korea k league 2",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Republic of Korea K4 League",
+      "league_key": "republic of korea k4 league",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 6
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Romania Liga 2",
+      "league_key": "romania liga 2",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 17
+    },
+    {
+      "sport": "football",
+      "competition": "Romania Superliga",
+      "league_key": "romania superliga",
+      "fixtures": 11,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 11
+      },
+      "final_results": 9
+    },
+    {
+      "sport": "football",
+      "competition": "Russia 1. Liga",
+      "league_key": "russia 1 liga",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 6
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Russia 2. Liga, Division A",
+      "league_key": "russia 2 liga division a",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 5
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Russia 2. Liga, Division B, Promotion Playoffs",
+      "league_key": "russia 2 liga division b promotion playoffs",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Russia Premier League",
+      "league_key": "russia:premier-league",
+      "fixtures": 12,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 12
+      },
+      "final_results": 10
+    },
+    {
+      "sport": "football",
+      "competition": "Russia Russian Cup",
+      "league_key": "russia russian cup",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 6
+      },
+      "final_results": 7
+    },
+    {
+      "sport": "football",
+      "competition": "Rwanda Premier League",
+      "league_key": "rwanda:premier-league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 10
+    },
+    {
+      "sport": "football",
+      "competition": "Saint Kitts and Nevis Premier League",
+      "league_key": "saint-kitts-and-nevis:premier-league",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "San Marino Campionato Sammarinese",
+      "league_key": "san marino campionato sammarinese",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 7
+    },
+    {
+      "sport": "football",
+      "competition": "Saudi Arabia Division 1",
+      "league_key": "saudi arabia division 1",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 10
+    },
+    {
+      "sport": "football",
+      "competition": "Saudi Arabia Second Division",
+      "league_key": "saudi arabia second division",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Scotland Championship",
+      "league_key": "scotland:championship",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 6
+    },
+    {
+      "sport": "football",
+      "competition": "Scotland League 1",
+      "league_key": "scotland league 1",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 5
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Scotland League 2",
+      "league_key": "scotland league 2",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 5
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Scotland League Cup",
+      "league_key": "scotland:efl-cup",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 1
+    },
+    {
+      "sport": "football",
+      "competition": "Scotland Premiership",
+      "league_key": "scotland premiership",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 10
+      },
+      "final_results": 8
+    },
+    {
+      "sport": "football",
+      "competition": "Senegal Ligue 1",
+      "league_key": "senegal:ligue-1",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 5
+    },
+    {
+      "sport": "football",
+      "competition": "Serbia Prva Liga",
+      "league_key": "serbia prva liga",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 5
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Serbia Superliga",
+      "league_key": "serbia superliga",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Simulated Reality League Bundesliga SRL",
+      "league_key": "simulated reality league bundesliga srl",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Simulated Reality League China Super League SRL",
+      "league_key": "simulated reality league china super league srl",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Simulated Reality League Eredivisie SRL",
+      "league_key": "simulated reality league eredivisie srl",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Simulated Reality League K-League 1 SRL",
+      "league_key": "simulated reality league k league 1 srl",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Simulated Reality League LaLiga SRL",
+      "league_key": "simulated reality league laliga srl",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Simulated Reality League Ligue 1 SRL",
+      "league_key": "simulated reality league ligue 1 srl",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Simulated Reality League Premier League SRL",
+      "league_key": "simulated reality league premier league srl",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Simulated Reality League Serie A SRL",
+      "league_key": "simulated reality league serie a srl",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Simulated Reality League Turkey Super Lig SRL",
+      "league_key": "simulated reality league turkey super lig srl",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Slovakia 2. Liga",
+      "league_key": "slovakia 2 liga",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 11
+    },
+    {
+      "sport": "football",
+      "competition": "Slovakia 3. Liga",
+      "league_key": "slovakia 3 liga",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Slovakia Superliga",
+      "league_key": "slovakia superliga",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Slovenia 2. Liga",
+      "league_key": "slovenia 2 liga",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Slovenia 3. SNL",
+      "league_key": "slovenia 3 snl",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Slovenia PrvaLiga",
+      "league_key": "slovenia prvaliga",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "South Africa Diski Challenge, Reserves",
+      "league_key": "south africa diski challenge reserves",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "South Africa Knockout Cup",
+      "league_key": "south africa knockout cup",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Amateur Tercera Federacion, Group 1",
+      "league_key": "spain amateur tercera federacion group 1",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Amateur Tercera Federacion, Group 10",
+      "league_key": "spain amateur tercera federacion group 10",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Amateur Tercera Federacion, Group 11",
+      "league_key": "spain amateur tercera federacion group 11",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Amateur Tercera Federacion, Group 12",
+      "league_key": "spain amateur tercera federacion group 12",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Amateur Tercera Federacion, Group 13",
+      "league_key": "spain amateur tercera federacion group 13",
+      "fixtures": 7,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 7
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Amateur Tercera Federacion, Group 14",
+      "league_key": "spain amateur tercera federacion group 14",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Amateur Tercera Federacion, Group 15",
+      "league_key": "spain amateur tercera federacion group 15",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Amateur Tercera Federacion, Group 16",
+      "league_key": "spain amateur tercera federacion group 16",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Amateur Tercera Federacion, Group 17",
+      "league_key": "spain amateur tercera federacion group 17",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Amateur Tercera Federacion, Group 18",
+      "league_key": "spain amateur tercera federacion group 18",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Amateur Tercera Federacion, Group 2",
+      "league_key": "spain amateur tercera federacion group 2",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 6
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Amateur Tercera Federacion, Group 3",
+      "league_key": "spain amateur tercera federacion group 3",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Amateur Tercera Federacion, Group 4",
+      "league_key": "spain amateur tercera federacion group 4",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Amateur Tercera Federacion, Group 5",
+      "league_key": "spain amateur tercera federacion group 5",
+      "fixtures": 7,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 7
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Amateur Tercera Federacion, Group 6",
+      "league_key": "spain amateur tercera federacion group 6",
+      "fixtures": 7,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 7
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Amateur Tercera Federacion, Group 7",
+      "league_key": "spain amateur tercera federacion group 7",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 6
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Amateur Tercera Federacion, Group 8",
+      "league_key": "spain amateur tercera federacion group 8",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Amateur Tercera Federacion, Group 9",
+      "league_key": "spain amateur tercera federacion group 9",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Copa del Rey",
+      "league_key": "copa-del-rey",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 6
+      },
+      "final_results": 58
+    },
+    {
+      "sport": "football",
+      "competition": "Spain LaLiga",
+      "league_key": "la-liga",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 114
+    },
+    {
+      "sport": "football",
+      "competition": "Spain LaLiga 2",
+      "league_key": "spain laliga 2",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 10
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Primera Divisi\u00f3n 2026/27",
+      "league_key": "spain primera division",
+      "fixtures": 270,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 270
+      },
+      "final_results": 819
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Primera Federacion",
+      "league_key": "spain primera federacion",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 10
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain Segunda Federacion",
+      "league_key": "spain segunda federacion",
+      "fixtures": 17,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 17
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Spain U19 Division de Honor Juvenil",
+      "league_key": "spain u19 division de honor juvenil",
+      "fixtures": 11,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 11
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Sweden Allsvenskan",
+      "league_key": "sweden allsvenskan",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 5
+      },
+      "final_results": 9
+    },
+    {
+      "sport": "football",
+      "competition": "Sweden Damallsvenskan",
+      "league_key": "sweden damallsvenskan",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Sweden Division 2",
+      "league_key": "sweden division 2",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Sweden Ettan",
+      "league_key": "sweden ettan",
+      "fixtures": 8,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 8
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Switzerland 1. Liga Classic",
+      "league_key": "switzerland 1 liga classic",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Switzerland Challenge League",
+      "league_key": "switzerland challenge league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 4
+    },
+    {
+      "sport": "football",
+      "competition": "Switzerland Promotion League",
+      "league_key": "switzerland promotion league",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 16
+    },
+    {
+      "sport": "football",
+      "competition": "Switzerland Super League",
+      "league_key": "switzerland super league",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 6
+    },
+    {
+      "sport": "football",
+      "competition": "Thailand Thai League 1",
+      "league_key": "thailand thai league 1",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 7
+    },
+    {
+      "sport": "football",
+      "competition": "Thailand Thai League 2",
+      "league_key": "thailand thai league 2",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 11
+    },
+    {
+      "sport": "football",
+      "competition": "Tunisia Ligue 1",
+      "league_key": "tunisia:ligue-1",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Tunisia Ligue 2",
+      "league_key": "tunisia ligue 2",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 6
+      },
+      "final_results": 20
+    },
+    {
+      "sport": "football",
+      "competition": "Turkiye 1. Lig",
+      "league_key": "turkiye 1 lig",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Turkiye Amateur 2. Lig",
+      "league_key": "turkiye amateur 2 lig",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 10
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Turkiye Super Lig",
+      "league_key": "turkiye super lig",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "USA MLS",
+      "league_key": "usa mls",
+      "fixtures": 7,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 7
+      },
+      "final_results": 25
+    },
+    {
+      "sport": "football",
+      "competition": "USA MLS Next Pro",
+      "league_key": "usa mls next pro",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 2
+    },
+    {
+      "sport": "football",
+      "competition": "USA National Womens Soccer League",
+      "league_key": "usa national womens soccer league",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "USA USL Championship",
+      "league_key": "usa-usl:championship",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 12
+    },
+    {
+      "sport": "football",
+      "competition": "USA USL League One",
+      "league_key": "usa usl league one",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 5
+    },
+    {
+      "sport": "football",
+      "competition": "Ukraine Persha Liga",
+      "league_key": "ukraine persha liga",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 11
+    },
+    {
+      "sport": "football",
+      "competition": "Ukraine Premier League",
+      "league_key": "ukraine:premier-league",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 7
+    },
+    {
+      "sport": "football",
+      "competition": "United Arab Emirates Arabian Gulf League",
+      "league_key": "united arab emirates arabian gulf league",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "United Arab Emirates First Division",
+      "league_key": "united arab emirates first division",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "United Arab Emirates U23 Pro League",
+      "league_key": "united arab emirates u23 pro league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Uruguay Primera Division",
+      "league_key": "uruguay primera division",
+      "fixtures": 8,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 8
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Uzbekistan Superliga",
+      "league_key": "uzbekistan superliga",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Venezuela Primera Division",
+      "league_key": "venezuela primera division",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Venezuela Segunda Division",
+      "league_key": "venezuela segunda division",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "football",
+      "competition": "Vietnam V-League 1",
+      "league_key": "vietnam v league 1",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 10
+    },
+    {
+      "sport": "football",
+      "competition": "Vietnam V-League 2",
+      "league_key": "vietnam v league 2",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 9
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Australia A-League, Women",
+      "league_key": "australia a league women",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 6
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Brazil Copa do Brasil, Women",
+      "league_key": "brazil copa do brasil women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "insufficient_history": 1
+      },
+      "final_results": 1
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Chile Primera Division, Women",
+      "league_key": "chile primera division women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Czechia 1. Liga, Women",
+      "league_key": "czechia 1 liga women",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Denmark A Liga, Women",
+      "league_key": "denmark a liga women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "insufficient_history": 1
+      },
+      "final_results": 7
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Denmark B Liga, Women",
+      "league_key": "denmark b liga women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "insufficient_history": 1
+      },
+      "final_results": 6
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "England Amateur FA Cup, Women",
+      "league_key": "england-amateur:fa-cup:women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "England Amateur Super League 2, Women",
+      "league_key": "england amateur super league 2 women",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 6
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "England Amateur Super League Women",
+      "league_key": "england amateur super league women",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 6
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "France Seconde Ligue, Women",
+      "league_key": "france seconde ligue women",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 5
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Germany Amateur Women Bundesliga",
+      "league_key": "germany-amateur-women:bundesliga-1:women",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Greece Super League, Women",
+      "league_key": "greece super league women",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Hungary NB I, Women",
+      "league_key": "hungary nb i women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 6
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "International Clubs CAF Champions League, Women",
+      "league_key": "international-clubs-caf:ucl:women",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "International Clubs UEFA Champions League Women",
+      "league_key": "ucl:women",
+      "fixtures": 9,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 9
+      },
+      "final_results": 4
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Italy Serie A, Women",
+      "league_key": "serie-a:women",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "insufficient_history": 1,
+        "queued": 2
+      },
+      "final_results": 5
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Italy Serie B, Women",
+      "league_key": "italy serie b women",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 6
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Japan WE League, Women",
+      "league_key": "japan we league women",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 9
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "New Zealand National League, Women",
+      "league_key": "new zealand national league women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 6
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Poland Ekstraliga, Women",
+      "league_key": "poland ekstraliga women",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 4
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Portugal II Divisao, Women",
+      "league_key": "portugal ii divisao women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Romania Superliga, Women",
+      "league_key": "romania superliga women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 8
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Scotland Premier League 2, Women",
+      "league_key": "scotland premier league 2 women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Scotland Premier League, Women",
+      "league_key": "scotland:premier-league:women",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 5
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Spain Primera Division Women",
+      "league_key": "spain primera division women",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Spain Primera Federacion, Women",
+      "league_key": "spain primera federacion women",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3,
+        "insufficient_history": 1
+      },
+      "final_results": 2
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Sweden Amateur Elitettan, Women",
+      "league_key": "sweden amateur elitettan women",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Switzerland Super League, Women",
+      "league_key": "switzerland super league women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 4
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "USA USL Super League, Women",
+      "league_key": "usa usl super league women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 5
+    },
+    {
+      "sport": "frauenfussball",
+      "competition": "Uruguay Primera Division, Women",
+      "league_key": "uruguay primera division women",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "futsal",
+      "competition": "International FIFA Futsal World Cup Qualification, UEFA",
+      "league_key": "international fifa futsal world cup qualification uefa",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "handball",
+      "competition": "Denmark Kvindeligaen, Women",
+      "league_key": "denmark kvindeligaen women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "insufficient_history": 1
+      },
+      "final_results": 1
+    },
+    {
+      "sport": "handball",
+      "competition": "International EHF Champions League, Women",
+      "league_key": "international-ehf:ucl:women",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "handball",
+      "competition": "International EHF Euro, Qualification",
+      "league_key": "international ehf euro qualification",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 10
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "handball",
+      "competition": "International EHF European League, Women",
+      "league_key": "international ehf european league women",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "handball",
+      "competition": "Norway Eliteserien Women",
+      "league_key": "eliteserien:women",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "handball",
+      "competition": "Romania Liga Nationala, Women",
+      "league_key": "romania liga nationala women",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 1
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Austria ICE Hockey League",
+      "league_key": "austria ice hockey league",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 35
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Belarus Extraliga",
+      "league_key": "belarus extraliga",
+      "fixtures": 7,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 7
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Canada OHL",
+      "league_key": "canada ohl",
+      "fixtures": 6,
+      "analyzed": 2,
+      "reasons": {
+        "queued": 4,
+        "analyzed": 2
+      },
+      "final_results": 52
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Canada QMJHL",
+      "league_key": "canada qmjhl",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 5
+      },
+      "final_results": 42
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Canada WHL",
+      "league_key": "canada whl",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 6
+      },
+      "final_results": 52
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Champions Hockey League 2026/2027",
+      "league_key": "champions hockey league",
+      "fixtures": 16,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 16
+      },
+      "final_results": 173
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Czechia 1. Liga",
+      "league_key": "czechia 1 liga",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 6
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Czechia Extraliga",
+      "league_key": "czechia extraliga",
+      "fixtures": 13,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 13
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Czechia U20 Extraliga Junioru",
+      "league_key": "czechia u20 extraliga junioru",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "DEL 2026/2027",
+      "league_key": "del",
+      "fixtures": 262,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 262
+      },
+      "final_results": 508
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "DEL2 Hauptrunde",
+      "league_key": "del2 hauptrunde",
+      "fixtures": 113,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 113
+      },
+      "final_results": 64
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Denmark Superisligaen",
+      "league_key": "denmark superisligaen",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "England Elite League",
+      "league_key": "england elite league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Finland Liiga",
+      "league_key": "finland liiga",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 6
+      },
+      "final_results": 35
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "France Ligue Magnus",
+      "league_key": "france ligue magnus",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 16
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Germany DEL",
+      "league_key": "germany del",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 18
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "International Alps Hockey League",
+      "league_key": "international alps hockey league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "International Champions Hockey League",
+      "league_key": "international champions hockey league",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "International Deutschland Cup",
+      "league_key": "international deutschland cup",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 1
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "International Euro Hockey Tour",
+      "league_key": "international euro hockey tour",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "International U20 Friendly Games",
+      "league_key": "international u20 friendly games",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "International World Championship, Women",
+      "league_key": "international-world:championship:women",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Latvia Latvian Hockey League",
+      "league_key": "latvia latvian hockey league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Russia KHL",
+      "league_key": "russia khl",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 10
+      },
+      "final_results": 56
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Russia MHL",
+      "league_key": "russia mhl",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 65
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Russia VHL",
+      "league_key": "russia vhl",
+      "fixtures": 9,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 9
+      },
+      "final_results": 62
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Slovakia Extraliga",
+      "league_key": "slovakia extraliga",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 6
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Slovakia SHL",
+      "league_key": "slovakia shl",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Sweden Allsvenskan",
+      "league_key": "sweden allsvenskan",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Sweden HockeyEttan",
+      "league_key": "sweden hockeyettan",
+      "fixtures": 7,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 7
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Sweden SHL",
+      "league_key": "sweden shl",
+      "fixtures": 7,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 7
+      },
+      "final_results": 25
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Switzerland National League",
+      "league_key": "switzerland national league",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 34
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "Switzerland Swiss League",
+      "league_key": "switzerland swiss league",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 14
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "USA AHL",
+      "league_key": "usa ahl",
+      "fixtures": 8,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 8
+      },
+      "final_results": 81
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "USA NCAA, Regular Season",
+      "league_key": "usa ncaa regular season",
+      "fixtures": 11,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 11
+      },
+      "final_results": 2
+    },
+    {
+      "sport": "ice_hockey",
+      "competition": "USA NHL",
+      "league_key": "usa nhl",
+      "fixtures": 12,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 12
+      },
+      "final_results": 103
+    },
+    {
+      "sport": "lol",
+      "competition": "Riot LoL World Championship",
+      "league_key": "riot-lol-world:championship",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "mma",
+      "competition": "Rizin FF Rizin 55",
+      "league_key": "rizin ff rizin 55",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 10
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "mma",
+      "competition": "UFC UFC 334: Gane vs. Hokit",
+      "league_key": "ufc ufc 334 gane vs hokit",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 10
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "mma",
+      "competition": "UFC UFC 335: Oliveira vs. Lopes",
+      "league_key": "ufc ufc 335 oliveira vs lopes",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "mma",
+      "competition": "UFC UFC 336: Van vs. Kape",
+      "league_key": "ufc ufc 336 van vs kape",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "mma",
+      "competition": "UFC UFC Fight Night: Cortes Acosta vs. Walker",
+      "league_key": "ufc ufc fight night cortes acosta vs walker",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "mma",
+      "competition": "UFC UFC Fight Night: Prochazka vs. Stirling",
+      "league_key": "ufc ufc fight night prochazka vs stirling",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "rugby",
+      "competition": "Rugby League World Cup",
+      "league_key": "rugby league world cup",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "rugby",
+      "competition": "Rugby League World Cup, Women",
+      "league_key": "rugby league world cup women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "rugby",
+      "competition": "Rugby Union Nations Championship",
+      "league_key": "rugby-union-nations:championship",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "rugby",
+      "competition": "Rugby Union Nations Cup",
+      "league_key": "rugby union nations cup",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "rugby",
+      "competition": "Rugby Union RFU Championship",
+      "league_key": "rugby-union-rfu:championship",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "rugby",
+      "competition": "Rugby Union Top 14",
+      "league_key": "rugby union top 14",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "snooker",
+      "competition": "International Champion of Champions",
+      "league_key": "international champion of champions",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "table_tennis",
+      "competition": "Czech Republic Setka Cup",
+      "league_key": "czech republic setka cup",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 10
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "table_tennis",
+      "competition": "Czechia Czech Liga Pro",
+      "league_key": "czechia czech liga pro",
+      "fixtures": 8,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 8
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "table_tennis",
+      "competition": "International TT Elite Series",
+      "league_key": "international tt elite series",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 6
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "table_tennis",
+      "competition": "International WTT Champions Frankfurt, MS",
+      "league_key": "international wtt champions frankfurt ms",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "table_tennis",
+      "competition": "International WTT Champions Frankfurt, WS",
+      "league_key": "international wtt champions frankfurt ws",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "table_tennis",
+      "competition": "Moldova Setka Cup",
+      "league_key": "moldova setka cup",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 5
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "table_tennis",
+      "competition": "Ukraine Setka Cup",
+      "league_key": "ukraine setka cup",
+      "fixtures": 46,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 46
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ATP ATP Paris, France Men Doubles",
+      "league_key": "atp atp paris france men doubles",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ATP ATP Paris, France Men Singles",
+      "league_key": "atp atp paris france men singles",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ATP ATP Stockholm, Sweden Men Doubles",
+      "league_key": "atp atp stockholm sweden men doubles",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ATP ATP Stockholm, Sweden Men Singles",
+      "league_key": "atp atp stockholm sweden men singles",
+      "fixtures": 12,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 12
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "Challenger ATP Challenger Bratislava II, Slovakia Men Singles",
+      "league_key": "challenger atp challenger bratislava ii slovakia men singles",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "Challenger ATP Challenger Brisbane 3, Australia Men Singles",
+      "league_key": "challenger atp challenger brisbane 3 australia men singles",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 10
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "Challenger ATP Challenger Charlottesville, USA Men Singles",
+      "league_key": "challenger atp challenger charlottesville usa men singles",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 1
+    },
+    {
+      "sport": "tennis",
+      "competition": "Challenger ATP Challenger Costa do Sauipe, Brazil Men Singles",
+      "league_key": "challenger atp challenger costa do sauipe brazil men singles",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 2
+    },
+    {
+      "sport": "tennis",
+      "competition": "Challenger ATP Challenger Hersonissos 3, Greece Men Doubles",
+      "league_key": "challenger atp challenger hersonissos 3 greece men doubles",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "Challenger ATP Challenger Hersonissos 3, Greece Men Singles",
+      "league_key": "challenger atp challenger hersonissos 3 greece men singles",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 10
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "Challenger ATP Challenger Matsuyama, Japan Men Doubles",
+      "league_key": "challenger atp challenger matsuyama japan men doubles",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "Challenger ATP Challenger Matsuyama, Japan Men Singles",
+      "league_key": "challenger atp challenger matsuyama japan men singles",
+      "fixtures": 11,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 11
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "Challenger ATP Challenger Orleans, France Men Doubles",
+      "league_key": "challenger atp challenger orleans france men doubles",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "Challenger ATP Challenger Orleans, France Men Singles",
+      "league_key": "challenger atp challenger orleans france men singles",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 10
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "Challenger ATP Challenger Taipei, Chinese Taipei Men Singles",
+      "league_key": "challenger atp challenger taipei chinese taipei men singles",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "Challenger ATP Challenger Taranto, Italy Men Singles",
+      "league_key": "challenger atp challenger taranto italy men singles",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "Challenger ATP Challenger Villa Maria, Argentina Men Singles",
+      "league_key": "challenger atp challenger villa maria argentina men singles",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF M15 Antalya",
+      "league_key": "itf itf m15 antalya",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF M15 Fergana",
+      "league_key": "itf itf m15 fergana",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF M15 Hilton Head Island, SC",
+      "league_key": "itf itf m15 hilton head island sc",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF M15 Maanshan",
+      "league_key": "itf itf m15 maanshan",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF M15 Monastir",
+      "league_key": "itf itf m15 monastir",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF M15 Pembroke",
+      "league_key": "itf itf m15 pembroke",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF M15 San Gregorio di Catania",
+      "league_key": "itf itf m15 san gregorio di catania",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF M15 Trois-Rivi\u00e8res",
+      "league_key": "itf itf m15 trois rivieres",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF M25 Harlingen, TX",
+      "league_key": "itf itf m25 harlingen tx",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF M25 Heraklion",
+      "league_key": "itf itf m25 heraklion",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF M25 Valencia",
+      "league_key": "itf itf m25 valencia",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF W100 Incheon",
+      "league_key": "itf itf w100 incheon",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF W15 Antalya",
+      "league_key": "itf itf w15 antalya",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF W15 Hilton Head Island, SC",
+      "league_key": "itf itf w15 hilton head island sc",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF W15 Maanshan",
+      "league_key": "itf itf w15 maanshan",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF W15 Monastir",
+      "league_key": "itf itf w15 monastir",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF W15 Neuquen",
+      "league_key": "itf itf w15 neuquen",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF W15 Sharm ElSheikh",
+      "league_key": "itf itf w15 sharm elsheikh",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF W15 Szabolcsveresmart",
+      "league_key": "itf itf w15 szabolcsveresmart",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF W35 Liberec",
+      "league_key": "itf itf w35 liberec",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF W35 Orlando, FL",
+      "league_key": "itf itf w35 orlando fl",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF W50 Heraklion",
+      "league_key": "itf itf w50 heraklion",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF W50 Huamantla",
+      "league_key": "itf itf w50 huamantla",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF W75 Brisbane Qualification",
+      "league_key": "itf itf w75 brisbane qualification",
+      "fixtures": 17,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 17
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF ITF W75 Petange",
+      "league_key": "itf itf w75 petange",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "ITF Men ITF Men Sharm El Sheikh, Egypt Men Singles",
+      "league_key": "itf men itf men sharm el sheikh egypt men singles",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "Simulated Reality SRL Fall Invitational Niigata, JPN",
+      "league_key": "simulated reality srl fall invitational niigata jpn",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "Simulated Reality Women SRL Fall Invitational Gresham, (OR), USA, Women",
+      "league_key": "simulated reality women srl fall invitational gresham or usa women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "UTR Men UTR Olomouc M04",
+      "league_key": "utr men utr olomouc m04",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "UTR Men UTR PTT Boca Raton Men 07",
+      "league_key": "utr men utr ptt boca raton men 07",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "UTR Men UTR PTT Carvoeiro Men 08",
+      "league_key": "utr men utr ptt carvoeiro men 08",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "UTR Men UTR PTT Fayetteville Men 01",
+      "league_key": "utr men utr ptt fayetteville men 01",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "UTR Men UTR PTT Gold Coast Men 07",
+      "league_key": "utr men utr ptt gold coast men 07",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "UTR Men UTR PTT Houston Men 02",
+      "league_key": "utr men utr ptt houston men 02",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 5
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "UTR Men UTR PTT Saitama Men 12",
+      "league_key": "utr men utr ptt saitama men 12",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "UTR Men UTR PTT Trnava Men 05",
+      "league_key": "utr men utr ptt trnava men 05",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 5
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "UTR Women UTR PTT Carvoeiro Women 08",
+      "league_key": "utr women utr ptt carvoeiro women 08",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "UTR Women UTR PTT Chapel Hill Women 01",
+      "league_key": "utr women utr ptt chapel hill women 01",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "UTR Women UTR PTT Fayetteville Women 01",
+      "league_key": "utr women utr ptt fayetteville women 01",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "UTR Women UTR PTT Krakow Women 03",
+      "league_key": "utr women utr ptt krakow women 03",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "UTR Women UTR PTT Oxford Women 01",
+      "league_key": "utr women utr ptt oxford women 01",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "UTR Women UTR PTT Trnava Women 06",
+      "league_key": "utr women utr ptt trnava women 06",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "WTA 125K WTA 125K Luanda, Angola Women Singles",
+      "league_key": "wta 125k wta 125k luanda angola women singles",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "WTA WTA Chennai, India, Women Doubles",
+      "league_key": "wta wta chennai india women doubles",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "WTA WTA Chennai, India, Women Singles",
+      "league_key": "wta wta chennai india women singles",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "WTA WTA Finals Women Doubles",
+      "league_key": "wta wta finals women doubles",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "WTA WTA Finals Women Singles",
+      "league_key": "wta wta finals women singles",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 5
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "WTA WTA Hong Kong, Hong Kong Women Doubles",
+      "league_key": "wta wta hong kong hong kong women doubles",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "tennis",
+      "competition": "WTA WTA Hong Kong, Hong Kong Women Singles",
+      "league_key": "wta wta hong kong hong kong women singles",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "vfootball",
+      "competition": "England Virtual",
+      "league_key": "england virtual",
+      "fixtures": 7,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 7
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "vfootball",
+      "competition": "France Virtual",
+      "league_key": "france virtual",
+      "fixtures": 9,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 9
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "vfootball",
+      "competition": "Germany Virtual",
+      "league_key": "germany virtual",
+      "fixtures": 10,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 10
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "vfootball",
+      "competition": "Italy Virtual",
+      "league_key": "italy virtual",
+      "fixtures": 7,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 7
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "vfootball",
+      "competition": "Spain Virtual",
+      "league_key": "spain virtual",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 6
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Belgium Liga Heren",
+      "league_key": "belgium liga heren",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Brazil Superliga",
+      "league_key": "brazil superliga",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 5
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Brazil Superliga, Women",
+      "league_key": "brazil superliga women",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "volleyball",
+      "competition": "China China Volleyball League",
+      "league_key": "china china volleyball league",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Chinese Taipei TPVL",
+      "league_key": "chinese taipei tpvl",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Denmark VolleyLigaen Women",
+      "league_key": "denmark volleyligaen women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 1
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Finland Mestaruusliiga",
+      "league_key": "finland mestaruusliiga",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 1
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Finland Mestaruusliiga, Women",
+      "league_key": "finland mestaruusliiga women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "volleyball",
+      "competition": "France Ligue A Women",
+      "league_key": "france ligue a women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 2
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Germany DVV Cup",
+      "league_key": "germany dvv cup",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 3
+      },
+      "final_results": 1
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Germany DVV Cup, Women",
+      "league_key": "germany dvv cup women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 2
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Greece A1, Women",
+      "league_key": "greece a1 women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Greece Volley League",
+      "league_key": "greece volley league",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 1
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Italy Serie A1 Women",
+      "league_key": "italy serie a1 women",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 2
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Italy Serie A2",
+      "league_key": "italy serie a2",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 6
+      },
+      "final_results": 1
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Italy Serie A2, Women",
+      "league_key": "italy serie a2 women",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 5
+      },
+      "final_results": 1
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Italy SuperLega",
+      "league_key": "italy superlega",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 6
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Japan SV League",
+      "league_key": "japan sv league",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 3
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Japan SV League, Women",
+      "league_key": "japan sv league women",
+      "fixtures": 7,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 7
+      },
+      "final_results": 6
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Kazakhstan National League",
+      "league_key": "kazakhstan national league",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Netherlands Eredivisie",
+      "league_key": "eredivisie",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 1
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Netherlands Eredivisie, Women",
+      "league_key": "eredivisie:women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 2
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Norway Eliteserien Women",
+      "league_key": "eliteserien:women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 2
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Peru Liga Peruana, Women",
+      "league_key": "peru liga peruana women",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Poland 1. Liga",
+      "league_key": "poland 1 liga",
+      "fixtures": 3,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 3
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Poland Liga Siatkowki",
+      "league_key": "poland liga siatkowki",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 4
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Poland Liga Siatkowki, Women",
+      "league_key": "poland liga siatkowki women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Portugal Campeonato Nacional, Women",
+      "league_key": "portugal campeonato nacional women",
+      "fixtures": 5,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 5
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Republic of Korea V League",
+      "league_key": "republic of korea v league",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Republic of Korea V League, Women",
+      "league_key": "republic of korea v league women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 1
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Russia Pro League",
+      "league_key": "russia pro league",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Russia Superliga",
+      "league_key": "russia superliga",
+      "fixtures": 6,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 6
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Russia Superliga, Women",
+      "league_key": "russia superliga women",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Serbia Superliga",
+      "league_key": "serbia superliga",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 5
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Slovakia Extraliga, Women",
+      "league_key": "slovakia extraliga women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 3
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Spain Superliga",
+      "league_key": "spain superliga",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 3
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Spain Superliga, Women",
+      "league_key": "spain superliga women",
+      "fixtures": 1,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 1
+      },
+      "final_results": 2
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Sweden Elitserien",
+      "league_key": "sweden elitserien",
+      "fixtures": 4,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 4
+      },
+      "final_results": 1
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Sweden Elitserien, Women",
+      "league_key": "sweden elitserien women",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "queued": 2
+      },
+      "final_results": 2
+    },
+    {
+      "sport": "volleyball",
+      "competition": "Turkiye Sultanlar Ligi, Women",
+      "league_key": "turkiye sultanlar ligi women",
+      "fixtures": 7,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 7
+      },
+      "final_results": 0
+    },
+    {
+      "sport": "volleyball",
+      "competition": "USA NCAA Women, Regular Season",
+      "league_key": "usa ncaa women regular season",
+      "fixtures": 2,
+      "analyzed": 0,
+      "reasons": {
+        "awaiting_results": 2
+      },
+      "final_results": 0
+    }
+  ],
+  "models": [
+    {
+      "sport": "americanfootball",
+      "status": "unvalidated",
+      "active": false,
+      "scored_fixtures": 0,
+      "holdout_fixtures": 0,
+      "calibration_error": null,
+      "reasons": [
+        "The training run is not validated.",
+        "The chronological holdout has fewer than 10 fixtures.",
+        "The scored sample is below 30 fixtures.",
+        "Holdout calibration error is above 0.20.",
+        "The holdout does not contain both a baseline and a selected-family log loss."
+      ]
+    },
+    {
+      "sport": "badminton",
+      "status": "unvalidated",
+      "active": false,
+      "scored_fixtures": 0,
+      "holdout_fixtures": 0,
+      "calibration_error": null,
+      "reasons": [
+        "The training run is not validated.",
+        "The chronological holdout has fewer than 10 fixtures.",
+        "The scored sample is below 30 fixtures.",
+        "Holdout calibration error is above 0.20.",
+        "The holdout does not contain both a baseline and a selected-family log loss."
+      ]
+    },
+    {
+      "sport": "baseball",
+      "status": "unvalidated",
+      "active": false,
+      "scored_fixtures": 0,
+      "holdout_fixtures": 0,
+      "calibration_error": null,
+      "reasons": [
+        "The training run is not validated.",
+        "The chronological holdout has fewer than 10 fixtures.",
+        "The scored sample is below 30 fixtures.",
+        "Holdout calibration error is above 0.20.",
+        "The holdout does not contain both a baseline and a selected-family log loss."
+      ]
+    },
+    {
+      "sport": "basketball",
+      "status": "unvalidated",
+      "active": false,
+      "scored_fixtures": 0,
+      "holdout_fixtures": 0,
+      "calibration_error": null,
+      "reasons": [
+        "The training run is not validated.",
+        "The chronological holdout has fewer than 10 fixtures.",
+        "The scored sample is below 30 fixtures.",
+        "Holdout calibration error is above 0.20.",
+        "The holdout does not contain both a baseline and a selected-family log loss."
+      ]
+    },
+    {
+      "sport": "boxing",
+      "status": "unvalidated",
+      "active": false,
+      "scored_fixtures": 0,
+      "holdout_fixtures": 0,
+      "calibration_error": null,
+      "reasons": [
+        "The training run is not validated.",
+        "The chronological holdout has fewer than 10 fixtures.",
+        "The scored sample is below 30 fixtures.",
+        "Holdout calibration error is above 0.20.",
+        "The holdout does not contain both a baseline and a selected-family log loss."
+      ]
+    },
+    {
+      "sport": "counterstrike",
+      "status": "unvalidated",
+      "active": false,
+      "scored_fixtures": 0,
+      "holdout_fixtures": 0,
+      "calibration_error": null,
+      "reasons": [
+        "The training run is not validated.",
+        "The chronological holdout has fewer than 10 fixtures.",
+        "The scored sample is below 30 fixtures.",
+        "Holdout calibration error is above 0.20.",
+        "The holdout does not contain both a baseline and a selected-family log loss."
+      ]
+    },
+    {
+      "sport": "cricket",
+      "status": "unvalidated",
+      "active": false,
+      "scored_fixtures": 0,
+      "holdout_fixtures": 0,
+      "calibration_error": null,
+      "reasons": [
+        "The training run is not validated.",
+        "The chronological holdout has fewer than 10 fixtures.",
+        "The scored sample is below 30 fixtures.",
+        "Holdout calibration error is above 0.20.",
+        "The holdout does not contain both a baseline and a selected-family log loss."
+      ]
+    },
+    {
+      "sport": "darts",
+      "status": "unvalidated",
+      "active": false,
+      "scored_fixtures": 0,
+      "holdout_fixtures": 0,
+      "calibration_error": null,
+      "reasons": [
+        "The training run is not validated.",
+        "The chronological holdout has fewer than 10 fixtures.",
+        "The scored sample is below 30 fixtures.",
+        "Holdout calibration error is above 0.20.",
+        "The holdout does not contain both a baseline and a selected-family log loss."
+      ]
+    },
+    {
+      "sport": "ebasketball",
+      "status": "unvalidated",
+      "active": false,
+      "scored_fixtures": 0,
+      "holdout_fixtures": 0,
+      "calibration_error": null,
+      "reasons": [
+        "The training run is not validated.",
+        "The chronological holdout has fewer than 10 fixtures.",
+        "The scored sample is below 30 fixtures.",
+        "Holdout calibration error is above 0.20.",
+        "The holdout does not contain both a baseline and a selected-family log loss."
+      ]
+    },
+    {
+      "sport": "efootball",
+      "status": "unvalidated",
+      "active": false,
+      "scored_fixtures": 0,
+      "holdout_fixtures": 0,
+      "calibration_error": null,
+      "reasons": [
+        "The training run is not validated.",
+        "The chronological holdout has fewer than 10 fixtures.",
+        "The scored sample is below 30 fixtures.",
+        "Holdout calibration error is above 0.20.",
+        "The holdout does not contain both a baseline and a selected-family log loss."
+      ]
+    },
+    {
+      "sport": "football",
+      "status": "active",
+      "active": true,
+      "scored_fixtures": 600,
+      "holdout_fixtures": 180,
+      "calibration_error": 0.06661743702676357,
+      "reasons": []
+    },
+    {
+      "sport": "frauenfussball",
+      "status": "validated",
+      "active": false,
+      "scored_fixtures": 284,
+      "holdout_fixtures": 86,
+      "calibration_error": 0.09148932225195786,
+      "reasons": [
+        "gradient_boosting holdout log loss 0.8818 does not beat the baseline 0.8164."
+      ]
+    },
+    {
+      "sport": "futsal",
+      "status": "unvalidated",
+      "active": false,
+      "scored_fixtures": 0,
+      "holdout_fixtures": 0,
+      "calibration_error": null,
+      "reasons": [
+        "The training run is not validated.",
+        "The chronological holdout has fewer than 10 fixtures.",
+        "The scored sample is below 30 fixtures.",
+        "Holdout calibration error is above 0.20.",
+        "The holdout does not contain both a baseline and a selected-family log loss."
+      ]
+    },
+    {
+      "sport": "handball",
+      "status": "unvalidated",
+      "active": false,
+      "scored_fixtures": 0,
+      "holdout_fixtures": 0,
+      "calibration_error": null,
+      "reasons": [
+        "The training run is not validated.",
+        "The chronological holdout has fewer than 10 fixtures.",
+        "The scored sample is below 30 fixtures.",
+        "Holdout calibration error is above 0.20.",
+        "The holdout does not contain both a baseline and a selected-family log loss."
+      ]
+    },
+    {
+      "sport": "ice_hockey",
+      "status": "active",
+      "active": true,
+      "scored_fixtures": 444,
+      "holdout_fixtures": 134,
+      "calibration_error": 0.02590887233448448,
+      "reasons": []
+    },
+    {
+      "sport": "lol",
+      "status": "unvalidated",
+      "active": false,
+      "scored_fixtures": 0,
+      "holdout_fixtures": 0,
+      "calibration_error": null,
+      "reasons": [
+        "The training run is not validated.",
+        "The chronological holdout has fewer than 10 fixtures.",
+        "The scored sample is below 30 fixtures.",
+        "Holdout calibration error is above 0.20.",
+        "The holdout does not contain both a baseline and a selected-family log loss."
+      ]
+    },
+    {
+      "sport": "mma",
+      "status": "unvalidated",
+      "active": false,
+      "scored_fixtures": 0,
+      "holdout_fixtures": 0,
+      "calibration_error": null,
+      "reasons": [
+        "The training run is not validated.",
+        "The chronological holdout has fewer than 10 fixtures.",
+        "The scored sample is below 30 fixtures.",
+        "Holdout calibration error is above 0.20.",
+        "The holdout does not contain both a baseline and a selected-family log loss."
+      ]
+    },
+    {
+      "sport": "rugby",
+      "status": "unvalidated",
+      "active": false,
+      "scored_fixtures": 0,
+      "holdout_fixtures": 0,
+      "calibration_error": null,
+      "reasons": [
+        "The training run is not validated.",
+        "The chronological holdout has fewer than 10 fixtures.",
+        "The scored sample is below 30 fixtures.",
+        "Holdout calibration error is above 0.20.",
+        "The holdout does not contain both a baseline and a selected-family log loss."
+      ]
+    },
+    {
+      "sport": "snooker",
+      "status": "unvalidated",
+      "active": false,
+      "scored_fixtures": 0,
+      "holdout_fixtures": 0,
+      "calibration_error": null,
+      "reasons": [
+        "The training run is not validated.",
+        "The chronological holdout has fewer than 10 fixtures.",
+        "The scored sample is below 30 fixtures.",
+        "Holdout calibration error is above 0.20.",
+        "The holdout does not contain both a baseline and a selected-family log loss."
+      ]
+    },
+    {
+      "sport": "table_tennis",
+      "status": "unvalidated",
+      "active": false,
+      "scored_fixtures": 0,
+      "holdout_fixtures": 0,
+      "calibration_error": null,
+      "reasons": [
+        "The training run is not validated.",
+        "The chronological holdout has fewer than 10 fixtures.",
+        "The scored sample is below 30 fixtures.",
+        "Holdout calibration error is above 0.20.",
+        "The holdout does not contain both a baseline and a selected-family log loss."
+      ]
+    },
+    {
+      "sport": "tennis",
+      "status": "unvalidated",
+      "active": false,
+      "scored_fixtures": 0,
+      "holdout_fixtures": 0,
+      "calibration_error": null,
+      "reasons": [
+        "The training run is not validated.",
+        "The chronological holdout has fewer than 10 fixtures.",
+        "The scored sample is below 30 fixtures.",
+        "Holdout calibration error is above 0.20.",
+        "The holdout does not contain both a baseline and a selected-family log loss."
+      ]
+    },
+    {
+      "sport": "vfootball",
+      "status": "unvalidated",
+      "active": false,
+      "scored_fixtures": 0,
+      "holdout_fixtures": 0,
+      "calibration_error": null,
+      "reasons": [
+        "The training run is not validated.",
+        "The chronological holdout has fewer than 10 fixtures.",
+        "The scored sample is below 30 fixtures.",
+        "Holdout calibration error is above 0.20.",
+        "The holdout does not contain both a baseline and a selected-family log loss."
+      ]
+    },
+    {
+      "sport": "volleyball",
+      "status": "unvalidated",
+      "active": false,
+      "scored_fixtures": 0,
+      "holdout_fixtures": 0,
+      "calibration_error": null,
+      "reasons": [
+        "The training run is not validated.",
+        "The chronological holdout has fewer than 10 fixtures.",
+        "The scored sample is below 30 fixtures.",
+        "Holdout calibration error is above 0.20.",
+        "The holdout does not contain both a baseline and a selected-family log loss."
+      ]
+    }
+  ],
+  "counts": {
+    "awaiting_results": 1471,
+    "insufficient_history": 16,
+    "queued": 4544,
+    "research_prediction": 3,
+    "analyzed": 22
+  },
+  "pipeline_version": "coverage-v3",
+  "places_wager": false
+}

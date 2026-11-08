@@ -102,9 +102,10 @@ def _touch_heartbeat():
     try:
         from operations_engine import keep_leader
         with connect(busy_timeout_ms=60000) as connection:
-            keep_leader(connection, _leader_name())
+            return keep_leader(connection, _leader_name())
     except Exception as error:
         _report('heartbeat failed', error)
+        return False
 
 
 def _beat_until(stop):
@@ -122,7 +123,8 @@ def tick():
     initialize()
     stop = threading.Event()
     beater = threading.Thread(target=_beat_until, args=(stop,), daemon=True)
-    _touch_heartbeat()
+    if not _touch_heartbeat():
+        return {'status': 'standby', 'reason': 'Another scheduler or maintenance process holds the leader lease.'}
     beater.start()
     try:
         _run_cycle()
@@ -144,6 +146,7 @@ def _qualify_priced_board():
             'linked', linked.get('qualified'),
             'checked', linked.get('checked'),
         )
+        _high_odds_booking_tick()
         _ticket_tick()
     except Exception as error:
         _report('priced qualification failed', error)
@@ -161,6 +164,9 @@ def _release_stopped_jobs():
 
 
 def _run_cycle():
+    from ticket_diversity import reconcile
+    with connect() as connection:
+        reconcile(connection)
     _release_stopped_jobs()
     _high_odds_booking_tick()
     _qualify_priced_board()
@@ -184,13 +190,13 @@ def _run_cycle():
     _process_browser_queue()
     _odds_refresh_tick()
     _history_tick()
+    _govern_cycle()
     _coverage_tick()
     _match_report_tick()
     _draw_tick()
     _weekly_draw_tick()
     _reliability_tick()
     _learning_tick()
-    _govern_cycle()
     _rollover_tick()
     _publication_tick()
     _pipeline_snapshot_tick()
@@ -410,10 +416,10 @@ def _coverage_tick():
         with connect() as connection:
             gaps = record_result_gaps(connection)
         totals = {'fixtures': 0, 'predictions': 0, 'skipped': {}}
-        for _ in range(10):
+        for _ in range(32):
             _touch_heartbeat()
             with connect() as connection:
-                result = run_analysis(connection, 'sports-ai-worker', _audit, coverage=True, limit=8)
+                result = run_analysis(connection, 'sports-ai-worker', _audit, coverage=True, limit=12)
             totals['fixtures'] += result.get('fixtures') or 0
             totals['predictions'] += result.get('predictions') or 0
             for key, value in (result.get('skipped') or {}).items():
@@ -575,25 +581,13 @@ def _book_ready_tickets(bands):
 
 
 def _high_odds_booking_tick():
-    """Store a ticket and request its SportyBet code in the same step.
-
-    The 1.95-and-below ticket is booked as soon as it is stored. Higher prices
-    are booked on the same step, then checked again every 30 minutes. A code is
-    written only when SportyBet displays it. No wager is placed.
-    """
-    now = datetime.now(timezone.utc)
+    """Drain qualification events and register finalized capped-odds tickets."""
     try:
-        from high_odds_board import HIGHER_ODDS_BANDS
-        _book_ready_tickets(('to-1.95',))
+        from high_odds_service import worker_tick
+        result = worker_tick()
+        print('high odds optimizer', result.get('status'), result.get('booking_status',''))
         _book_sure_odds()
-        if _higher_odds_due(now):
-            status = _book_ready_tickets(HIGHER_ODDS_BANDS)
-            _remember_higher_odds_run(now, status)
     except Exception as error:
-        try:
-            _remember_higher_odds_run(now, 'failed')
-        except Exception:
-            pass
         _report('high odds booking failed', error)
 
 
@@ -654,8 +648,12 @@ def _govern_cycle():
     try:
         from prediction_engine import ensure_goal_sport_models, govern_models, reprice_active_batch, review_degradation
         with connect() as connection:
+            from analysis_coverage import repair_identities
+            repair_identities(connection)
             connection.execute("UPDATE sports_ai_schedules SET enabled=1 WHERE id='schedule-discovery' AND enabled=0")
+        with connect() as connection:
             ensure_goal_sport_models(connection)
+        with connect() as connection:
             review = review_degradation(connection, 'sports-ai-worker', _audit)
             governed = govern_models(connection, 'sports-ai-worker', _audit)
             priced = reprice_active_batch(connection, 'sports-ai-worker', _audit, limit=20)
@@ -696,6 +694,9 @@ if __name__=='__main__':
     group.add_argument('--once',action='store_true')
     group.add_argument('--loop',action='store_true')
     args=parser.parse_args()
+    if args.loop:
+        from high_odds_service import start_background
+        start_background(_leader_name())
     if args.once:
         tick()
     else:

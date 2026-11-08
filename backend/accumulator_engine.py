@@ -331,8 +331,8 @@ def _reject_reason(row, config, current, blocked, markets, competitions, bookmak
         return 'Stored decimal odds are missing'
     if not math.isfinite(odds) or odds <= 1:
         return 'Stored decimal odds are not a genuine price above 1'
-    if odds < 1.3:
-        return 'Stored decimal odds are below the 1.30 minimum for a ticket'
+    if odds < float(config.get('min_leg_odds',1.3)):
+        return f'Stored decimal odds are below the {float(config.get("min_leg_odds",1.3)):.2f} minimum for a ticket'
     observed = _parse_time(row.get('observed_at') or row.get('odds_observed_at'))
     if not observed:
         return 'Odds collection timestamp is missing'
@@ -945,6 +945,46 @@ def _assemble_target(pool, target, config):
 
 
 def optimize_candidates(candidates, config, now=None):
+    """Allocate different matches to each target, without padding a short pool."""
+    from ticket_diversity import event_keys, keys_for
+    ranges = config.get('ranges')
+    specifications = ranges or _configured_targets(config.get('targets') or TARGETS) or list(TARGETS)
+    used, tiers = set(), []
+    evaluations, truncated = 0, False
+    deadline = time.monotonic() + float(config['timeout_seconds'])
+    for specification in specifications:
+        kept, entry = [], None
+        for _ in range(int(config.get('max_tickets_per_tier') or 1)):
+            pool = [leg for leg in candidates if not event_keys(leg) & used]
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                truncated = True
+                break
+            settings = {**config, 'max_tickets_per_tier': 1, 'timeout_seconds': remaining}
+            if ranges:
+                settings['ranges'] = [specification]
+            else:
+                settings['targets'] = [specification]
+            searched = _optimize_candidates_unallocated(pool, settings, now)
+            evaluations += searched['evaluations']
+            truncated |= searched['truncated']
+            entry = searched['tiers'][0]
+            if not entry['tickets']:
+                break
+            ticket = entry['tickets'][0]
+            kept.append(ticket)
+            used.update(keys_for(ticket['legs']))
+        if entry is None:
+            entry = _gap(specification['tier'] if ranges else specification, 'The search time budget was exhausted.', True, specification if ranges else None)
+        entry = {**entry, 'tickets': kept, 'status': 'generated' if kept else 'no_qualifying_ticket'}
+        if not kept and used:
+            entry['reason'] = 'Not enough unused matches meet this target. Matches allocated to another ticket are not repeated.'
+        tiers.append(entry)
+    return {'generated_at': _now(now).isoformat(), 'evaluations': evaluations, 'truncated': truncated,
+            'candidate_count': len(candidates), 'tiers': tiers}
+
+
+def _optimize_candidates_unallocated(candidates, config, now=None):
     """Build one ticket per requested target from the sports and leagues already qualified.
 
     Nothing is invented to fill a tier. A 1.5× target can be a single stored price.
@@ -1099,8 +1139,9 @@ def _optimize_days(candidates, config, now=None):
                 if not low <= product <= high:
                     continue
                 made[target].append(legs)
-                used = {leg['opportunity_id'] for leg in legs}
-                pool = [item for item in pool if item['opportunity_id'] not in used]
+                from ticket_diversity import event_keys, keys_for
+                used = keys_for(legs)
+                pool = [item for item in pool if not event_keys(item) & used]
                 progressed = True
             if not progressed:
                 break
@@ -1575,7 +1616,7 @@ def retire_duplicate_tickets(connection, now=None):
     return {'retired': retired, 'kept': len(grouped), 'places_wager': False, 'at': current.isoformat()}
 
 
-def load_opportunity_rows(connection, now=None):
+def load_opportunity_rows(connection, now=None, keep_markets=False):
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
@@ -1585,8 +1626,9 @@ def load_opportunity_rows(connection, now=None):
                   COALESCE(o.data_completeness, s.completeness) AS data_completeness,
                   p.market, p.outcome, p.probability, p.settlement_json, p.model_id,
                   f.id AS fixture_id, f.sport, f.competition, f.home, f.away, f.starts_at, f.status AS fixture_status,
-                  q.decimal_odds, q.bookmaker, q.observed_at, q.market AS quote_market, q.outcome AS quote_outcome, q.line AS quote_line,
-                  m.version AS model_version, m.model_name, m.status AS model_status, m.active AS model_active,
+                  q.decimal_odds, q.bookmaker, q.observed_at, q.source_url, q.market AS quote_market, q.outcome AS quote_outcome, q.line AS quote_line,
+                  m.version AS model_version, m.model_name, m.sport AS model_sport, m.lifecycle AS model_lifecycle,
+                  m.status AS model_status, m.active AS model_active,
                   m.metrics_json, m.calibration_status
            FROM sports_ai_value_opportunities o
            JOIN sports_ai_engine_predictions p ON p.id=o.prediction_id
@@ -1599,7 +1641,8 @@ def load_opportunity_rows(connection, now=None):
         (current.astimezone(timezone.utc).isoformat(), week_end.astimezone(timezone.utc).isoformat()),
     ).fetchall()
     from market_registry import choose_best
-    return choose_best([dict(row) for row in rows])
+    material=[dict(row) for row in rows]
+    return material if keep_markets else choose_best(material)
 
 
 def _simulated_competition(name):
@@ -1738,6 +1781,8 @@ def build_high_probability_tickets(connection, actor, audit, now=None, minimum=0
     sports_used = set()
     run_id = None
     pool = [leg for group in legs_by_sport.values() for leg in group]
+    from ticket_diversity import unallocated
+    pool = unallocated(connection, pool, current)
     by_week = {}
     for leg in pool:
         day = _kickoff_day(leg)
@@ -1905,6 +1950,8 @@ def build_bookable_cross_tickets(connection, actor, audit, now=None):
     config['max_per_competition'] = 8
     created = []
     run_id = None
+    from ticket_diversity import unallocated
+    legs = unallocated(connection, legs, current)
     by_week = {}
     for leg in legs:
         day = _kickoff_day(leg)
@@ -2029,6 +2076,10 @@ def generate_accumulators(connection, actor, audit, sport_mode='mixed', override
         revalidate(connection, actor, current)
         rows = load_opportunity_rows(connection, current)
         accepted, decisions = qualify_candidates(rows, config, current, _blocked_fixtures(connection))
+        from ticket_diversity import unallocated
+        before_allocation = len(accepted)
+        accepted = unallocated(connection, accepted, current)
+        reserved_count = before_allocation - len(accepted)
         if span:
             ticket = _span_ticket(accepted, config, span)
             search = {
@@ -2088,6 +2139,8 @@ def generate_accumulators(connection, actor, audit, sport_mode='mixed', override
             if not ids and duplicates and tier['status'] == 'generated':
                 entry['status'] = 'duplicate'
                 entry['reason'] = 'An open ticket already contains this combination'
+            if not ids and reserved_count:
+                entry['reason'] = f'{reserved_count} selections belong to matches already allocated to active tickets. ' + (entry.get('reason') or 'No unused combination meets this target.')
             tier_summary.append(entry)
         used = {leg['opportunity_id'] for ticket in stored for leg in ticket['legs']}
         for decision in decisions:
@@ -2100,6 +2153,7 @@ def generate_accumulators(connection, actor, audit, sport_mode='mixed', override
             'candidate_count': search['candidate_count'],
             'qualified_inputs': len(rows),
             'accepted': len(accepted),
+            'reserved_selections_excluded': reserved_count,
             'rejected': sum(1 for item in decisions if item['decision'] == 'rejected'),
             'evaluations': search['evaluations'],
             'truncated': search['truncated'],
@@ -2138,9 +2192,13 @@ def _public_config(config):
 
 
 def _insert_ticket(connection, run_id, ticket, config, current, change_type, reason, family_id=None, version=1):
+    from ticket_diversity import assert_available
+    if ticket.get('tier_mode') != 'simulation':
+        assert_available(connection, ticket['legs'], current, ignore_family=family_id)
     ticket_id = str(uuid.uuid4())
     family = family_id or ticket_id
     parameters = {
+        'diversity_policy': 'one_active_ticket_per_match',
         'targets': config.get('targets'),
         'tolerance': config.get('tolerance'),
         'min_legs': config.get('min_legs'),
@@ -2579,6 +2637,11 @@ def monitor_accumulators(connection, actor, audit, idempotency_key, now=None):
                 summary['awaiting_result'] += 1
                 _event_once(connection, ticket['id'], run_id, 'awaiting_result', current)
             elif ticket['status'] == 'qualified':
+                if connection.execute('SELECT 1 FROM sports_ai_high_odds_tickets WHERE ticket_id=?',(ticket['id'],)).fetchone():
+                    # The specialized monitor checks immutable snapshots and
+                    # prices; settlement above remains shared with this worker.
+                    summary['unchanged'] += 1
+                    continue
                 from qualification_engine import ticket_is_bookable
                 if ticket_is_bookable(connection, ticket['id']):
                     summary['unchanged'] += 1

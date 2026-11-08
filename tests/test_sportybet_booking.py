@@ -216,7 +216,7 @@ class BookingTests(unittest.TestCase):
         self.assertEqual(clicked, 'yes')
         self.assertEqual(placed, 'no')
 
-    def test_reveal_fixture_drills_from_country_into_exact_competition(self):
+    def test_reveal_fixture_drills_through_duplicate_country_into_exact_competition(self):
         from playwright.async_api import async_playwright
         from sportybet_booking import _reveal_fixture
 
@@ -225,13 +225,14 @@ class BookingTests(unittest.TestCase):
           .category-list-item, .tournament-list-item { width: 280px; min-height: 20px; }
         </style></head><body>
           <ul>
+            <li class="category-list-item"><div class="category-item"><span>Germany</span></div></li>
             <li class="category-list-item">
               <div class="category-item"><span>Germany</span></div>
               <ul id="competitions" hidden></ul>
             </li>
           </ul>
           <script>
-            const country = document.querySelector('.category-list-item');
+            const country = document.querySelectorAll('.category-list-item')[1];
             country.addEventListener('click', () => {
               const competitions = document.getElementById('competitions');
               competitions.hidden = false;
@@ -262,6 +263,92 @@ class BookingTests(unittest.TestCase):
 
         result = asyncio.run(run())
         self.assertTrue(result['visible'], result)
+
+    def test_numbered_club_switches_total_line_and_books_current_price(self):
+        from playwright.async_api import async_playwright
+
+        html = """<!doctype html><html><body>
+          <section>
+            <button class="market-item">3 Way &amp; O/U</button>
+            <div class="match-row">1. FC Magdeburg vs FC St. Pauli
+              <div class="af-select"><div class="af-select-title">
+                <span class="af-select-input">3</span>
+              </div></div>
+              <button class="m-outcome">1.90</button><button class="m-outcome">1.22</button>
+            </div>
+          </section>
+          <div class="af-select-list" hidden><span class="af-select-item">4.5</span></div>
+          <div class="af-select-list" id="lines" style="display:none">
+            <span class="af-select-item">3</span><span class="af-select-item">4.5</span>
+          </div>
+          <button id="book">Book bet</button><button id="place">Place bet</button>
+          <div data-booking-code></div>
+          <script>
+            document.body.dataset.placed='no';
+            document.querySelector('.market-item').onclick = () => {
+              document.querySelector('.af-select-input').textContent='3';
+            };
+            document.querySelector('.af-select-title').onclick = () => {
+              document.getElementById('lines').style.display='block';
+            };
+            document.querySelectorAll('#lines .af-select-item').forEach(node => {
+              node.onclick = () => {
+                document.querySelector('.af-select-input').textContent=node.textContent;
+                document.getElementById('lines').style.display='none';
+              };
+            });
+            document.querySelectorAll('.m-outcome').forEach(node => {
+              node.onclick = () => { node.dataset.clicked='yes'; };
+            });
+            document.getElementById('book').onclick = () => {
+              document.querySelector('[data-booking-code]').textContent='BK7REAL';
+            };
+            document.getElementById('place').onclick = () => { document.body.dataset.placed='yes'; };
+          </script>
+        </body></html>"""
+
+        async def run():
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(headless=True)
+                page = await browser.new_page()
+                await page.set_content(html)
+                result = await prepare_slip(page, [{
+                    **self.selection(1.20), 'home': '1. FC Magdeburg', 'away': 'FC St. Pauli',
+                    'sport': 'football', 'market': 'UNDER_4.5', 'selection': 'UNDER',
+                }])
+                line = await page.locator('.af-select-input').inner_text()
+                under = await page.locator('.m-outcome').last.get_attribute('data-clicked')
+                over = await page.locator('.m-outcome').first.get_attribute('data-clicked')
+                placed = await page.locator('body').get_attribute('data-placed')
+                await browser.close()
+                return result, line, under, over, placed
+
+        result, line, under, over, placed = asyncio.run(run())
+        self.assertEqual(result['status'], 'CODE_GENERATED')
+        self.assertEqual(result['seen'][0]['page_odds'], 1.22)
+        self.assertEqual(line, '4.5')
+        self.assertEqual(under, 'yes')
+        self.assertIsNone(over)
+        self.assertEqual(placed, 'no')
+
+    def test_competition_number_distinguishes_portugal_second_division(self):
+        from playwright.async_api import async_playwright
+        from sportybet_booking import REVEAL_FIXTURE
+
+        async def run():
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(headless=True)
+                page = await browser.new_page()
+                await page.set_content('''<style>.tournament-list-item {width:280px;height:24px}</style>
+                    <ul><li class="tournament-list-item"><div class="tournament-name">Liga Portugal</div></li>
+                    <li class="tournament-list-item"><div class="tournament-name">Liga Portugal 2</div></li></ul>''')
+                result = await page.evaluate(REVEAL_FIXTURE, {
+                    'home': 'SC Farense', 'away': 'SL Benfica B', 'competition': 'Portugal Liga Portugal 2',
+                })
+                await browser.close()
+                return result
+
+        self.assertEqual(asyncio.run(run())['clicked'], 'liga portugal 2')
 
     def test_a_failed_job_does_not_take_the_current_ticket_slot(self):
         from datetime import datetime, timezone

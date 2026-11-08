@@ -342,6 +342,8 @@ def build_tickets(connection, mode, now=None, actor='sports-ai-worker', candidat
     if loaded is None:
         loaded = {'eligible': candidates} if candidates is not None else load_candidates(connection, mode, current)
     eligible = list(loaded.get('eligible') or [])
+    from ticket_diversity import unallocated, event_keys, keys_for
+    eligible = unallocated(connection, eligible, current)
     policy = load_policy(connection)
     current_week = week_id(current)
     categories = []
@@ -360,6 +362,8 @@ def build_tickets(connection, mode, now=None, actor='sports-ai-worker', candidat
             continue
         ticket_id = _store_ticket(connection, mode, size, chosen, policy, current_week, current, actor)
         stored.append(ticket_id)
+        used = keys_for(chosen['legs'])
+        eligible = [leg for leg in eligible if not event_keys(leg) & used]
         categories.append({'pick_count': size, 'status': 'stored', 'ticket_id': ticket_id, 'mode': size_mode(policy, size)})
     summary = {
         'mode': mode,

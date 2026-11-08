@@ -1,0 +1,43 @@
+{
+  "fixture_id": "18ae3f87-6a0a-4f50-92db-9ee9e4e23da2",
+  "previous_result": {
+    "id": "36da4afc-6c4c-4c68-9619-8dd3ad87b6f9",
+    "fixture_id": "18ae3f87-6a0a-4f50-92db-9ee9e4e23da2",
+    "home_score": 0,
+    "away_score": 0,
+    "status": "final",
+    "source": "openligadb",
+    "settled_at": "2026-10-25T18:51:13.617000+00:00"
+  },
+  "corrected_score": [
+    6,
+    2
+  ],
+  "validation_stage": {
+    "name": "Validate",
+    "detail": "Check data integrity",
+    "route": "diagnostics",
+    "lane": "upcoming",
+    "count": "Clear",
+    "status": "Completed",
+    "explanation": "A fixture with an open high-severity issue stays out of qualification.",
+    "places_wager": false
+  },
+  "resolution": {
+    "reason": "OpenLigaDB unfinished placeholder was incorrectly imported as final; verified finished BetExplorer result replaces it.",
+    "resolved_at": "2026-11-08T04:55:58.269036+00:00",
+    "previous_result": {
+      "id": "36da4afc-6c4c-4c68-9619-8dd3ad87b6f9",
+      "fixture_id": "18ae3f87-6a0a-4f50-92db-9ee9e4e23da2",
+      "home_score": 0,
+      "away_score": 0,
+      "status": "final",
+      "source": "openligadb",
+      "settled_at": "2026-10-25T18:51:13.617000+00:00"
+    },
+    "source_url": "https://www.betexplorer.com/hockey/germany/del2/dresdner-eislowen-starbulls-rosenheim/KpQkCDue/",
+    "openligadb_match_is_finished": false
+  },
+  "affected_predictions": 0,
+  "affected_ticket_legs": 0
+}

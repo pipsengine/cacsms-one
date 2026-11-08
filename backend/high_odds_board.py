@@ -35,7 +35,7 @@ SURE_COMBINED_MAX = 2.95
 
 
 def _certain(row):
-    """A selection shown as 100% may be used on more than one ticket."""
+    """Priority ordering only; this never permits a match to be reused."""
     return round(float(row['probability']) * 100, 1) >= 100
 
 
@@ -227,11 +227,8 @@ def _span(pool):
 
 
 def _selection_available(row, used):
-    """A fixture already used on a ticket stays off the next one, unless that selection is 100%."""
-    market = used.get(row['fixture_id'])
-    if market is None:
-        return True
-    return _certain(row) and market == row['market']
+    from ticket_diversity import event_keys
+    return not event_keys(row).intersection(used)
 
 
 def build_slip(candidates, count, at_most=False, minimum=None, minimum_product=None):
@@ -274,7 +271,8 @@ def pack_sure_tickets(candidates, day):
         product = 1.0
         joint = 1.0
         for leg in ordered:
-            if leg['fixture_id'] in used:
+            from ticket_diversity import event_keys, keys_for
+            if event_keys(leg) & used:
                 continue
             odds = float(leg['decimal_odds'])
             if product * odds > SURE_COMBINED_MAX:
@@ -282,7 +280,7 @@ def pack_sure_tickets(candidates, day):
             if not chosen:
                 partners = [
                     float(other['decimal_odds']) for other in ordered
-                    if other['fixture_id'] not in used and other is not leg
+                    if not event_keys(other) & used and other is not leg
                 ]
                 if not partners or odds * min(partners) > SURE_COMBINED_MAX:
                     continue
@@ -292,7 +290,7 @@ def pack_sure_tickets(candidates, day):
         if len(chosen) < 2 or product < SURE_COMBINED_MIN:
             break
         for leg in chosen:
-            used.add(leg['fixture_id'])
+            used.update(event_keys(leg))
         ticket = _ready_ticket(day, band, chosen, product, joint)
         body = '|'.join(sorted(f"{leg['fixture_id']}|{leg['market']}" for leg in chosen))
         ticket['signature'] = f"sure-odds|{day['name']}|2-2.95|{body}"
@@ -372,7 +370,8 @@ def build_day(candidates, day):
                 break
             chosen, product, joint = built
             for leg in chosen:
-                used[leg['fixture_id']] = leg['market']
+                from ticket_diversity import event_keys
+                used.update({key: leg['market'] for key in event_keys(leg)})
             made[band['id']].append(_ready_ticket(day, band, chosen, product, joint))
     tickets = []
     for band in ODDS_BANDS:
@@ -594,6 +593,7 @@ def _booking_index(connection):
                    ORDER BY j.created_at DESC LIMIT 1) AS job_updated
            FROM sports_ai_accumulator_tickets t
            WHERE json_extract(t.parameters_json, '$.product') IN ('high_odds', 'sure_odds')
+             AND t.status IN ('qualified','unverified_probability','awaiting_odds','review_required')
              AND t.status!='expired'""",
     )
     for row in rows:
@@ -687,17 +687,71 @@ def _prefer_coded_ticket(connection, day, built):
             built['tickets'][index] = coded
 
 
+def _stored_slips(connection, day, product):
+    """Read existing allocations without rebuilding or copying a coded slip."""
+    rows = connection.execute(
+        """SELECT t.id,t.signature,t.parameters_json FROM sports_ai_accumulator_tickets t
+           WHERE json_extract(t.parameters_json,'$.product')=?
+             AND t.status IN ('qualified','unverified_probability','awaiting_odds','review_required')
+             AND NOT EXISTS(SELECT 1 FROM sports_ai_accumulator_tickets n WHERE n.family_id=t.family_id AND n.version>t.version)
+             AND EXISTS(SELECT 1 FROM sports_ai_accumulator_legs l WHERE l.ticket_id=t.id
+               AND julianday(l.starts_at)>=julianday(?) AND julianday(l.starts_at)<julianday(?))
+           ORDER BY t.created_at,t.id""",
+        (product, day['start'].isoformat(), day['end'].isoformat()),
+    ).fetchall()
+    payloads = []
+    for row in rows:
+        parameters = json.loads(row['parameters_json'] or '{}')
+        band_id = parameters.get('band')
+        band = next((item for item in ODDS_BANDS if item['id'] == band_id), None)
+        if product == 'sure_odds':
+            band = {'id': '2-2.95', 'odds_label': '2.00–2.95'}
+        if not band:
+            continue
+        legs = [dict(item) for item in connection.execute('SELECT * FROM sports_ai_accumulator_legs WHERE ticket_id=?', (row['id'],))]
+        if not legs:
+            continue
+        odds = joint = 1.0
+        for leg in legs:
+            leg.update({'confidence': leg.get('reliability'), 'preferred': False})
+            odds *= float(leg['decimal_odds'])
+            joint *= float(leg['probability'] or 0)
+        payload = _ready_ticket(day, band, legs, odds, joint)
+        payload.update({'id': row['id'], 'signature': row['signature']})
+        payloads.append(payload)
+    return payloads
+
+
+def sure_odds_board(connection, now):
+    """Legacy sure-odds product without generating obsolete high-odds previews."""
+    from ticket_diversity import unallocated
+    today=now.astimezone(WAT).date().isoformat()
+    sure=[]
+    for day in _day_window(now):
+        if day['start'].date().isoformat()!=today:continue
+        sure.extend(_stored_slips(connection,{**day,'date':today},'sure_odds'))
+        sure.extend(pack_sure_tickets(unallocated(connection,_candidates(connection,day,now),now),day))
+    _attach_booking(connection,[{'tickets':sure}])
+    for ticket in sure:ticket.pop('legs',None)
+    return {'sure_tickets':sure}
+
+
 def high_odds_board(connection, now):
+    from ticket_diversity import unallocated, event_keys, keys_for
     days = []
     sure = []
     today = now.astimezone(WAT).date().isoformat()
     for day in _day_window(now):
-        candidates = _candidates(connection, day, now)
+        candidates = unallocated(connection, _candidates(connection, day, now), now)
         built = build_day(candidates, day)
-        _prefer_coded_ticket(connection, day, built)
+        stored = _stored_slips(connection, day, 'high_odds')
+        stored_bands = {ticket['band'] for ticket in stored}
+        built['tickets'] = stored + [ticket for ticket in built['tickets'] if ticket['status']=='ready' or ticket['band'] not in stored_bands]
         days.append(built)
         if built['date'] == today:
-            sure.extend(pack_sure_tickets(candidates, day))
+            allocated = keys_for([leg for ticket in built['tickets'] for leg in ticket.get('legs', [])])
+            sure.extend(_stored_slips(connection, day, 'sure_odds'))
+            sure.extend(pack_sure_tickets([leg for leg in candidates if not event_keys(leg) & allocated], day))
     _attach_booking(connection, days)
     _attach_booking(connection, [{'tickets': sure}])
     for day in days:
@@ -717,7 +771,7 @@ def high_odds_board(connection, now):
             'Every selection is at least 80%. A ticket has 15 to 30 selections when each price is 1.95 or below, '
             '12 when each price is 2.00–2.99, 10 when each price is 3.00–3.99, and 8 when each price is 4.00–5.00. '
             'Prices above 5.00 use 8 selections or fewer, enough for combined odds above 10,000. '
-            'A selection is used on one ticket. A selection at 100% may be used again. '
+            'Each match is used on one active ticket across every product and market. '
             'A booking code is added only when SportyBet displays it.'
         ),
         'days': days,
@@ -736,12 +790,18 @@ def _upsert_ticket(connection, day, ticket, now, product='high_odds'):
     for row in existing:
         if row['signature'] == ticket['signature'] or _signature_body(row['signature']) == body:
             return row['id']
+    from ticket_diversity import assert_available, TicketExposureConflict
+    try:
+        assert_available(connection, ticket['legs'], now)
+    except TicketExposureConflict:
+        return None
     sports = {leg['sport'] for leg in ticket['legs']}
     sport_mode = next(iter(sports)) if len(sports) == 1 else 'mixed'
     ticket_id = str(uuid.uuid4())
     moment = now.astimezone(timezone.utc).isoformat()
     day_name = day.get('name') or day.get('day')
     parameters = {
+        'diversity_policy': 'one_active_ticket_per_match',
         'product': product,
         'day': day_name,
         'date': day['date'],
@@ -845,7 +905,9 @@ def prepare_high_odds_booking(now=None, bands=None):
     with connect() as connection:
         built_days = []
         for day in _day_window(moment):
-            built = build_day(_candidates(connection, day, moment), day)
+            from ticket_diversity import unallocated
+            built = build_day(unallocated(connection, _candidates(connection, day, moment), moment), day)
+            built['tickets'] = _stored_slips(connection, day, 'high_odds') + built['tickets']
             built_days.append(built)
             kept = {}
             for ticket in built['tickets']:
@@ -855,8 +917,6 @@ def prepare_high_odds_booking(now=None, bands=None):
                     continue
                 _upsert_ticket(connection, built, ticket, moment)
                 kept.setdefault(ticket['band'], set()).add(ticket['signature'])
-            for band, signatures in kept.items():
-                _retire_replaced(connection, built.get('day') or built.get('name'), band, signatures)
         index = _booking_index(connection)
         for built in built_days:
             pending = sorted(built['tickets'], key=lambda ticket: 0 if ticket.get('band') == 'above-5' else 1)
@@ -903,12 +963,11 @@ def prepare_sure_odds_booking(now=None):
             dated['date'] = day['start'].astimezone(WAT).date().isoformat()
             if dated['date'] != today:
                 continue
-            tickets = pack_sure_tickets(_candidates(connection, day, moment), dated)
+            from ticket_diversity import unallocated
+            tickets = _stored_slips(connection, day, 'sure_odds') + pack_sure_tickets(unallocated(connection, _candidates(connection, day, moment), moment), dated)
             signatures = {ticket['signature'] for ticket in tickets}
             for ticket in tickets:
                 _upsert_ticket(connection, dated, ticket, moment, product='sure_odds')
-            if signatures:
-                _retire_replaced(connection, dated.get('name'), '2-2.95', signatures, product='sure_odds')
             break
         if not tickets:
             return None

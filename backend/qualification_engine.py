@@ -6,7 +6,7 @@ import math
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sport_support import GOAL_SPORTS
+from sport_support import GOAL_SPORTS, WINNER_SPORTS
 
 STATES = ('QUALIFIED', 'MONITORING', 'REJECTED', 'AWAITING_DATA', 'EXPIRED', 'SUSPENDED')
 CALIBRATED = {
@@ -17,6 +17,8 @@ CALIBRATED = {
     'vfootball': {'HOME', 'DRAW', 'AWAY'},
     'basketball': {'MONEYLINE_HOME', 'MONEYLINE_AWAY'},
 }
+for _sport in WINNER_SPORTS:
+    CALIBRATED.setdefault(_sport, {'MONEYLINE_HOME', 'MONEYLINE_AWAY'})
 OPEN_STATES = ('QUALIFIED', 'MONITORING', 'AWAITING_DATA')
 
 
@@ -195,7 +197,7 @@ def decide(row, policy, now=None):
         products = []
         if state == 'QUALIFIED' and kickoff:
             products.append('booking')
-            if sport in GOAL_SPORTS and market == 'DRAW' and kickoff <= current + timedelta(days=7):
+            if sport in GOAL_SPORTS + ('ice_hockey',) and market == 'DRAW' and kickoff <= current + timedelta(days=7):
                 products.append('weekly_draw')
             if kickoff.date() == current.date():
                 products.append('daily_rollover')
@@ -464,6 +466,7 @@ def candidate_rows(connection, now, limit=100):
              AND (
                (f.sport IN ('football','frauenfussball','ice_hockey') AND p.market IN ('HOME','DRAW','AWAY'))
                OR (f.sport='basketball' AND p.market IN ('MONEYLINE_HOME','MONEYLINE_AWAY'))
+               OR (p.market IN ('MONEYLINE_HOME','MONEYLINE_AWAY') AND m.active=1 AND m.lifecycle='active')
                OR EXISTS (
                  SELECT 1 FROM sports_ai_market_registry r
                  WHERE r.sport=f.sport AND r.market_key=p.market AND r.status='active'
@@ -544,6 +547,9 @@ def _persist(connection, row, result, fingerprint, policy_version, actor, now):
          json.dumps(result['products']), policy_version, version, fingerprint, moment),
     )
     previous = existing['state'] if existing else None
+    from high_odds_service import enqueue
+    enqueue(connection, 'qualification.changed', {'decision_id':decision_id,'state':result['state']},
+            f'qualification:{decision_id}:{version}', now)
     if previous != result['state'] and (previous == 'QUALIFIED' or result['state'] in ('SUSPENDED', 'EXPIRED', 'REJECTED')):
         connection.execute(
             """INSERT INTO sports_ai_notifications(id,channel,event_type,payload_json,status)
@@ -745,7 +751,7 @@ def list_decisions(connection, state=None, sport=None, market=None, competition=
                     ) AS rn
                     FROM sports_ai_qualification_decisions d2
                     JOIN sports_ai_engine_predictions p ON p.id=d2.prediction_id
-                    WHERE d2.state='QUALIFIED' AND p.probability>0.80
+                    WHERE d2.state='QUALIFIED'
                 ) picked WHERE picked.rn=1
             )
         )""")

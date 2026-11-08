@@ -226,7 +226,7 @@ def _enqueue_validated_prices(connection, current, fresh_after, limit):
 def _feed_blocked(connection):
     row = connection.execute(
         """SELECT status, error FROM sports_ai_browser_jobs
-           WHERE url='https://www.sportybet.com/ng/sport/football'
+           WHERE url LIKE 'https://www.sportybet.com/ng/sport/%'
            ORDER BY created_at DESC LIMIT 1""",
     ).fetchone()
     if not row or row['status'] != 'failed':

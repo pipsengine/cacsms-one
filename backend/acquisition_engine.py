@@ -784,6 +784,8 @@ def _persist(connection, provider, batch):
     seen = saved = 0
     now = utc_now()
     for record in batch['fixtures']:
+        from sport_support import canonical_sport
+        record['sport'] = canonical_sport(record['sport'], record.get('competition'))
         seen += 1
         fixture_id = _fixture_for(connection, provider, record)
         previous = connection.execute(

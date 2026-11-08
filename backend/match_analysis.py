@@ -4,6 +4,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
+from sport_support import GOAL_SPORTS, WINNER_SPORTS, ANALYSED_SPORTS
 
 from acquisition_engine import _json_body, _openligadb, _persist
 from prediction_engine import (
@@ -285,7 +286,7 @@ def _standings(connection, fixture):
 
 
 def _forecast_level(model, sport='football'):
-    method = 'opponent-adjusted Poisson estimate' if sport == 'football' else 'opponent-adjusted scoring estimate'
+    method = 'chronological match-winner rating' if sport in WINNER_SPORTS else 'opponent-adjusted Poisson estimate' if sport in GOAL_SPORTS else 'opponent-adjusted scoring estimate'
     if not model:
         return 'descriptive', f'No {sport} model is registered, so only stored match history is shown.'
     if model['active'] and model['status'] == 'active':
@@ -369,8 +370,8 @@ def analyze_fixture(connection, fixture_id, actor, audit):
                 stage('collection', 'complete' if backfill.get('attempted') else 'skipped', json.dumps(backfill))
             except Exception as error:
                 stage('collection', 'failed', str(error)[:300])
-        home_rows = _rows_before(connection, fixture['home'], fixture['competition'], cutoff, sport) if sport in ('football', 'basketball') else []
-        away_rows = _rows_before(connection, fixture['away'], fixture['competition'], cutoff, sport) if sport in ('football', 'basketball') else []
+        home_rows = _rows_before(connection, fixture['home'], fixture['competition'], cutoff, sport) if sport in ANALYSED_SPORTS else []
+        away_rows = _rows_before(connection, fixture['away'], fixture['competition'], cutoff, sport) if sport in ANALYSED_SPORTS else []
         if sport == 'basketball':
             stage(
                 'collection',
@@ -454,7 +455,7 @@ def analyze_fixture(connection, fixture_id, actor, audit):
             rho = float(parameters.get('dixon_coles_rho') or 0.0)
             if not rho:
                 missing.append('Dixon-Coles rho is not stored on the registry model, so the correction was not applied.')
-            grid = _football_score_grid(features, rho) if fixture['sport'] == 'football' and features.get('expected_home_goals') is not None else []
+            grid = _football_score_grid(features, rho) if fixture['sport'] in GOAL_SPORTS and features.get('expected_home_goals') is not None else []
             matrix = [
                 {'home_goals': home, 'away_goals': away, 'probability': probability}
                 for home, away, probability in grid if home <= 5 and away <= 5
@@ -498,7 +499,19 @@ def analyze_fixture(connection, fixture_id, actor, audit):
             home_probability = predictions['MONEYLINE_HOME']['probability']
             away_probability = predictions['MONEYLINE_AWAY']['probability']
             outcome_sum = home_probability + away_probability
-            if abs(outcome_sum - 1) > 0.02:
+            if sport in WINNER_SPORTS:
+                push = features.get('draw_rate', 0.0)
+                outcome_sum += push
+                forecast = {
+                    'level': level, 'note': level_note, 'kind': 'match_winner',
+                    'moneyline_home': home_probability, 'moneyline_away': away_probability,
+                    'push_probability': push, 'outcome_probability_sum': outcome_sum,
+                    'home_rating': features.get('home_rating'), 'away_rating': features.get('away_rating'),
+                    'scorelines': [], 'matrix': [],
+                    'sample': {key: features.get(key) for key in ('home_games', 'away_games', 'historical_games')},
+                    'model': {'name': model['model_name'], 'version': model['version'], 'active': bool(model['active'])},
+                }
+            elif abs(outcome_sum - 1) > 0.02:
                 missing.append(f'Home and away moneylines summed to {outcome_sum:.4f}, so the forecast was withheld.')
                 level, level_note = 'descriptive', 'The moneyline probabilities were not mathematically consistent.'
             elif home_probability < 0.02 or home_probability > 0.98:
@@ -514,7 +527,7 @@ def analyze_fixture(connection, fixture_id, actor, audit):
             if forecast is None:
                 stage('inference', 'skipped', level_note)
                 status = 'descriptive'
-            elif fixture['sport'] == 'basketball':
+            elif fixture['sport'] == 'basketball' or sport in WINNER_SPORTS:
                 stage('inference', 'complete', f"Scoring model stored. Moneyline sum {forecast['outcome_probability_sum']:.4f}.")
                 status = 'complete'
             else:

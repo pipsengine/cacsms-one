@@ -112,7 +112,7 @@ class HighOddsBoardTests(unittest.TestCase):
         self.assertEqual(len(chosen), 30)
         self.assertIsNone(build_slip([leg(str(index), 1.6, 0.90) for index in range(14)], 30, at_most=True, minimum=15))
 
-    def test_a_selection_is_not_reused_unless_its_probability_is_100(self):
+    def test_a_selection_is_not_reused_even_if_its_probability_is_100(self):
         day = {'name': 'Saturday', 'start': datetime(2026, 11, 7, tzinfo=timezone.utc)}
         rows = [leg(str(index), 5.5, 0.90, competition=f'League {index}') for index in range(13)]
         rows.append(leg('certain', 6.0, 1, market='HOME'))
@@ -121,8 +121,8 @@ class HighOddsBoardTests(unittest.TestCase):
         first = {item['fixture'] for item in tickets[0]['selections']}
         second = {item['fixture'] for item in tickets[1]['selections']}
         self.assertIn('certain vs Opponent', first)
-        self.assertIn('certain vs Opponent', second)
-        self.assertEqual(first & second, {'certain vs Opponent'})
+        self.assertNotIn('certain vs Opponent', second)
+        self.assertEqual(first & second, set())
 
     def test_a_ticket_mixes_markets_before_repeating_one(self):
         rows = [leg(f'u{index}', 2.8, 0.90, market='UNDER_4.5', competition='League') for index in range(4)]

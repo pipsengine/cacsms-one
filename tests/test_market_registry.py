@@ -71,8 +71,8 @@ class MarketStatusTests(unittest.TestCase):
         self.assertEqual(tied[0]['market'], 'OVER_2.5')
 
     def test_goal_sports_use_the_result_market_names(self):
-        self.assertEqual(_canonical('ice_hockey', 'h2h', 'home', None), 'HOME')
-        self.assertEqual(_canonical('ice_hockey', 'h2h', 'draw', None), 'DRAW')
+        self.assertIsNone(_canonical('ice_hockey', 'h2h', 'home', None))
+        self.assertIsNone(_canonical('ice_hockey', 'h2h', 'draw', None))
         self.assertEqual(_canonical('frauenfussball', 'h2h', 'away', None), 'AWAY')
         self.assertEqual(_canonical('basketball', 'h2h', 'home', None), 'MONEYLINE_HOME')
         self.assertIsNone(_canonical('basketball', 'h2h', 'draw', None))
@@ -244,7 +244,7 @@ class RegistryRefreshTests(unittest.TestCase):
         self.assertEqual(coverage_status('table_tennis', set(), 0), 'Research')
         self.assertEqual(coverage_status('football', {'football'}, 2), 'Active')
         self.assertEqual(coverage_status('basketball', set(), 1), 'Research')
-        self.assertEqual(coverage_status('darts', set(), 0), 'Unsupported')
+        self.assertEqual(coverage_status('darts', set(), 0), 'Research')
         self.assertEqual(settle_result('tennis', 'MONEYLINE_HOME', 2, 1), 'won')
         self.assertEqual(settle_result('mma', 'MONEYLINE_AWAY', 0, 1), 'won')
         self.assertEqual(settle_result('volleyball', 'MONEYLINE_HOME', 1, 3), 'lost')

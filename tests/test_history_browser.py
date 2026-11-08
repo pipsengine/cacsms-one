@@ -97,12 +97,12 @@ class HistoryParseTests(unittest.TestCase):
 
 
 class HistoryPlanTests(unittest.TestCase):
-    def test_waiting_leagues_read_modelled_sports_before_the_general_walk(self):
+    def test_waiting_leagues_reserve_general_history_capacity(self):
         waiting = plan_visits(_blank_state(), {'premier-league'}, NOW)
         sports = [visit['sport'] for visit in waiting if visit['kind'] == 'betexplorer']
-        self.assertEqual(sports[:3], ['football', 'basketball', 'ice_hockey'])
+        self.assertEqual(sports[:3], ['football', 'basketball', 'football'])
         self.assertNotIn('tennis', sports)
-        self.assertEqual(len(sports), 6)
+        self.assertEqual(len(sports), 8)
         self.assertEqual(sum(visit['kind'] == 'soccerway' for visit in waiting), 3)
         state = _blank_state()
         for visit in waiting:

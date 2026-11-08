@@ -2,6 +2,7 @@ import React, {useEffect, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
 import {BarChart3, BrainCircuit, CalendarDays, CheckCircle2, Clock3, Database, Download, Eye, ShieldCheck, Target, Ticket, TrendingUp, Trophy} from 'lucide-react';
 import {get} from './api';
+import SportOptions from './SportOptions';
 import './predictions.css';
 
 const TABS = {
@@ -102,9 +103,12 @@ function Chart({series}) {
   </>;
 }
 
-export default function PredictionWorkspace({sport}) {
+export default function PredictionWorkspace({sport: initialSport = 'football'}) {
+  const [sport, setSport] = useState(initialSport);
   const navigate = useNavigate();
-  const tabs = TABS[sport];
+  const goalSport = ['football', 'frauenfussball', 'efootball', 'vfootball'].includes(sport);
+  const tabs = TABS[sport] || (goalSport ? TABS.football : [['All Predictions', ''], ['Match winner', 'moneyline']]);
+  const markets = MARKETS[sport] || (goalSport ? MARKETS.football : [['', 'All Markets'], ['moneyline', 'Match winner']]);
   const [tab, setTab] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -206,7 +210,8 @@ export default function PredictionWorkspace({sport}) {
     <div className="pw-head">
       <div className="pw-title"><div className={`pw-ball ${sport}`}>{sport === 'basketball' ? '🏀' : '⚽'}</div><div>
         <div className="pw-kicker">CACSMS ONE / SPORTS AI</div>
-        <h1>{sport === 'basketball' ? 'Basketball Predictions' : 'Football Predictions'}</h1>
+        <h1>{sport.replaceAll('_', ' ').replace(/\b\w/g, letter => letter.toUpperCase())} Predictions</h1>
+        <label>Sport <select aria-label="Sport" value={sport} onChange={event => { setSport(event.target.value); setTab(0); setMarket(''); setCompetition(''); setSelected(null); setSummary(null); setPayload({items: [], total: 0}); }}><SportOptions /></select></label>
         <p>Stored {sport} probabilities, displayed prices and value checks for upcoming matches. This page follows the worker every second. A blank figure has not been calculated.</p>
       </div></div>
       <div className="pw-actions">
@@ -226,7 +231,7 @@ export default function PredictionWorkspace({sport}) {
       <div className="pw-filters">
         <label>Kickoff <span className="pw-dates"><input type="date" value={startsAfter} onChange={event => setStartsAfter(event.target.value)} aria-label="From date"/><input type="date" value={startsBefore} onChange={event => setStartsBefore(event.target.value)} aria-label="To date"/></span></label>
         <label>Competition <select value={competition} onChange={event => setCompetition(event.target.value)}><option value="">All Competitions</option>{(summary?.competitions || []).map(name => <option key={name}>{name}</option>)}</select></label>
-        <label>Prediction Market <select value={market} onChange={event => setMarket(event.target.value)}>{MARKETS[sport].map(([value, label]) => <option key={label} value={value}>{label}</option>)}</select></label>
+        <label>Prediction Market <select value={market} onChange={event => setMarket(event.target.value)}>{markets.map(([value, label]) => <option key={label} value={value}>{label}</option>)}</select></label>
         <label>Status <select value={status} onChange={event => setStatus(event.target.value)}>{STATUSES.map(([value, label]) => <option key={label} value={value}>{label}</option>)}</select></label>
         <label>Team <input value={team} placeholder="Search team" onChange={event => setTeam(event.target.value)}/></label>
         <label>Rows <select value={pageSize} onChange={event => setPageSize(Number(event.target.value))}><option value="10">10</option><option value="25">25</option><option value="50">50</option></select></label>

@@ -49,7 +49,7 @@ class QuotedCoverageTests(unittest.TestCase):
             fixture('empty', 'football', 'Empty Cup', 'scheduled', kickoff)
             fixture('tennis', 'tennis', 'Saturday League', 'scheduled', kickoff)
             chosen = quoted_coverage_fixtures(connection, now, limit=8)
-        self.assertEqual([row['id'] for row in chosen], ['today'])
+        self.assertEqual({row['id'] for row in chosen}, {'today', 'empty', 'tennis'})
 
 
 class CoverageSelectionTests(unittest.TestCase):

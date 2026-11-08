@@ -94,9 +94,10 @@ def _openligadb(config, source_key):
         away = (match.get('team2') or {}).get('teamName')
         results = match.get('matchResults') or []
         final = next((item for item in reversed(results)
-                      if 'end' in str(item.get('resultName', '')).lower()), None)
-        if final is None and results:
-            final = results[-1]
+                      if item.get('resultTypeKind') == 'After90Minutes'
+                      or 'end' in str(item.get('resultName', '')).lower()), None)
+        if not match.get('matchIsFinished'):
+            final = None
         fixtures.append(_football_record(
             match.get('matchID'), match.get('leagueName') or league, home, away,
             match.get('matchDateTimeUTC'), source_key, observed,

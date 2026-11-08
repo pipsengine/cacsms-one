@@ -1,3 +1,4 @@
+import SportOptions from './SportOptions';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useLiveReload } from './live';
 import { AlertCircle, BrainCircuit, RefreshCw, Search, ShieldCheck } from 'lucide-react';
@@ -127,7 +128,7 @@ export default function MatchResearch() {
         <button className="sp-secondary" onClick={refreshAll} disabled={loading}><RefreshCw size={15} />Refresh</button>
       </div>
       <div className="sp-acq-match-select">
-        <label>Sport<select value={sport} onChange={(event) => setSport(event.target.value)}><option value="">All sports</option><option value="football">Football</option><option value="basketball">Basketball</option></select></label>
+        <label>Sport<select value={sport} onChange={(event) => setSport(event.target.value)}><SportOptions emptyLabel="All sports" /></select></label>
         <label>Find a match<input value={filter} onChange={(event) => setFilter(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); loadMatches().catch((requestError) => setError(requestError.message)); } }} placeholder="Team or competition" /></label>
         <label>Stored fixture<select value={selectedId} onChange={(event) => setSelectedId(event.target.value)}><option value="">Select a match</option>{matches.map((item) => <option key={item.id} value={item.id}>{item.home} vs {item.away} · {item.sport} · {new Date(item.starts_at).toLocaleDateString()}</option>)}</select></label>
       </div>

@@ -142,7 +142,7 @@ class SportyBetFeedTests(unittest.TestCase):
         self.assertEqual(result['imported'], 5)
         self.assertEqual(
             [(row['market'], row['outcome'], row['decimal_odds']) for row in prices],
-            [('h2h', 'away', 2.55), ('h2h', 'draw', 4.1), ('h2h', 'home', 2.4), ('totals', 'OVER', 1.87), ('totals', 'UNDER', 1.95)],
+            [('1X2', 'Away', 2.55), ('1X2', 'Draw', 4.1), ('1X2', 'Home', 2.4), ('Over/Under', 'Over 5.5', 1.87), ('Over/Under', 'Under 5.5', 1.95)],
         )
 
 
