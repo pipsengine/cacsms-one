@@ -183,8 +183,10 @@ def qualified_selections(connection, now=None):
 
 
 def create_job(connection, selections, high_odds=False):
+    from booking_policy import load
     from qualification_engine import require_bookable
-    if not high_odds:
+    policy = load(connection)
+    if not high_odds and policy['require_live_qualification']:
         require_bookable(connection, selections)
     limit = 30 if high_odds else 25
     if not selections or len(selections) > limit:
@@ -194,7 +196,7 @@ def create_job(connection, selections, high_odds=False):
         raise ValueError('A booking needs a sport on every selection')
     signature = _signature(selections)
     ticket_id = selections[0].get('ticket_id')
-    if ticket_id:
+    if ticket_id and policy['enforce_match_exposure']:
         from ticket_diversity import assert_available
         ticket = connection.execute('SELECT family_id,status,parameters_json FROM sports_ai_accumulator_tickets WHERE id=?', (ticket_id,)).fetchone()
         if ticket and json.loads(ticket['parameters_json'] or '{}').get('diversity_retired'):
@@ -353,6 +355,12 @@ def _publication_anchor(connection):
     return last_publication_at(connection)
 
 
+def _booking_due(connection, moment):
+    from booking_policy import load
+    gap = timedelta(minutes=float(load(connection)['request_gap_minutes']))
+    return publication_due(moment, _publication_anchor(connection), every=gap)
+
+
 def select_booking(connection, now):
     """Choose the ticket that is qualified now.
 
@@ -361,7 +369,7 @@ def select_booking(connection, now):
     inside 15 minutes.
     """
     phase = phase_at(now)
-    open_now = publication_due(now, _publication_anchor(connection))
+    open_now = _booking_due(connection, now)
     queued = connection.execute(
         "SELECT id FROM sports_ai_booking_jobs WHERE status='QUEUED' ORDER BY created_at LIMIT 1",
     ).fetchone()
@@ -460,9 +468,37 @@ def page_identity(connection, selections):
 
 
 def next_ticket_id(connection, now):
+    """The next stored ticket to book, soonest first kickoff first.
+
+    What else is required depends on the booking policy (booking_policy.py).
+    """
+    from booking_policy import load
+    policy = load(connection)
     cutoff = (now - timedelta(minutes=REFRESH_MINUTES)).isoformat()
+    clauses, args = [], [cutoff]
+    if policy['require_live_qualification']:
+        clauses.append("""AND NOT EXISTS (
+               SELECT 1 FROM sports_ai_accumulator_legs l
+               WHERE l.ticket_id=t.id
+                 AND NOT EXISTS (
+                   SELECT 1 FROM sports_ai_qualification_decisions d
+                   WHERE d.fixture_id=l.fixture_id AND upper(d.market)=upper(l.market) AND d.state='QUALIFIED'
+                     AND EXISTS (SELECT 1 FROM json_each(d.products_json) WHERE value='booking')
+                 )
+             )""")
+    clauses.append("""AND NOT EXISTS (
+               SELECT 1 FROM sports_ai_accumulator_legs l
+               WHERE l.ticket_id=t.id AND l.decimal_odds<?
+             )""")
+    args.append(float(policy['min_leg_odds']))
+    # Enough legs must still be ahead of kickoff to make a ticket.
+    if policy['drop_unavailable_legs']:
+        clauses.append("""AND (SELECT COUNT(*) FROM sports_ai_accumulator_legs l
+               WHERE l.ticket_id=t.id AND julianday(l.starts_at)>julianday(?))
+             >= MAX(1, MIN(?, (SELECT COUNT(*) FROM sports_ai_accumulator_legs l WHERE l.ticket_id=t.id)))""")
+        args.extend([now.isoformat(), int(policy['min_legs'])])
     row = connection.execute(
-        """SELECT t.id
+        f"""SELECT t.id
            FROM sports_ai_accumulator_tickets t
            WHERE t.status='qualified'
              AND NOT EXISTS (
@@ -479,22 +515,10 @@ def next_ticket_id(connection, now):
              )
              AND COALESCE(json_extract(t.parameters_json, '$.tier_mode'), 'standard')!='simulation'
              AND t.probability_basis='independent' AND t.joint_probability>0
-             AND NOT EXISTS (
-               SELECT 1 FROM sports_ai_accumulator_legs l
-               WHERE l.ticket_id=t.id AND l.decimal_odds<1.3
-             )
-             AND NOT EXISTS (
-               SELECT 1 FROM sports_ai_accumulator_legs l
-               WHERE l.ticket_id=t.id
-                 AND NOT EXISTS (
-                   SELECT 1 FROM sports_ai_qualification_decisions d
-                   WHERE d.fixture_id=l.fixture_id AND upper(d.market)=upper(l.market) AND d.state='QUALIFIED'
-                     AND EXISTS (SELECT 1 FROM json_each(d.products_json) WHERE value='booking')
-                 )
-             )
-           ORDER BY t.created_at DESC
+             {' '.join(clauses)}
+           ORDER BY (SELECT MIN(starts_at) FROM sports_ai_accumulator_legs l WHERE l.ticket_id=t.id), t.created_at DESC
            LIMIT 1""",
-        (cutoff,),
+        args,
     ).fetchone()
     return row['id'] if row else None
 
@@ -554,12 +578,13 @@ def _apply_displayed_prices(connection, ticket_id, seen):
             odds = float(item.get('page_odds'))
         except (TypeError, ValueError):
             continue
-        if not item.get('fixture_id') or not item.get('market') or item.get('selection') is None or odds <= 1:
+        if not item.get('fixture_id') or not item.get('market') or odds <= 1:
             continue
+        # One leg per fixture and market. The selection text may be SportyBet's name.
         connection.execute(
             """UPDATE sports_ai_accumulator_legs SET decimal_odds=?
-               WHERE ticket_id=? AND fixture_id=? AND upper(market)=upper(?) AND selection=?""",
-            (odds, ticket_id, item['fixture_id'], item['market'], item['selection']),
+               WHERE ticket_id=? AND fixture_id=? AND upper(market)=upper(?)""",
+            (odds, ticket_id, item['fixture_id'], item['market']),
         )
     rows = connection.execute(
         'SELECT decimal_odds FROM sports_ai_accumulator_legs WHERE ticket_id=?',
@@ -651,9 +676,11 @@ def _store_displayed_code(connection, ticket_id, code, evidence):
         raise ValueError('SportyBet returned a code already registered to another ticket')
     if existing:
         return
+    from booking_policy import load
+    strict = load(connection)['require_live_qualification']
     from qualification_engine import ticket_is_bookable
     optimized = connection.execute('SELECT 1 FROM sports_ai_high_odds_tickets WHERE ticket_id=?',(ticket_id,)).fetchone()
-    if optimized:
+    if strict and optimized:
         from high_odds_service import validate_snapshot
         if validate_snapshot(connection,ticket_id):
             raise ValueError('Finalized high-odds ticket no longer passes registration checks')
@@ -663,7 +690,8 @@ def _store_displayed_code(connection, ticket_id, code, evidence):
     # code; that must not discard a real displayed code from Active Codes.
     queued_product = product in ('sure_odds', 'high_odds')
     if (
-        not optimized
+        strict
+        and not optimized
         and not queued_product
         and not ticket_is_bookable(connection, ticket_id)
         and not _high_odds_ticket(connection, ticket_id)
@@ -1367,7 +1395,11 @@ def _drop_unpriced_legs(connection, ticket_id, skipped):
     except json.JSONDecodeError:
         parameters = {}
     parameters['leg_count'] = len(legs)
-    signature = _slip_signature(parameters.get('day') or '', parameters.get('band') or '', legs)
+    if parameters.get('product') == 'high_odds':
+        signature = _slip_signature(parameters.get('day') or '', parameters.get('band') or '', legs)
+    else:
+        from accumulator_engine import selection_signature
+        signature = selection_signature(legs)
     connection.execute(
         """UPDATE sports_ai_accumulator_tickets
            SET combined_odds=?, joint_probability=?, leg_count=?, signature=?, parameters_json=?
@@ -1407,9 +1439,12 @@ async def _execute_job(job_id, page_url=None):
             _set_job(connection,job_id,'FAILED',error='Retry limit reached',reason_code='RETRY_EXHAUSTED')
             return {'id': job_id, 'status': 'FAILED', 'error': 'Retry limit reached', 'places_wager': False}
         selections = json.loads(job['selections_json'])
+        from booking_policy import load as load_policy
+        policy = load_policy(connection)
         from high_odds_service import validate_snapshot
         optimized_id = next((item.get('ticket_id') for item in selections if item.get('ticket_id')),None)
-        problems = validate_snapshot(connection,optimized_id) if optimized_id else []
+        # With displayed odds accepted, a moved price or lapsed decision is not a reason to stop.
+        problems = validate_snapshot(connection,optimized_id) if optimized_id and not policy['accept_displayed_odds'] else []
         if problems:
             _set_job(connection,job_id,'FAILED',error='; '.join(problems),reason_code='SNAPSHOT_REVALIDATION')
             return {'id':job_id,'status':'FAILED','error':'; '.join(problems),'places_wager':False}
@@ -1417,13 +1452,26 @@ async def _execute_job(job_id, page_url=None):
         linked_id = selections[0].get('ticket_id') if selections else None
         linked_ticket = connection.execute('SELECT family_id,parameters_json FROM sports_ai_accumulator_tickets WHERE id=?', (linked_id,)).fetchone() if linked_id else None
         try:
-            if linked_ticket and json.loads(linked_ticket['parameters_json'] or '{}').get('diversity_retired'):
-                raise TicketExposureConflict('This ticket was retired because its matches overlap another active ticket.')
-            assert_available(connection, selections, ignore_family=linked_ticket['family_id'] if linked_ticket else None)
+            if policy['enforce_match_exposure']:
+                if linked_ticket and json.loads(linked_ticket['parameters_json'] or '{}').get('diversity_retired'):
+                    raise TicketExposureConflict('This ticket was retired because its matches overlap another active ticket.')
+                assert_available(connection, selections, ignore_family=linked_ticket['family_id'] if linked_ticket else None)
         except TicketExposureConflict as exc:
             _set_job(connection, job_id, 'FAILED', error=str(exc), reason_code='FIXTURE_EXPOSURE')
             return {'id': job_id, 'status': 'FAILED', 'reason_code': 'FIXTURE_EXPOSURE', 'error': str(exc), 'places_wager': False}
         selections = page_identity(connection, selections)
+        # A match that has kicked off is never booked. Drop it while enough legs remain.
+        moment = _now()
+        started_legs = [item for item in selections if (_parse_booking_time(item.get('starts_at')) or moment) <= moment
+                        and item.get('starts_at')]
+        from booking_policy import legs_needed
+        minimum = legs_needed(policy, len(selections))
+        if started_legs:
+            selections = [item for item in selections if item not in started_legs]
+            if not policy['drop_unavailable_legs'] or len(selections) < minimum:
+                message = f'{len(started_legs)} selection(s) already kicked off; {len(selections)} remain'
+                _set_job(connection, job_id, 'FAILED', error=message, reason_code='FIXTURE_STARTED')
+                return {'id': job_id, 'status': 'FAILED', 'reason_code': 'FIXTURE_STARTED', 'error': message, 'places_wager': False}
         session_id = _open_session(connection, job_id)
         connection.execute(
             """UPDATE sports_ai_booking_jobs
@@ -1447,7 +1495,8 @@ async def _execute_job(job_id, page_url=None):
                 seen = []
                 skipped = []
                 result = None
-                flexible = _flexible_high_odds(selections)
+                flexible = policy['drop_unavailable_legs'] or _flexible_high_odds(selections)
+                needed = minimum if policy['drop_unavailable_legs'] else 15
                 for index, sport in enumerate(sports):
                     await _open_sport(page, sport, page_url if len(sports) == 1 else None, reuse=index > 0)
                     group = [item for item in selections if page_sport(item) == sport]
@@ -1460,11 +1509,15 @@ async def _execute_job(job_id, page_url=None):
                 if result is None:
                     clicked = {item.get('fixture_id') for item in seen}
                     booked = [item for item in selections if item.get('fixture_id') in clicked]
-                    if flexible and len(booked) < 15:
+                    if flexible and len(booked) < needed:
                         result = {
                             'status': 'ODDS_CHANGED', 'seen': seen, 'code': None,
                             'error': 'SportyBet is not showing enough of these lines to book the ticket.',
                         }
+                    elif policy['accept_displayed_odds']:
+                        # Book at the prices on the page; they are stored on the ticket below.
+                        result = await request_displayed_code(page, booked, seen)
+                        result['skipped'] = [item for item in selections if item.get('fixture_id') not in clicked]
                     else:
                         from high_odds_service import check_displayed_prices
                         try:
@@ -1512,8 +1565,19 @@ async def _execute_job(job_id, page_url=None):
         with connect() as connection:
             ticket_id = next((item.get('ticket_id') for item in selections if item.get('ticket_id')), None)
             if result['status'] == 'CODE_GENERATED':
-                if ticket_id and result.get('skipped'):
-                    _drop_unpriced_legs(connection, ticket_id, result['skipped'])
+                dropped = (result.get('skipped') or []) + started_legs
+                if ticket_id and dropped:
+                    _drop_unpriced_legs(connection, ticket_id, dropped)
+                    _log_booking(connection, job_id, 'policy', f'Dropped {len(dropped)} selection(s) SportyBet did not offer or that had kicked off',
+                                 ticket_id=ticket_id, session_id=session_id,
+                                 detail={'dropped': [f"{i.get('home')} vs {i.get('away')} {i.get('market')}" for i in dropped]})
+                moved = [item for item in result.get('seen') or [] if item.get('page_odds') is not None
+                         and abs(float(item['page_odds']) - float(item.get('stored_odds') or 0)) > 0.000001]
+                if ticket_id and moved:
+                    _log_booking(connection, job_id, 'policy', f'Booked at {len(moved)} changed displayed price(s)',
+                                 ticket_id=ticket_id, session_id=session_id,
+                                 detail={'changes': [{'fixture_id': i['fixture_id'], 'market': i.get('market'),
+                                                      'stored': i.get('stored_odds'), 'displayed': i['page_odds']} for i in moved]})
                 _set_job(connection, job_id, 'CODE_GENERATED', code=result['code'], screenshot=str(shot), odds_json=json.dumps(result['seen']), reason_code='CODE_VERIFIED')
                 if ticket_id:
                     # Store before rewriting leg prices. Applying page odds first can
@@ -1720,6 +1784,10 @@ def _ticket_preflight(connection, ticket, now, window_open, minutes):
     )]
     if not legs:
         return 'TICKET_NOT_QUALIFIED', 'The ticket has no stored selections.', 'review_required'
+    from booking_policy import load
+    policy = load(connection)
+    if not policy['require_live_qualification'] and policy['accept_displayed_odds']:
+        return _lenient_preflight(connection, legs, now, window_open, policy)
     from qualification_engine import selection_is_qualified
     for leg in legs:
         fixture = connection.execute(
@@ -1749,6 +1817,35 @@ def _ticket_preflight(connection, ticket, now, window_open, minutes):
     if not window_open:
         return 'WINDOW_CLOSED', 'The next code request waits for the 15-minute gap. The ticket stays ready and no browser is opened.', None
     return 'READY', 'The ticket is still qualified and its same-selection SportyBet quote is fresh.', None
+
+
+def _lenient_preflight(connection, legs, now, window_open, policy):
+    """Booking policy preflight: only kickoff and leg count can hold a ticket back.
+
+    Qualification churn and price age do not stop the request; the page price is
+    used when the code is requested. Legs that kicked off or left the fixture store
+    are dropped at booking time while enough legs remain.
+    """
+    live = 0
+    started = 0
+    for leg in legs:
+        fixture = connection.execute(
+            'SELECT status, starts_at FROM sports_ai_fixtures WHERE id=?', (leg['fixture_id'],),
+        ).fetchone()
+        kickoff = _parse_booking_time(leg['starts_at'] or (fixture['starts_at'] if fixture else None))
+        if kickoff and kickoff <= now:
+            started += 1
+        elif fixture and fixture['status'] in ('scheduled', 'not_started'):
+            live += 1
+    from booking_policy import legs_needed
+    needed = legs_needed(policy, len(legs))
+    if live < needed:
+        if started:
+            return 'FIXTURE_NOT_FOUND', f'Only {live} selection(s) are still before kickoff; {needed} are needed.', 'expired'
+        return 'FIXTURE_NOT_FOUND', f'Only {live} selection(s) are still in the fixture store; {needed} are needed.', 'review_required'
+    if not window_open:
+        return 'WINDOW_CLOSED', 'The next code request waits for the request gap. The ticket stays ready and no browser is opened.', None
+    return 'READY', 'Booking at the prices SportyBet displays; changed prices are stored on the ticket.', None
 
 
 def _parse_booking_time(value):
@@ -1785,7 +1882,7 @@ def process_booking_queue(now=None):
     phase = phase_at(moment)
     with connect() as connection:
         recover_stopped_bookings(connection, moment)
-        open_now = publication_due(moment, _publication_anchor(connection))
+        open_now = _booking_due(connection, moment)
         examined = examine_ready_tickets(connection, moment, window_open=open_now)
         expired = expire_displayed_codes(connection, moment)
         qualified = qualified_selections(connection, moment)
@@ -1921,7 +2018,7 @@ def book_prepared_tickets(limit=1, now=None):
     moment = now or _now()
     phase = phase_at(moment)
     with connect() as connection:
-        if not publication_due(moment, _publication_anchor(connection)):
+        if not _booking_due(connection, moment):
             return [{'status': 'outside_window', 'phase': phase, 'places_wager': False}]
     import asyncio
     results = []
@@ -1962,7 +2059,7 @@ def diagnose_booking(connection, now=None):
            WHERE d.state='QUALIFIED'""",
     ).fetchall()
     blockers = []
-    if not publication_due(moment, _publication_anchor(connection)):
+    if not _booking_due(connection, moment):
         blockers.append({'code': 'outside_publication_window', 'detail': schedule['note']})
     if not decisions:
         blockers.append({'code': 'no_qualified_decision', 'detail': 'No decision is currently QUALIFIED.'})

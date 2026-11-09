@@ -32,6 +32,16 @@ function Overview({data}){
   <section className="sp-panel"><div className="sp-panel-head"><div><h3>Worker stages · last 24 hours</h3><p>Failed runs keep their error so the cause is visible here.</p></div></div>
    <Table headers={['Stage','Last status','Runs','Failed','Last error','Last run']} empty="No worker stages ran in the last 24 hours." rows={(data.stages||[]).map(s=>[human(s.stage),<Pill tone={s.last_status==='failed'?'danger':'neutral'}>{human(s.last_status)}</Pill>,s.runs,s.failed?<b className="ah-bad">{s.failed}</b>:0,s.last_error?<code className="ah-code">{s.last_error}</code>:'—',stamp(s.last_at)])}/>
   </section>
+  {data.booking_policy&&<section className="sp-panel"><div className="sp-panel-head"><div><h3>Booking policy</h3><p>What may stop a code request. No wager is placed, started matches are never booked and access challenges always stop a run.</p></div></div>
+   <Table headers={['Rule','Setting']} empty="" rows={[
+    ['Require a live QUALIFIED decision on every leg',data.booking_policy.require_live_qualification?'Yes':'No'],
+    ['Book at the price SportyBet displays',data.booking_policy.accept_displayed_odds?'Yes — changes are stored on the ticket':'No — a changed price stops the booking'],
+    ['Drop legs SportyBet does not offer or that kicked off',data.booking_policy.drop_unavailable_legs?`Yes, keeping at least ${data.booking_policy.min_legs}`:'No'],
+    ['Block tickets that share a match',data.booking_policy.enforce_match_exposure?'Yes':'No'],
+    ['Lowest leg price',data.booking_policy.min_leg_odds],
+    ['Gap between code requests',`${data.booking_policy.request_gap_minutes} min`],
+   ]}/>
+  </section>}
   <section className="sp-panel"><div className="sp-panel-head"><div><h3>Booking outcomes · last 7 days</h3><p>{failing.length?`${failing.length} stage(s) failed in the last day.`:'Codes are stored only when SportyBet displayed them.'}</p></div></div>
    <Table headers={['Outcome','Status','Jobs']} empty="No booking jobs finished in the last 7 days." rows={(b.outcomes||[]).map(o=>[human(o.reason),<Pill tone={o.status==='CODE_GENERATED'?'success':o.status==='FAILED'?'danger':'warning'}>{human(o.status)}</Pill>,o.n])}/>
   </section>

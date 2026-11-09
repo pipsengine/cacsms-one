@@ -21,6 +21,8 @@ class BookingPreflightTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         db.DB = Path(self.temp.name) / 'sports.sqlite3'
         db.initialize()
+        with db.connect() as _c:
+            __import__('booking_policy').save(_c, __import__('booking_policy').STRICT)  # these tests cover the strict gates
 
     def tearDown(self):
         db.DB = self.previous

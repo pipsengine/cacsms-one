@@ -678,6 +678,8 @@ class AccumulatorPersistenceTests(unittest.TestCase):
         self.assertNotIn(50000, stored)
 
     def test_monitor_demotes_a_ticket_when_qualification_lapses(self):
+        with db.connect() as _c:
+            __import__('booking_policy').save(_c, __import__('booking_policy').STRICT)  # these tests cover the strict gates
         self._opportunity_pair()
         with db.connect() as connection:
             connection.execute('DELETE FROM sports_ai_qualification_decisions')

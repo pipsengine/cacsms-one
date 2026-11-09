@@ -51,6 +51,8 @@ class BookingTests(unittest.TestCase):
         cls.previous = db.DB
         db.DB = Path(cls.temp.name) / 'sports.sqlite3'
         db.initialize()
+        with db.connect() as _c:
+            __import__('booking_policy').save(_c, __import__('booking_policy').STRICT)  # these tests cover the strict gates
         cls.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()

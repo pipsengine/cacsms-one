@@ -175,6 +175,8 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(tickets, 0)
 
     def test_lapsed_qualification_removes_a_ready_ticket(self):
+        with db.connect() as _c:
+            __import__('booking_policy').save(_c, __import__('booking_policy').STRICT)  # these tests cover the strict gates
         kickoff = NOW + timedelta(days=1)
         with db.connect() as connection:
             fixture_id, _prediction = self._ids(connection, kickoff)

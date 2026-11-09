@@ -239,6 +239,8 @@ class HighOddsServiceTests(unittest.TestCase):
             self.assertEqual(c.execute('SELECT COUNT(*) FROM sports_ai_booking_codes').fetchone()[0],0)
 
     def test_price_change_invalidates_snapshot_without_changing_its_legs(self):
+        with db.connect() as _c:
+            __import__('booking_policy').save(_c, __import__('booking_policy').STRICT)  # these tests cover the strict gates
         with db.connect() as c:
             self.seed(c,2)
             identifier=next(i for r in service.generate_event(c,self.event(c),self.now) for i in r['created_ids'])

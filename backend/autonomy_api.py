@@ -93,6 +93,7 @@ def autonomy_overview(connection, now=None):
         'bookings': _bookings(connection, current),
         'sources': source_health(connection, current),
         'learning': learning,
+        'booking_policy': __import__('booking_policy').load(connection),
         'places_wager': False,
     }
 
@@ -115,6 +116,27 @@ def build_autonomy_router(auth, require_admin_key):
                 connection.execute(
                     """INSERT INTO sports_ai_audit_events(id,actor,action,metadata_json) VALUES(lower(hex(randomblob(16))),?,?,?)""",
                     (str(user), 'sources.review', json.dumps({'host': saved['hostname'], 'approved': bool(saved['approved'])})),
+                )
+                return saved
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+
+    @router.get('/booking-policy')
+    def booking_policy_view(user=Depends(auth)):
+        from booking_policy import load
+        with connect() as connection:
+            return load(connection)
+
+    @router.put('/booking-policy')
+    def booking_policy_save(body: dict, x_sports_admin_key: str | None = Header(default=None), user=Depends(auth)):
+        require_admin_key(x_sports_admin_key)
+        from booking_policy import save
+        try:
+            with connect() as connection:
+                saved = save(connection, body)
+                connection.execute(
+                    """INSERT INTO sports_ai_audit_events(id,actor,action,metadata_json) VALUES(lower(hex(randomblob(16))),?,?,?)""",
+                    (str(user), 'booking.policy', json.dumps(saved)),
                 )
                 return saved
         except ValueError as error:

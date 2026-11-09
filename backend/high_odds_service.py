@@ -488,7 +488,18 @@ def monitor(connection, now=None):
                 continue
         if row['status']=='expired' and row['registration_state'] in ('expired','monitoring'):continue
         coded = connection.execute("SELECT 1 FROM sports_ai_booking_codes WHERE accumulator_ticket_id=? AND verification_method='displayed'",(row['ticket_id'],)).fetchone()
-        errors = [] if coded else validate_snapshot(connection,row['ticket_id'],current)
+        from booking_policy import load as booking_policy
+        policy = booking_policy(connection)
+        if started and not coded:
+            from accumulator_engine import _trim_started_legs
+            ticket = connection.execute('SELECT id,status FROM sports_ai_accumulator_tickets WHERE id=?',(row['ticket_id'],)).fetchone()
+            legs = [dict(l) for l in connection.execute('SELECT * FROM sports_ai_accumulator_legs WHERE ticket_id=?',(row['ticket_id'],))]
+            if ticket and _trim_started_legs(connection,dict(ticket),legs,current):
+                audit(connection,'ticket.started_legs_dropped',{'remaining':len(legs)},row['ticket_id'],now=current)
+                changed += 1
+                continue
+        # Under the booking policy a moved price is booked as displayed, not a reason to expire.
+        errors = [] if coded or policy['accept_displayed_odds'] else validate_snapshot(connection,row['ticket_id'],current)
         if started or errors:
             # Started tickets remain eligible for the existing settlement worker.
             state = 'monitoring' if started and coded else 'expired'
@@ -515,8 +526,10 @@ def queue_registration(connection, now=None):
         AND (h.next_retry_at IS NULL OR julianday(h.next_retry_at)<=julianday(?))
         ORDER BY CASE WHEN h.category_id=? THEN 0 ELSE 1 END,h.ticket_no LIMIT 24""",
         (settings['max_registration_attempts'],current.isoformat(),PRIMARY)).fetchall()
+    from booking_policy import load as booking_policy
+    accept_displayed = booking_policy(connection)['accept_displayed_odds']
     for row in rows:
-        problems = validate_snapshot(connection,row['ticket_id'],current)
+        problems = [] if accept_displayed else validate_snapshot(connection,row['ticket_id'],current)
         if problems: continue
         # The existing booking API and browser restrictions remain authoritative.
         try:

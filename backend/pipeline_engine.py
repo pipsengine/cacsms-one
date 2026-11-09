@@ -422,9 +422,11 @@ def sync_ticket_lifecycle(connection, now=None):
     changed = 0
     states = {name: 0 for name in ('READY_FOR_WINDOW', 'BOOKING_PENDING', 'CODE_VERIFIED', 'FAILED', 'EXPIRED')}
     tickets = connection.execute('SELECT id, status, publication_state FROM sports_ai_accumulator_tickets').fetchall()
+    from booking_policy import load as booking_policy
+    demote = booking_policy(connection)['require_live_qualification']
     for ticket in tickets:
         status = ticket['status']
-        if status == 'qualified' and not ticket_is_bookable(connection, ticket['id']):
+        if demote and status == 'qualified' and not ticket_is_bookable(connection, ticket['id']):
             connection.execute(
                 "UPDATE sports_ai_accumulator_tickets SET status='review_required', publication_state=NULL WHERE id=?",
                 (ticket['id'],),

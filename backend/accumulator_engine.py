@@ -2621,6 +2621,29 @@ def export_ticket(connection, actor, audit, ticket_id, now=None):
     return payload
 
 
+def _trim_started_legs(connection, ticket, legs, now):
+    """Under the booking policy, drop kicked-off legs from a ticket with no code yet.
+
+    A ticket that already has a displayed code is never changed: the code is fixed.
+    """
+    from booking_policy import load
+    policy = load(connection)
+    if not policy['drop_unavailable_legs'] or ticket['status'] not in ('qualified', 'review_required'):
+        return False
+    if connection.execute(
+        """SELECT 1 FROM sports_ai_booking_codes WHERE accumulator_ticket_id=? AND verification_method='displayed'
+           AND TRIM(COALESCE(code,''))<>''""", (ticket['id'],),
+    ).fetchone():
+        return False
+    started = [leg for leg in legs if (_parse_time(leg['starts_at']) or now) <= now]
+    from booking_policy import legs_needed
+    if len(legs) - len(started) < legs_needed(policy, len(legs)):
+        return False
+    from sportybet_booking import _drop_unpriced_legs
+    _drop_unpriced_legs(connection, ticket['id'], started)
+    return True
+
+
 def monitor_accumulators(connection, actor, audit, idempotency_key, now=None):
     current = _now(now)
     existing = connection.execute(
@@ -2653,6 +2676,11 @@ def monitor_accumulators(connection, actor, audit, idempotency_key, now=None):
             if outcome == 'settled':
                 summary['settled'] += 1
                 _event(connection, ticket['id'], run_id, 'settled', {'detail': 'Settled from stored final scores'}, current)
+            elif started and ticket['status'] != 'expired' and _trim_started_legs(connection, ticket, legs, current):
+                _event(connection, ticket['id'], run_id, 'started_legs_dropped', {
+                    'detail': 'A selection kicked off before a code was requested; it was dropped and the rest stay bookable.',
+                }, current)
+                summary['trimmed'] = summary.get('trimmed', 0) + 1
             elif started and ticket['status'] != 'expired':
                 connection.execute(
                     """UPDATE sports_ai_accumulator_tickets SET status='expired' WHERE id=?""", (ticket['id'],),
@@ -2670,7 +2698,8 @@ def monitor_accumulators(connection, actor, audit, idempotency_key, now=None):
                     summary['unchanged'] += 1
                     continue
                 from qualification_engine import ticket_is_bookable
-                if ticket_is_bookable(connection, ticket['id']):
+                from booking_policy import load as booking_policy
+                if not booking_policy(connection)['require_live_qualification'] or ticket_is_bookable(connection, ticket['id']):
                     summary['unchanged'] += 1
                 else:
                     connection.execute(

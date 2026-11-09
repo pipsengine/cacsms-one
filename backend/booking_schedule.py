@@ -70,13 +70,13 @@ def last_publication_at(connection):
     return parsed.astimezone(timezone.utc)
 
 
-def publication_due(now, last_attempt=None):
-    """Testing period: one code request every 15 minutes, including outside the named windows."""
+def publication_due(now, last_attempt=None, every=None):
+    """One code request per gap (15 minutes unless the booking policy sets another), at any time of day."""
     if last_attempt is None:
         return True
     current = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
     previous = last_attempt if last_attempt.tzinfo else last_attempt.replace(tzinfo=timezone.utc)
-    return current - previous >= PUBLICATION_EVERY
+    return current - previous >= (every or PUBLICATION_EVERY)
 
 
 def next_publication(now, last_attempt=None):
