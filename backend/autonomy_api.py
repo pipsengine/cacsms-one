@@ -121,6 +121,17 @@ def build_autonomy_router(auth, require_admin_key):
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
 
+    @router.get('/results')
+    def match_results(sport: str | None = None, market: str | None = None, competition: str | None = None,
+                      model: str | None = None, date_from: str | None = None, date_to: str | None = None,
+                      limit: int = 200, user=Depends(auth)):
+        from results_view import results_view
+        try:
+            with connect() as connection:
+                return results_view(connection, sport, market, competition, model, date_from, date_to, limit)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+
     @router.get('/booking-policy')
     def booking_policy_view(user=Depends(auth)):
         from booking_policy import load
