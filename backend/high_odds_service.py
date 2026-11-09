@@ -32,7 +32,7 @@ JACKPOT_STAKE = 100
 DAILY_TARGET = 5
 DEFAULTS = dict(min_legs=2, max_legs=16, min_leg_odds=1.01, max_per_competition=1, max_per_team=1,
                 min_probability=0.05, min_edge=0.01, min_completeness=0.5,
-                min_model_reliability=0.8, odds_max_age_minutes=15,
+                min_model_reliability=0.8, odds_max_age_minutes=15, min_lead_minutes=30,
                 beam_width=100, search_limit=12000, timeout_seconds=3,
                 max_registration_attempts=3, registration_enabled=True, jackpot_max_legs=25)
 
@@ -76,7 +76,7 @@ def save_settings(connection, updates, category_updates, actor):
         ('min_leg_odds',1.01,1000),
         ('max_per_team',1,1),('min_probability',0.01,0.99),('min_edge',0.001,1),
         ('min_completeness',0.5,1),('min_model_reliability',0.8,1),
-        ('odds_max_age_minutes',1,15),('beam_width',10,200),
+        ('odds_max_age_minutes',1,15),('min_lead_minutes',5,240),('beam_width',10,200),
         ('search_limit',100,50000),('timeout_seconds',0.1,10),('max_registration_attempts',1,5),
     ):
         value = float(merged[name])
@@ -140,6 +140,10 @@ def eligible(connection, now=None, ignore_family=None, exclude_allocated=True):
             reason = 'Sport is disabled'
         if row.get('fixture_status') != 'scheduled':
             reason = 'Fixture is not scheduled'
+        # A code generated minutes before kickoff is in play before anyone can use it.
+        kickoff = _parse_time(row.get('starts_at'))
+        if kickoff and kickoff <= current + timedelta(minutes=float(settings['min_lead_minutes'])):
+            reason = 'Kickoff is too close to register and use a booking code'
         if row.get('model_sport')!=row['sport'] or row.get('model_lifecycle')!='active':
             reason = 'Prediction requires this sport’s activated model'
         from urllib.parse import urlsplit

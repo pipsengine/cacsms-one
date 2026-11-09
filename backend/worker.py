@@ -6,6 +6,7 @@ import os
 import threading
 import time
 import uuid
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 from acquisition import CollectionError
@@ -74,10 +75,18 @@ def _report(label, error):
     print(label, str(error).encode('ascii', 'backslashreplace').decode('ascii'))
 
 
-def _observed(stage, result, failed=False):
+def _observed(stage, result, failed=False, error=None):
     detail = {}
+    if error is not None:
+        import traceback
+        from browser_slots import classify_browser_error
+        detail['error_type'] = type(error).__name__
+        detail['error'] = str(error).encode('ascii', 'backslashreplace').decode('ascii')[:600]
+        detail['error_class'] = classify_browser_error(error)
+        frames = traceback.extract_tb(error.__traceback__)[-3:]
+        detail['where'] = [f'{Path(f.filename).name}:{f.lineno} {f.name}' for f in frames]
     if isinstance(result, dict):
-        for key in ('status', 'phase', 'settled', 'selected', 'qualified', 'places_wager', 'promoted', 'saved'):
+        for key in ('status', 'phase', 'settled', 'selected', 'qualified', 'places_wager', 'promoted', 'saved', 'reassessed', 'counts'):
             if key in result:
                 detail[key] = result[key]
     detail['places_wager'] = False
@@ -192,6 +201,7 @@ def _run_cycle():
     _process_browser_queue()
     _odds_refresh_tick()
     _history_tick()
+    _learning_loop_tick()
     _govern_cycle()
     _coverage_tick()
     _match_report_tick()
@@ -240,7 +250,7 @@ def _qualification_tick():
         )
         _observed('qualification', result)
     except Exception as error:
-        _observed('qualification', {'status': 'failed'}, failed=True)
+        _observed('qualification', {'status': 'failed'}, failed=True, error=error)
         _report('qualification failed', error)
 
 
@@ -256,7 +266,7 @@ def _draw_tick():
         )
         _observed('draw', result)
     except Exception as error:
-        _observed('draw', {'status': 'failed'}, failed=True)
+        _observed('draw', {'status': 'failed'}, failed=True, error=error)
         _report('draw intelligence failed', error)
 
 
@@ -273,7 +283,7 @@ def _weekly_draw_tick():
         )
         _observed('weekly_draw', result)
     except Exception as error:
-        _observed('weekly_draw', {'status': 'failed'}, failed=True)
+        _observed('weekly_draw', {'status': 'failed'}, failed=True, error=error)
         _report('weekly draw failed', error)
 
 
@@ -285,7 +295,7 @@ def _rollover_tick():
         print('rollover', 'settled', result.get('settled'), 'selected', result.get('selected'), 'places_wager', result.get('places_wager'))
         _observed('rollover', result)
     except Exception as error:
-        _observed('rollover', {'status': 'failed'}, failed=True)
+        _observed('rollover', {'status': 'failed'}, failed=True, error=error)
         _report('rollover failed', error)
 
 
@@ -297,7 +307,7 @@ def _learning_tick():
         print('learning', result.get('status'), 'selections', result.get('selection_sample', ''), 'suspended', result.get('suspended', ''), 'promoted', result.get('promoted'))
         _observed('learning', result)
     except Exception as error:
-        _observed('learning', {'status': 'failed'}, failed=True)
+        _observed('learning', {'status': 'failed'}, failed=True, error=error)
         _report('learning failed', error)
 
 
@@ -320,7 +330,7 @@ def _catalog_tick():
         )
         _observed('catalog', result)
     except Exception as error:
-        _observed('catalog', {'status': 'failed'}, failed=True)
+        _observed('catalog', {'status': 'failed'}, failed=True, error=error)
         _report('catalog failed', error)
 
 
@@ -338,7 +348,7 @@ def _process_browser_queue():
             _booking_tick()
             _high_odds_booking_tick()
     except Exception as error:
-        _observed('browser', {'status': 'failed'}, failed=True)
+        _observed('browser', {'status': 'failed'}, failed=True, error=error)
         _report('browser queue failed', error)
 
 
@@ -363,7 +373,7 @@ def _odds_refresh_tick():
             print('qualification after price', qualification.get('counts', {}).get('QUALIFIED', 0))
         _observed('odds_refresh', refreshed)
     except Exception as error:
-        _observed('odds_refresh', {'status': 'failed'}, failed=True)
+        _observed('odds_refresh', {'status': 'failed'}, failed=True, error=error)
         _report('odds refresh failed', error)
 
 
@@ -402,7 +412,7 @@ def _ticket_tick():
         _observed('tickets', result)
         return result
     except Exception as error:
-        _observed('tickets', {'status': 'failed'}, failed=True)
+        _observed('tickets', {'status': 'failed'}, failed=True, error=error)
         _report('autonomous tickets failed', error)
         return None
 
@@ -447,7 +457,7 @@ def _coverage_tick():
         )
         _observed('analyse', totals)
     except Exception as error:
-        _observed('analyse', {'status': 'failed'}, failed=True)
+        _observed('analyse', {'status': 'failed'}, failed=True, error=error)
         _report('coverage analysis failed', error)
 
 
@@ -509,7 +519,7 @@ def _booking_tick():
         print('sportybet booking', booked.get('status'), 'qualified', booked.get('qualified', ''), 'restored', (booked.get('examined') or {}).get('restored', 0), 'places_wager', booked.get('places_wager'))
         _observed('tickets_booking', booked)
     except Exception as error:
-        _observed('tickets_booking', {'status': 'failed'}, failed=True)
+        _observed('tickets_booking', {'status': 'failed'}, failed=True, error=error)
         _report('booking failed', error)
 
 
@@ -623,7 +633,7 @@ def _reliability_tick():
         )
         _observed('settle', {'status': 'complete', 'settled': settled.get('live_linked')})
     except Exception as error:
-        _observed('settle', {'status': 'failed'}, failed=True)
+        _observed('settle', {'status': 'failed'}, failed=True, error=error)
         _report('settlement failed', error)
 
 
@@ -652,8 +662,24 @@ def _pipeline_snapshot_tick():
         )
         _observed('pipeline', {'status': 'complete', 'qualified': counts.get('QUALIFIED')})
     except Exception as error:
-        _observed('pipeline', {'status': 'failed'}, failed=True)
+        _observed('pipeline', {'status': 'failed'}, failed=True, error=error)
         _report('pipeline snapshot failed', error)
+
+
+def _learning_loop_tick():
+    """Assess prices that waited for a prediction, then retrain sports with live drift."""
+    try:
+        from learning_loop import drift_retraining, reassess_awaiting_model
+        with connect() as connection:
+            waiting = reassess_awaiting_model(connection)
+        with connect() as connection:
+            drift = drift_retraining(connection, 'sports-ai-worker', _audit)
+        print('learning loop', 'reassessed', waiting['reassessed'], waiting['counts'],
+              'drift_retrained', [item['sport'] for item in drift['trained']], 'places_wager', False)
+        _observed('learning_loop', {'status': 'complete', 'reassessed': waiting['reassessed'], 'counts': waiting['counts']})
+    except Exception as error:
+        _observed('learning_loop', {'status': 'failed'}, failed=True, error=error)
+        _report('learning loop failed', error)
 
 
 def _govern_cycle():
@@ -682,7 +708,7 @@ def _govern_cycle():
         )
         _observed('optimize', {'status': 'complete', 'qualified': qualification.get('counts', {}).get('QUALIFIED', 0)})
     except Exception as error:
-        _observed('optimize', {'status': 'failed'}, failed=True)
+        _observed('optimize', {'status': 'failed'}, failed=True, error=error)
         _report('governance failed', error)
 
 

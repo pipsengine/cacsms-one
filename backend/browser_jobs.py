@@ -48,6 +48,12 @@ def check_url(url, connection=None):
             validate_research_url(url, allowlist())
         except BrowserResearchError as error:
             raise ValueError(str(error)) from error
+    if not local:
+        from source_permissions import SourceNotPermitted, require
+        try:
+            require(url, 'browser-job', connection)
+        except SourceNotPermitted as error:
+            raise ValueError(str(error)) from error
     if _sportybet(host):
         if connection is None:
             with connect() as owned:
@@ -275,9 +281,18 @@ def process_browser_queue():
         job_id = _claim(connection, now())
     if not job_id:
         return {'status': 'idle', 'recovered': recovered}
+    from browser_slots import BrowserBusy, browser_slot
     try:
-        inspect_job(job_id)
+        with browser_slot('browser-job', wait=60):
+            inspect_job(job_id)
         return {'status': 'inspected', 'job_id': job_id, 'recovered': recovered}
+    except BrowserBusy as busy:
+        with connect() as connection:
+            connection.execute(
+                """UPDATE sports_ai_browser_jobs SET status='queued',attempt=MAX(0,attempt-1),error=?
+                   WHERE id=? AND status='running'""", (str(busy), job_id),
+            )
+        return {'status': 'waiting', 'job_id': job_id, 'reason': 'browser busy', 'recovered': recovered}
     except Exception as error:
         return {'status': 'failed', 'job_id': job_id, 'error': str(error)[:300], 'recovered': recovered}
 

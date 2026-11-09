@@ -53,6 +53,10 @@ def validate_research_url(value, approved_hosts):
     return hostname
 
 
+from browser_slots import holds_browser_slot
+
+
+@holds_browser_slot('research', wait=120)
 async def _research_async(urls, approved_hosts, fields, capture_directory, host_map):
     try:
         from playwright.async_api import async_playwright
@@ -184,6 +188,11 @@ def research_pages(urls, approved_hosts, fields, capture_directory):
         if os.environ.get('SPORTS_BROWSER_ALLOW_LOCAL_TESTS') == '1' and hostname in ('localhost','127.0.0.1'):
             host_map[hostname] = '127.0.0.1'
             continue
+        from source_permissions import SourceNotPermitted, require
+        try:
+            require(url, 'research')
+        except SourceNotPermitted as error:
+            raise BrowserResearchError(str(error)) from error
         addresses = _host_addresses(hostname)
         if not addresses:
             raise BrowserResearchError(f'No public IP address found for {hostname}')

@@ -88,6 +88,7 @@ def quotes_from_payload(payload, sport, source_url):
                         'decimal_odds': odds,
                         'line': line,
                         'source_url': source_url,
+                        'event_id': str(event.get('eventId') or '').strip() or None,
                     })
     return rows
 
@@ -302,15 +303,28 @@ def publish_quotes(connection, rows, source_url, actor='sports-ai-worker', now=N
     return accepted
 
 
+from browser_slots import holds_browser_slot
+
+
 def collect_displayed_odds():
     """Open the public sports pages and store the prices they display."""
     if not _due():
         return {'status': 'waiting', 'imported': 0}
     _authorize()
     try:
-        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import sync_playwright  # noqa: F401
     except ImportError:
         return {'status': 'failed', 'error': 'Playwright is not installed.', 'imported': 0}
+    from browser_slots import BrowserBusy
+    try:
+        return _collect_displayed_odds()
+    except BrowserBusy as busy:
+        return {'status': 'waiting', 'reason': str(busy), 'imported': 0}
+
+
+@holds_browser_slot('feed', wait=45)
+def _collect_displayed_odds():
+    from playwright.sync_api import sync_playwright
     imported = 0
     blocked = []
     errors = []
@@ -338,6 +352,8 @@ def collect_displayed_odds():
 
 
 def _read_section(page, sport, url):
+    from source_permissions import require
+    require(url, 'odds-feed')
     captured = {}
 
     def remember(response):
@@ -495,6 +511,8 @@ def sections_from_links(links):
 
 def _discover_sections(page):
     try:
+        from source_permissions import require
+        require(COLLECTION_URL, 'odds-feed')
         page.goto(COLLECTION_URL, wait_until='domcontentloaded', timeout=45000)
         page.wait_for_timeout(3000)
         links = page.eval_on_selector_all('a[href*="/ng/sport/"]', 'els => els.map(el => el.href)')

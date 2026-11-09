@@ -419,12 +419,13 @@ def store_observations(connection, session_id, rows, source_url, observed_at):
             connection.execute(
                 """INSERT INTO sports_ai_sportybet_observations
                    (id,session_id,sport,competition,home,away,starts_at,market_label,selection_label,
-                    decimal_odds,source_url,observed_at,confirmation_status,line,evidence_json,created_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'proposed',?,'{}',?)""",
+                    decimal_odds,source_url,observed_at,confirmation_status,line,evidence_json,created_at,event_id)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'proposed',?,'{}',?,?)""",
                 (
                     observation_id, session_id, row.get('sport'), row.get('competition') or '',
                     row['home'], row['away'], row.get('starts_at'), row['market_label'], row['selection_label'],
                     row.get('decimal_odds'), source_url, observed_at, row.get('line'), observed_at,
+                    row.get('event_id'),
                 ),
             )
         except sqlite3.IntegrityError:

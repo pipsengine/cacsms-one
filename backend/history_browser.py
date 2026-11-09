@@ -849,6 +849,10 @@ def _host_allowed(url):
     return host in ALLOWED_HOSTS
 
 
+from browser_slots import holds_browser_slot
+
+
+@holds_browser_slot('history', wait=120)
 def _read_with_playwright(visits):
     import os
     from pathlib import Path

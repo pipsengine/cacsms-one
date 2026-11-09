@@ -227,6 +227,14 @@ class SportyBetOperator:
         return SECTION_URLS[section]
 
     def _run(self, session_id, url):
+        from browser_slots import BrowserBusy, browser_slot
+        try:
+            with browser_slot('operator-session', wait=60, ttl=session_timeout_seconds() + 120):
+                return self._run_session(session_id, url)
+        except BrowserBusy as busy:
+            self._fail(session_id, f'{busy}. Try again when the current booking or collection finishes.')
+
+    def _run_session(self, session_id, url):
         navigations = 0
         self._blocked = False
         try:

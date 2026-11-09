@@ -227,7 +227,49 @@ def record_stage(connection, stage, status, detail=None, now=None):
     )
     cutoff = (current - timedelta(days=14)).isoformat()
     connection.execute('DELETE FROM sports_ai_autonomous_cycles WHERE created_at<?', (cutoff,))
+    track_stage_recovery(connection, stage, status, payload, current)
     return {'stage': stage, 'status': status or 'complete', 'places_wager': False}
+
+
+ESCALATE_AFTER = 5
+
+
+def track_stage_recovery(connection, stage, status, detail, now):
+    """Keep one recovery case per failing stage.
+
+    A failure opens or updates the case; it escalates after repeated failures.
+    The next successful run of the stage resolves it automatically.
+    """
+    code = f'STAGE_FAILED:{stage}'
+    case = connection.execute(
+        """SELECT id,attempt_count,details_json FROM sports_ai_recovery_cases
+           WHERE error_code=? AND status IN ('open','retried','escalated') ORDER BY created_at DESC LIMIT 1""", (code,),
+    ).fetchone()
+    moment = now.isoformat()
+    if status == 'failed':
+        info = {k: detail.get(k) for k in ('error_type', 'error', 'error_class', 'where') if detail.get(k) is not None}
+        if case:
+            count = int(case['attempt_count']) + 1
+            history = json.loads(case['details_json'] or '{}')
+            history.update(info, last_failed_at=moment)
+            connection.execute(
+                """UPDATE sports_ai_recovery_cases SET attempt_count=?,status=?,details_json=?,updated_at=? WHERE id=?""",
+                (count, 'escalated' if count >= ESCALATE_AFTER else 'retried', json.dumps(history)[:4000], moment, case['id']),
+            )
+        else:
+            connection.execute(
+                """INSERT INTO sports_ai_recovery_cases
+                   (id,job_id,fixture_id,error_code,status,attempt_count,details_json,created_at,updated_at)
+                   VALUES(?,NULL,NULL,?,'open',1,?,?,?)""",
+                (str(uuid.uuid4()), code, json.dumps({'stage': stage, **info, 'first_failed_at': moment})[:4000], moment, moment),
+            )
+    elif case:
+        history = json.loads(case['details_json'] or '{}')
+        history['resolved_by'] = f'{stage} {status or "complete"}'
+        connection.execute(
+            """UPDATE sports_ai_recovery_cases SET status='resolved',details_json=?,updated_at=? WHERE id=?""",
+            (json.dumps(history)[:4000], moment, case['id']),
+        )
 
 
 def production_readiness(connection, now=None):

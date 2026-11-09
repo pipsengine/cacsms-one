@@ -1,5 +1,6 @@
 """Prepare a SportyBet booking code with real clicks. Never place a paid wager."""
 
+import asyncio
 import json
 import re
 import uuid
@@ -393,6 +394,69 @@ def ticket_selections(connection, ticket_id):
         item['ticket_id'] = ticket_id
         selections.append(item)
     return selections
+
+
+def _learn_alias(connection, sport, canonical, shown, observation_id):
+    if not canonical or not shown or canonical == shown:
+        return
+    connection.execute(
+        """INSERT INTO sports_ai_bookmaker_team_names
+           (id,sport,canonical_name,bookmaker,bookmaker_name,source,evidence_json,created_at)
+           VALUES(?,?,?,'SportyBet',?,'observation',?,?)
+           ON CONFLICT(sport,canonical_name,bookmaker) DO UPDATE SET bookmaker_name=excluded.bookmaker_name""",
+        (str(uuid.uuid4()), sport, canonical, shown, json.dumps({'observation_id': observation_id}), _now().isoformat()),
+    )
+
+
+def _alias(connection, sport, name):
+    row = connection.execute(
+        """SELECT bookmaker_name FROM sports_ai_bookmaker_team_names
+           WHERE sport=? AND canonical_name=? AND bookmaker='SportyBet'""", (sport, name),
+    ).fetchone()
+    return row['bookmaker_name'] if row else None
+
+
+def page_identity(connection, selections):
+    """Use the names SportyBet itself displays for each fixture.
+
+    Legs carry names from the fixture store ("Hertha BSC", "2. Fussball-Bundesliga"),
+    while the SportyBet page shows its own ("Hertha", "Germany 2. Bundesliga").
+    The original names are kept under fixture_* keys for audit.
+    """
+    resolved = []
+    for item in selections:
+        item = dict(item)
+        if item.get('page_identity'):
+            resolved.append(item)
+            continue
+        observation = connection.execute(
+            """SELECT id,home,away,competition,event_id FROM sports_ai_sportybet_observations
+               WHERE fixture_id=? ORDER BY observed_at DESC LIMIT 1""", (item.get('fixture_id'),),
+        ).fetchone()
+        sport = item.get('sport')
+        home, away = item.get('home') or '', item.get('away') or ''
+        if observation:
+            shown_home, shown_away = observation['home'], observation['away']
+            competition = observation['competition'] or item.get('competition')
+            _learn_alias(connection, sport, home, shown_home, observation['id'])
+            _learn_alias(connection, sport, away, shown_away, observation['id'])
+            item['sportybet_event_id'] = observation['event_id']
+            source = 'observation'
+        else:
+            shown_home = _alias(connection, sport, home) or home
+            shown_away = _alias(connection, sport, away) or away
+            competition = item.get('competition')
+            source = 'alias' if (shown_home, shown_away) != (home, away) else 'fixture'
+        item.update(
+            fixture_home=home, fixture_away=away, fixture_competition=item.get('competition'),
+            home=shown_home, away=shown_away, competition=competition, page_identity=source,
+        )
+        if item.get('selection') == home:
+            item['selection'] = shown_home
+        elif item.get('selection') == away:
+            item['selection'] = shown_away
+        resolved.append(item)
+    return resolved
 
 
 def next_ticket_id(connection, now):
@@ -1247,6 +1311,9 @@ async def _open_sport(page, sport, page_url=None, reuse=False):
             url = urlunsplit(('https', 'www.sportybet.com', '/'.join(parsed.path.split('/')[:4]), '', ''))
     if not url:
         raise RuntimeError('No public page is configured for this sport')
+    if not url.startswith(('http://127.0.0.1', 'http://localhost')):
+        from source_permissions import require
+        await asyncio.to_thread(require, url, 'booking')
     response = await page.goto(url, wait_until='domcontentloaded', timeout=45000)
     if response and response.status >= 400:
         raise RuntimeError(f'HTTP {response.status}')
@@ -1309,7 +1376,22 @@ def _drop_unpriced_legs(connection, ticket_id, skipped):
     )
 
 
-async def execute_job(job_id, page_url=None):
+async def execute_job(job_id, page_url=None, slot_wait=60):
+    """Run one booking job while holding a shared browser slot.
+
+    When every slot is busy the job stays QUEUED and no attempt is spent.
+    """
+    from browser_slots import BrowserBusy, async_browser_slot
+    try:
+        async with async_browser_slot('booking', wait=slot_wait):
+            return await _execute_job(job_id, page_url)
+    except BrowserBusy as busy:
+        with connect() as connection:
+            _log_booking(connection, job_id, 'prepare', str(busy), level='warning')
+        return {'id': job_id, 'status': 'QUEUED', 'reason_code': 'BROWSER_BUSY', 'error': str(busy), 'places_wager': False}
+
+
+async def _execute_job(job_id, page_url=None):
     from playwright.async_api import async_playwright
     session_id = None
     replaced_ticket_id = None
@@ -1341,6 +1423,7 @@ async def execute_job(job_id, page_url=None):
         except TicketExposureConflict as exc:
             _set_job(connection, job_id, 'FAILED', error=str(exc), reason_code='FIXTURE_EXPOSURE')
             return {'id': job_id, 'status': 'FAILED', 'reason_code': 'FIXTURE_EXPOSURE', 'error': str(exc), 'places_wager': False}
+        selections = page_identity(connection, selections)
         session_id = _open_session(connection, job_id)
         connection.execute(
             """UPDATE sports_ai_booking_jobs
@@ -1457,6 +1540,19 @@ async def execute_job(job_id, page_url=None):
     except Exception as exc:
         message = str(exc)[:500]
         reason = classify_booking_failure(message)
+        from browser_slots import classify_browser_error
+        if classify_browser_error(exc) == 'transient':
+            # The page or network was unavailable. Requeue with backoff and
+            # give the attempt back, so an outage does not exhaust retries.
+            with connect() as connection:
+                connection.execute(
+                    """UPDATE sports_ai_booking_jobs SET status='QUEUED',attempt=?,error=?,reason_code='NETWORK_UNAVAILABLE',
+                       updated_at=? WHERE id=?""", (max(0, attempt - 1), message, _now().isoformat(), job_id),
+                )
+                _log_booking(connection, job_id, 'recovery', 'Network or page unavailable; requeued without spending an attempt',
+                             level='warning', session_id=session_id, detail={'error': message})
+                _close_session(connection, session_id, 'FAILED', message)
+            return {'id': job_id, 'status': 'QUEUED', 'reason_code': 'NETWORK_UNAVAILABLE', 'error': message, 'code': None, 'places_wager': False}
         with connect() as connection:
             _set_job(connection, job_id, 'FAILED', error=message, reason_code=reason)
             if ticket_id:
@@ -1481,6 +1577,8 @@ def classify_booking_failure(message, status=None):
         return 'CODE_NOT_RETURNED'
     if 'booking slip did not include' in text or 'not a booking code' in text:
         return 'CODE_VERIFICATION_FAILED'
+    if 'net::err_' in text or re.search(r'timeout \d+ms exceeded', text):
+        return 'NETWORK_UNAVAILABLE'
     if 'http ' in text or text.startswith('http'):
         return 'BOOKMAKER_UNAVAILABLE'
     if 'missing' in text or 'ambiguous' in text:

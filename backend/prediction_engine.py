@@ -2662,7 +2662,7 @@ def price_quoted_board(connection, now=None, limit=40):
         if 'simulated' in text or 'srl' in text.split():
             continue
         chosen.append(fixture)
-    summary = {'fixtures': 0, 'predictions': 0, 'opportunities': 0, 'fixture_ids': [], 'sports': sorted({row['sport'] for row in chosen})}
+    summary = {'fixtures': 0, 'predictions': 0, 'opportunities': 0, 'rejected': 0, 'fixture_ids': [], 'sports': sorted({row['sport'] for row in chosen})}
     if not chosen:
         return summary
     run_id = str(uuid.uuid4())

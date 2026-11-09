@@ -1984,3 +1984,5 @@ app.include_router(build_draw_router(auth))
 app.include_router(build_weekly_draw_router(auth, require_admin_key))
 app.include_router(build_rollover_router(auth))
 app.include_router(build_learning_router(auth, audit))
+from autonomy_api import build_autonomy_router
+app.include_router(build_autonomy_router(auth, require_admin_key))

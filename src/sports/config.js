@@ -1,6 +1,6 @@
 import{LayoutDashboard,Activity,CalendarDays,ChartNoAxesCombined,BrainCircuit,Goal,Dribbble,BarChart3,TrendingUp,ScanSearch,Ticket,Layers3,SlidersHorizontal,Hash,Bell,Mail,Clock3,History,ShieldCheck,Database,Settings2,Workflow,Target,BookOpen,ClipboardList,ChartColumnIncreasing,Users,FileClock,MonitorCheck,Code2,Search,Globe,Bot}from'lucide-react';
 export const groups=[
-{label:'COMMAND CENTRE',items:[['dashboard','Overview',LayoutDashboard],['activity','Activity & Audit',Activity],['monitor','System Monitoring',MonitorCheck],['autonomous','Autonomous Engine',Bot]]},
+{label:'COMMAND CENTRE',items:[['dashboard','Overview',LayoutDashboard],['activity','Activity & Audit',Activity],['monitor','System Monitoring',MonitorCheck],['autonomous','Autonomous Engine',Bot],['autonomy-health','Autonomy Health',ShieldCheck]]},
 {label:'ALL SPORTS INTELLIGENCE',items:[['all-sports-predictions','All Sports Predictions',Globe]]},
 {label:'FOOTBALL INTELLIGENCE',items:[['football-fixtures','Fixtures & Statistics',CalendarDays],['football-analysis','Match Analysis',BrainCircuit],['football-predictions','Predictions',Goal]]},
 {label:'BASKETBALL INTELLIGENCE',items:[['basketball-fixtures','Fixtures & Statistics',Dribbble],['basketball-analysis','Match Analysis',BrainCircuit],['basketball-predictions','Predictions',Target]]},
@@ -19,6 +19,7 @@ export const sections={
 'football-predictions':['All Predictions','1X2 & Double Chance','Goals & BTTS','Handicaps'],
 'basketball-predictions':['All Predictions','Moneyline','Totals','Spreads'],
 'diagnostics':['Providers','Browser & SportyBet','Collection Log'],
+'autonomy-health':['Overview','Recovery','Sources & Permissions','Model Learning'],
 'sources':['Provider Registry','Website Explorer','Browser Sessions','Extraction Configuration','Data Quality','Collection Scheduler','Collection History','Source Permissions','Sports Registry','Leagues & Countries','Teams','Coverage & Health'],
 'match-research':['Match Research'],
 'activity':['Audit Timeline','Analysis Runs','Changes'],
