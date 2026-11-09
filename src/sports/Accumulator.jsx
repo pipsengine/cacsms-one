@@ -344,7 +344,7 @@ function Betslip({tickets,totalTickets,loaded,selected,betslip,openTicket,refres
 function Codes({page,tab,codes,bookings,schedule,logs,tickets,codeForm,setCodeForm,adminKey,setAdminKey,busy,submit}){
   const filtered=codes.filter(code=>tab===1?code.status==='verified':tab===2?code.status!=='verified':true);
   const phase=schedule?schedule.phase:'event';
-  return <section className="sp-panel"><div className="sp-panel-head"><div><h3>{page==='code-history'?'Booking history':'Booking Centre'}</h3><p>A code appears here only after SportyBet displays it. Publication runs at 07:00–08:00, 12:00–13:00 and 17:00–18:00 WAT. No wager is placed, and an empty list is a valid result.</p></div><History size={18}/></div>
+  return <section className="sp-panel"><div className="sp-panel-head"><div><h3>{page==='code-history'?'Booking history':'Booking Centre'}</h3><p>Qualified tickets are checked continuously. During testing, a displayed booking code is requested every 15 minutes when an eligible ticket is ready. No wager is placed.</p></div><History size={18}/></div>
     {schedule&&<div className="sp-intel-metrics"><span>WAT phase<strong>{phase.replaceAll('_',' ')}</strong></span><span>Local time<strong>{schedule.local_time}</strong></span><span>Publishes now<strong>{schedule.publishes?'Yes':'No'}</strong></span></div>}
     {schedule&&<p className="sp-intel-explanation">{schedule.note}</p>}
     {bookings.length?<div className="sp-table-scroll"><table className="sp-table"><thead><tr><th>Fixtures</th><th>Pick</th><th>Combined odds</th><th>Code</th><th>Status</th><th>Evidence</th><th>Updated</th><th>Error</th></tr></thead><tbody>

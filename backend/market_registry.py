@@ -437,8 +437,8 @@ def link_stored_quotes(connection, now=None, limit=400):
                     ) AS rn
              FROM sports_ai_odds_snapshots q
              JOIN sports_ai_fixtures f ON f.id=q.fixture_id
-             WHERE q.bookmaker='SportyBet' AND q.observed_at>=? AND q.market='h2h'
-               AND f.status='scheduled' AND f.starts_at>?
+             WHERE q.bookmaker='SportyBet' AND q.observed_at>=?
+                 AND f.status='scheduled' AND f.starts_at>?
            ) AS priced
            WHERE rn=1
            ORDER BY starts_at
@@ -449,6 +449,8 @@ def link_stored_quotes(connection, now=None, limit=400):
     seen = set()
     for quote in quotes:
         canonical = _canonical(quote['sport'], quote['market'], quote['outcome'], quote['line'])
+        if not canonical and (quote['sport'], str(quote['market']).upper()) in keys:
+            canonical = str(quote['market']).upper()
         if (quote['sport'], canonical) not in keys or (quote['fixture_id'], canonical) in seen:
             continue
         seen.add((quote['fixture_id'], canonical))

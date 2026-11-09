@@ -191,6 +191,43 @@ class HighOddsServiceTests(unittest.TestCase):
             shown[0]['page_odds']=1000
             with self.assertRaises(ValueError):service.check_displayed_prices(identifier,selections,shown)
 
+    def test_displayed_price_drift_creates_requalified_immutable_replacement(self):
+        from sportybet_booking import ticket_selections
+        with db.connect() as c:
+            self.seed(c,2)
+            identifier=next(i for r in service.generate_event(c,self.event(c),self.now) for i in r['created_ids'])
+            old_snapshot=c.execute('SELECT snapshot_json FROM sports_ai_high_odds_tickets WHERE ticket_id=?',(identifier,)).fetchone()[0]
+            selections=ticket_selections(c,identifier)
+            shown=[{**leg,'page_odds':2.15} for leg in selections]
+            replacement=service.requalify_displayed_ticket(c,identifier,shown,self.now)
+            self.assertNotEqual(replacement,identifier)
+            self.assertEqual(c.execute('SELECT snapshot_json FROM sports_ai_high_odds_tickets WHERE ticket_id=?',(identifier,)).fetchone()[0],old_snapshot)
+            self.assertEqual(c.execute('SELECT status FROM sports_ai_accumulator_tickets WHERE id=?',(identifier,)).fetchone()[0],'expired')
+            self.assertEqual(service.validate_snapshot(c,replacement,self.now),[])
+            self.assertAlmostEqual(c.execute('SELECT combined_odds FROM sports_ai_accumulator_tickets WHERE id=?',(replacement,)).fetchone()[0],2.15**2)
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM sports_ai_booking_codes').fetchone()[0],0)
+
+    def test_repricing_rejects_changed_selection_and_out_of_band_prices(self):
+        from sportybet_booking import ticket_selections
+        with db.connect() as c:
+            self.seed(c,2)
+            identifier=next(i for r in service.generate_event(c,self.event(c),self.now) for i in r['created_ids'])
+            shown=[{**leg,'page_odds':1000} for leg in ticket_selections(c,identifier)]
+            with self.assertRaisesRegex(ValueError,'category limits'):
+                service.requalify_displayed_ticket(c,identifier,shown,self.now)
+            shown=[{**leg,'page_odds':2.15,'selection':'DIFFERENT'} for leg in ticket_selections(c,identifier)]
+            with self.assertRaisesRegex(ValueError,'selection changed'):
+                service.requalify_displayed_ticket(c,identifier,shown,self.now)
+            self.assertEqual(c.execute('SELECT status FROM sports_ai_accumulator_tickets WHERE id=?',(identifier,)).fetchone()[0],'qualified')
+
+    def test_quote_linker_includes_calibrated_totals(self):
+        from market_registry import link_stored_quotes
+        with db.connect() as c:
+            self._opportunity(c,market='OVER_1.5',probability=.8,odds=1.4)
+            with patch('market_registry.active_keys',return_value={('football','OVER_1.5')}), patch('sportybet_research._assess_value',return_value=('qualified',.12)) as assess:
+                self.assertEqual(link_stored_quotes(c,self.now)['qualified'],1)
+                self.assertEqual(assess.call_args.args[1]['canonical_market'],'OVER_1.5')
+
     def test_retries_stop_at_limit_and_returned_strings_are_not_verified_codes(self):
         with db.connect() as c:
             self.seed(c,2)

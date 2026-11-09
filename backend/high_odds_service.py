@@ -564,6 +564,86 @@ def check_displayed_prices(ticket_id, selections, seen):
         raise ValueError('Displayed combined odds are outside the configured category limits')
 
 
+def requalify_displayed_ticket(connection, ticket_id, seen, now=None):
+    """Replace a price-drifted ticket, preserving its immutable original snapshot."""
+    from qualification_engine import revalidate
+    from sportybet_research import _assess_value
+    current = now_utc(now)
+    row = connection.execute('''SELECT h.*,t.family_id FROM sports_ai_high_odds_tickets h
+        JOIN sports_ai_accumulator_tickets t ON t.id=h.ticket_id WHERE h.ticket_id=?''', (ticket_id,)).fetchone()
+    if not row:
+        return None
+    original = json.loads(row['snapshot_json'])
+    if digest(original) != row['snapshot_hash']:
+        raise ValueError('Final selection snapshot integrity failed')
+    shown = {(item.get('fixture_id'),item.get('market')):item for item in seen}
+    expected = {(leg['fixture_id'],leg['market']) for leg in original['legs']}
+    if set(shown) != expected or len(seen) != len(expected):
+        raise ValueError('Repricing requires the exact finalized selections on the page')
+    category = connection.execute('SELECT * FROM sports_ai_high_odds_categories WHERE id=?', (row['category_id'],)).fetchone()
+    if not category or not category['enabled']:
+        raise ValueError('This odds category is disabled')
+    prices = [float(shown[key]['page_odds']) for key in expected]
+    if any(not math.isfinite(price) or price <= 1 for price in prices):
+        raise ValueError('Displayed prices must be finite decimal odds above one')
+    if not inside(math.prod(prices),dict(category)):
+        raise ValueError('Displayed combined odds are outside the configured category limits')
+    if connection.execute("SELECT 1 FROM sports_ai_booking_codes WHERE accumulator_ticket_id=? AND verification_method='displayed'", (ticket_id,)).fetchone():
+        raise ValueError('A verified booking code already exists for this ticket')
+    for leg in original['legs']:
+        quote = connection.execute('''SELECT * FROM sports_ai_odds_snapshots
+            WHERE fixture_id=? AND bookmaker='SportyBet' AND market=? AND outcome=? AND line IS ?
+            ORDER BY julianday(observed_at) DESC LIMIT 1''',
+            (leg['fixture_id'],leg['quote_market'],leg['quote_outcome'],leg.get('quote_line'))).fetchone()
+        if not quote:
+            raise ValueError('The original verified quote identity is unavailable')
+        item = shown[(leg['fixture_id'],leg['market'])]
+        if item.get('selection') is not None and item['selection'] != leg['selection']:
+            raise ValueError('Displayed selection changed during repricing')
+        identifier = str(uuid.uuid4())
+        price = float(item['page_odds'])
+        connection.execute('''INSERT INTO sports_ai_odds_snapshots
+            (id,fixture_id,provider_id,bookmaker,market,outcome,line,decimal_odds,source_url,observed_at,evidence_json)
+            VALUES(?,?,?,'SportyBet',?,?,?,?,?,?,?)''',
+            (identifier,leg['fixture_id'],quote['provider_id'],leg['quote_market'],leg['quote_outcome'],
+             leg.get('quote_line'),price,quote['source_url'],current.isoformat(),
+             encoded({'source':'booking_page','previous_ticket_id':ticket_id})))
+        _assess_value(connection,{'fixture_id':leg['fixture_id'],'canonical_market':leg['market']},identifier,price,current)
+        connection.execute('''UPDATE sports_ai_value_opportunities SET data_completeness=?
+            WHERE odds_id=?''', (leg.get('completeness'),identifier))
+    revalidate(connection,'booking-page',current,fixture_ids=[leg['fixture_id'] for leg in original['legs']])
+    pool,rejected,_total = eligible(connection,current,row['family_id'])
+    available = {(leg['fixture_id'],leg['market']):leg for leg in pool}
+    if not expected <= available.keys():
+        raise ValueError('Displayed prices did not pass requalification: '+encoded(rejected))
+    legs = [available[(leg['fixture_id'],leg['market'])] for leg in original['legs']]
+    settings = category_settings(config(connection),dict(category))
+    combined = combine_ticket(legs,settings)
+    if combined['probability_basis'] != 'independent' or combined['estimated_edge'] <= 0:
+        raise ValueError('Repriced ticket lacks a validated independent positive-value estimate')
+    lower = math.prod(max(0,leg['probability']-leg['calibration_error']) for leg in legs)
+    joint = combined['joint_probability']
+    candidate = {**combined,'legs':legs,'signature':selection_signature(legs),
+        'combined_odds':math.prod(leg['decimal_odds'] for leg in legs),
+        'confidence':min(leg['reliability'] for leg in legs),'lower_joint_probability':lower,
+        'risk':1-lower,'model_uncertainty':joint-lower,'score':joint,
+        'dependency_policy':original['dependency_policy']}
+    connection.execute('SAVEPOINT reprice_replacement')
+    try:
+        connection.execute("UPDATE sports_ai_accumulator_tickets SET status='expired',publication_state='REPRICED' WHERE id=?", (ticket_id,))
+        replacement = persist_ticket(connection,candidate,dict(category),row['event_id'],settings,current)
+        if not replacement:
+            raise ValueError('A replacement snapshot could not be created within category limits')
+        connection.execute("UPDATE sports_ai_high_odds_tickets SET registration_state='expired',last_error='Superseded by requalified displayed prices',updated_at=? WHERE ticket_id=?", (current.isoformat(),ticket_id))
+        audit(connection,'ticket.repriced',{'previous_ticket_id':ticket_id,'replacement_ticket_id':replacement},replacement,now=current)
+        connection.execute('RELEASE SAVEPOINT reprice_replacement')
+        return replacement
+    except BaseException:
+        connection.execute('ROLLBACK TO SAVEPOINT reprice_replacement')
+        connection.execute('RELEASE SAVEPOINT reprice_replacement')
+        raise
+
+
 def worker_tick(now=None):
     if not _WORK_LOCK.acquire(blocking=False): return {'status':'busy','events':0}
     try: return _worker_tick(now)
@@ -600,6 +680,8 @@ def _worker_tick(now=None):
     import asyncio
     current = now_utc(now)
     with connect() as connection:
+        from sportybet_booking import recover_stopped_bookings
+        recover_stopped_bookings(connection,current)
         monitor(connection,current)
         result = process_events(connection,current)
         # Recover completions after a worker dies between booking and callback.
@@ -652,8 +734,10 @@ def dashboard(connection, now=None, date_from=None, date_to=None, status=None, c
             LEFT JOIN sports_ai_ticket_settlements s ON s.ticket_id=t.id WHERE h.category_id=?""",(category['id'],)).fetchone())
         run=connection.execute('SELECT status,report_json,created_at FROM sports_ai_high_odds_runs WHERE category_id=? ORDER BY created_at DESC LIMIT 1',(category['id'],)).fetchone()
         daily=dict(connection.execute("""SELECT COUNT(*) daily_created,
-            SUM(CASE WHEN registration_state='registered' THEN 1 ELSE 0 END) daily_verified
-            FROM sports_ai_high_odds_tickets WHERE category_id=?
+            SUM(CASE WHEN registration_state IN ('registered','monitoring','settled') AND EXISTS(
+                SELECT 1 FROM sports_ai_booking_codes b WHERE b.accumulator_ticket_id=h.ticket_id
+                AND b.verification_method='displayed' AND TRIM(COALESCE(b.code,''))<>'') THEN 1 ELSE 0 END) daily_verified
+            FROM sports_ai_high_odds_tickets h WHERE category_id=?
             AND date(created_at,'+1 hour')=date(?,'+1 hour')""",(category['id'],current.isoformat())).fetchone())
         summaries.append({**category,**stats,**daily,'daily_target':DAILY_TARGET,
             'stake_assumption':JACKPOT_STAKE if category['id']==JACKPOT else None,'primary':category['id']==PRIMARY,

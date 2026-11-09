@@ -530,7 +530,39 @@ def plan_visits(state, wanted, now):
     return visits
 
 
+def ticket_result_visits(connection, state, now, limit=2):
+    """Prioritize result days blocking settled-ticket cleanup, without guessing outcomes."""
+    paths = {sport: path for path, sport in BETEXPLORER_SPORTS}
+    paths['frauenfussball'] = 'football'
+    visits = []
+    seen_urls = set()
+    for row in connection.execute('''SELECT f.sport, date(f.starts_at,'+1 hour') AS day,
+            COUNT(DISTINCT l.ticket_id) AS tickets
+        FROM sports_ai_accumulator_legs l JOIN sports_ai_fixtures f ON f.id=l.fixture_id
+        WHERE datetime(f.starts_at)<datetime(?) AND datetime(f.starts_at)>=datetime(?,'-90 days')
+          AND NOT EXISTS (SELECT 1 FROM sports_ai_ticket_settlements s WHERE s.ticket_id=l.ticket_id)
+          AND NOT EXISTS (SELECT 1 FROM sports_ai_results r WHERE r.fixture_id=f.id AND r.status='final')
+        GROUP BY f.sport,day ORDER BY tickets DESC,day DESC''', (now.isoformat(),now.isoformat())):
+        path = paths.get(row['sport'])
+        if not path or not row['day']:
+            continue
+        year, month, day = row['day'].split('-')
+        url = f'https://www.betexplorer.com/{path}/results/?year={year}&month={month}&day={day}'
+        last = _parse_stamp((state.get('read_at') or {}).get(url))
+        if url in seen_urls or (last and now < last + timedelta(hours=1)):
+            continue
+        visits.append({'kind':'betexplorer','sport':'football' if row['sport']=='frauenfussball' else row['sport'],
+                       'url':url,'cursor':'ticket_results'})
+        seen_urls.add(url)
+        if len(visits) >= limit:
+            break
+    return visits
+
+
 def _advance(state, visit, now):
+    if visit.get('cursor') == 'ticket_results':
+        state['read_at'] = {**(state.get('read_at') or {}), visit['url']:now.isoformat()}
+        return state
     if visit['kind'] == 'betexplorer':
         if visit.get('cursor') == 'priority':
             state['priority_sport'] = int(visit['next_priority_sport'])
@@ -575,6 +607,17 @@ def _fixture_id(connection, provider, record, date_only):
            WHERE sport=? AND starts_at BETWEEN ? AND ?""",
         (record['sport'], (kickoff - timedelta(hours=36)).isoformat(), (kickoff + timedelta(hours=36)).isoformat()),
     ):
+        # A provider's distinct event IDs identify distinct games, including
+        # baseball doubleheaders. Team names and a nearby kickoff cannot merge
+        # two events already identified by this same provider.
+        if connection.execute('''SELECT 1 FROM sports_ai_fixture_source_map
+            WHERE fixture_id=? AND provider_id=? AND external_id<>? LIMIT 1''',
+            (candidate['id'], provider['id'], record['external_id'])).fetchone():
+            continue
+        if connection.execute('''SELECT 1 FROM sports_ai_fixtures
+            WHERE id=? AND source=? AND external_id<>?''',
+            (candidate['id'], provider['provider_key'], record['external_id'])).fetchone():
+            continue
         # The same two clubs can play split squads at the same time, one at each
         # home rink. Reversed home and away is a different match.
         if _normalize(candidate['home']) != home or _normalize(candidate['away']) != away:
@@ -906,6 +949,7 @@ def collect_match_history(now=None, reader=None, force=False):
         last_run = _parse_stamp(state.get('last_run_at'))
         cooldown = _parse_stamp(state.get('cooldown_until'))
         wanted = wanted_league_keys(connection)
+        ticket_visits = ticket_result_visits(connection, state, current)
         providers = {
             'betexplorer': _provider(connection, 'betexplorer'),
             'soccerway': _provider(connection, 'soccerway'),
@@ -918,7 +962,7 @@ def collect_match_history(now=None, reader=None, force=False):
     if not providers['betexplorer'] or not providers['soccerway']:
         return {'status': 'missing_provider', 'saved': 0, 'places_wager': False}
     visits = [
-        visit for visit in plan_visits(state, wanted, current)
+        visit for visit in ticket_visits + plan_visits(state, wanted, current)
         if providers.get('betexplorer' if visit['kind'] == 'betexplorer' else 'soccerway', {}).get('enabled')
         and providers.get('betexplorer' if visit['kind'] == 'betexplorer' else 'soccerway', {}).get('terms_reviewed')
     ]

@@ -1651,9 +1651,10 @@ def _simulated_competition(name):
 
 
 def build_high_probability_tickets(connection, actor, audit, now=None, minimum=0.70):
-    """Store tickets from every analysed market above 70%. They are not booked."""
+    """Store bookable tickets from current centrally qualified high-probability legs."""
     current = _now(now)
-    fresh = (current - timedelta(hours=6)).isoformat()
+    reconcile_high_probability_tickets(connection, current)
+    fresh = (current - timedelta(minutes=15)).isoformat()
     short = connection.execute(
         """SELECT DISTINCT t.id FROM sports_ai_accumulator_tickets t
            JOIN sports_ai_accumulator_legs l ON l.ticket_id=t.id
@@ -1677,7 +1678,7 @@ def build_high_probability_tickets(connection, actor, audit, now=None, minimum=0
         """SELECT t.id AS ticket_id, l.fixture_id, l.sport, l.competition, l.market
            FROM sports_ai_accumulator_legs l
            JOIN sports_ai_accumulator_tickets t ON t.id=l.ticket_id
-           WHERE t.status='unverified_probability'
+           WHERE t.status IN ('qualified','unverified_probability','review_required')
              AND json_extract(t.parameters_json, '$.coverage')='high_probability'""",
     ).fetchall()
     grouped_open = {}
@@ -1689,7 +1690,7 @@ def build_high_probability_tickets(connection, actor, audit, now=None, minimum=0
         sports = {row['sport'] for row in rows}
         leagues = {row['competition'] for row in rows}
         families = {market_family(row['market']) for row in rows}
-        if len(sports) < 2 or len(leagues) < 2 or len(families) < 2:
+        if len(leagues) < 2 or len(families) < 2:
             narrow_ids.append(ticket_id)
         else:
             used.update(row['fixture_id'] for row in rows)
@@ -1729,7 +1730,10 @@ def build_high_probability_tickets(connection, actor, audit, now=None, minimum=0
             (fixture['id'], fresh),
         )]
         from market_registry import holdout_ready
+        from qualification_engine import selection_is_qualified
         for prediction in predictions:
+            if not selection_is_qualified(connection, fixture['id'], prediction['market']):
+                continue
             if not holdout_ready(connection, fixture['sport'], prediction['market']):
                 continue
             match = None
@@ -1836,13 +1840,14 @@ def build_high_probability_tickets(connection, actor, audit, now=None, minimum=0
             'explanation': (
                 f"High-probability selections across {len(sport_names)} sports ({', '.join(sport_names)}), "
                 f"{len(names)} leagues ({'; '.join(names)}), and {len(families)} markets ({', '.join(families)}). "
-                'Each leg is a stored model probability of at least 75% with a SportyBet price of at least 1.30 '
-                'from the last 15 minutes. This ticket is for reading those selections. '
+                f'Each leg has a current QUALIFIED decision, model probability of at least {minimum:.0%}, '
+                'and a SportyBet price of at least 1.30 from the last 15 minutes. '
                 + combined['explanation']
             ),
-            'status': 'unverified_probability',
+            'status': 'qualified',
         }
-        _insert_ticket(connection, run_id, ticket, config, current, 'created', 'High-probability selections across leagues')
+        identifier = _insert_ticket(connection, run_id, ticket, config, current, 'created', 'Qualified high-probability selections across leagues')
+        connection.execute('UPDATE sports_ai_accumulator_tickets SET finalized=1 WHERE id=?', (identifier,))
         open_signatures.add(signature)
         created.append(signature)
     if created:
@@ -1858,6 +1863,27 @@ def build_high_probability_tickets(connection, actor, audit, now=None, minimum=0
         )
         _audit(audit, connection, actor, 'accumulator.high_probability', {'tickets': len(created), 'leagues': len(leagues), 'sports': len(sports_used)})
     return {'created': len(created), 'leagues': len(leagues), 'sports': len(sports_used), 'places_wager': False}
+
+
+def reconcile_high_probability_tickets(connection, now=None):
+    """Repair the old hard-coded status only after real booking preflight."""
+    from sportybet_booking import _ticket_preflight, _record_diagnostic
+    current = _now(now)
+    counts = {'qualified':0,'held':0}
+    for ticket in connection.execute('''SELECT * FROM sports_ai_accumulator_tickets
+        WHERE status='unverified_probability'
+          AND json_extract(parameters_json,'$.coverage')='high_probability' ''').fetchall():
+        reason, detail, next_status = _ticket_preflight(connection,ticket,current,True,15)
+        valid = ticket['probability_basis']=='independent' and ticket['joint_probability'] is not None and math.isfinite(ticket['joint_probability']) and ticket['joint_probability']>0
+        if valid and reason=='READY':
+            connection.execute("UPDATE sports_ai_accumulator_tickets SET status='qualified',finalized=1 WHERE id=?", (ticket['id'],))
+            counts['qualified'] += 1
+        else:
+            status = 'expired' if next_status=='expired' else 'review_required'
+            connection.execute('UPDATE sports_ai_accumulator_tickets SET status=? WHERE id=?', (status,ticket['id']))
+            _record_diagnostic(connection,ticket['id'],reason if valid else 'PROBABILITY_UNVERIFIED',detail if valid else 'No validated joint probability is stored.',current)
+            counts['held'] += 1
+    return counts
 
 
 def build_bookable_cross_tickets(connection, actor, audit, now=None):

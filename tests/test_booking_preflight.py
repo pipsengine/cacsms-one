@@ -41,6 +41,40 @@ class BookingPreflightTests(unittest.TestCase):
         self.assertEqual(status['publication_state'], 'READY_FOR_WINDOW')
         self.assertEqual(reason, 'WINDOW_CLOSED')
 
+    def test_qualified_accumulator_is_not_rejected_for_joint_probability_below_70_percent(self):
+        from sportybet_booking import next_ticket_id
+        with db.connect() as connection:
+            self._ticket(connection, OUTSIDE-timedelta(minutes=2))
+            connection.execute('UPDATE sports_ai_accumulator_tickets SET joint_probability=0.23')
+            self.assertIsNotNone(next_ticket_id(connection,OUTSIDE))
+            connection.execute("UPDATE sports_ai_qualification_decisions SET state='SUSPENDED'")
+            self.assertIsNone(next_ticket_id(connection,OUTSIDE))
+
+    def test_old_high_probability_status_is_repaired_only_with_current_qualification(self):
+        from accumulator_engine import reconcile_high_probability_tickets
+        with db.connect() as connection:
+            self._ticket(connection,OUTSIDE-timedelta(minutes=2))
+            connection.execute('''UPDATE sports_ai_accumulator_tickets SET
+                status='unverified_probability',joint_probability=0.23,
+                parameters_json='{"coverage":"high_probability"}' ''')
+            self.assertEqual(reconcile_high_probability_tickets(connection,OUTSIDE)['qualified'],1)
+            self.assertEqual(connection.execute('SELECT status,finalized FROM sports_ai_accumulator_tickets').fetchone()['finalized'],1)
+            connection.execute("UPDATE sports_ai_accumulator_tickets SET status='unverified_probability'")
+            connection.execute("UPDATE sports_ai_qualification_decisions SET state='SUSPENDED'")
+            self.assertEqual(reconcile_high_probability_tickets(connection,OUTSIDE)['held'],1)
+            self.assertEqual(connection.execute('SELECT status FROM sports_ai_accumulator_tickets').fetchone()[0],'review_required')
+
+    def test_stopped_preparing_job_is_released(self):
+        from sportybet_booking import create_job,ticket_selections,recover_stopped_bookings
+        with db.connect() as connection:
+            self._ticket(connection,OUTSIDE-timedelta(minutes=2))
+            identifier=connection.execute('SELECT id FROM sports_ai_accumulator_tickets').fetchone()[0]
+            job=create_job(connection,ticket_selections(connection,identifier))
+            connection.execute("UPDATE sports_ai_booking_jobs SET status='PREPARING',updated_at=?",((OUTSIDE-timedelta(days=2)).isoformat(),))
+            self.assertEqual(recover_stopped_bookings(connection,OUTSIDE),1)
+            self.assertEqual(connection.execute('SELECT status,reason_code FROM sports_ai_booking_jobs').fetchone()['reason_code'],'WORKER_STOPPED')
+            self.assertEqual(recover_stopped_bookings(connection,OUTSIDE),0)
+
     def test_a_review_ticket_returns_when_the_price_and_decision_are_current(self):
         with db.connect() as connection:
             self._ticket(connection, OUTSIDE - timedelta(minutes=2))

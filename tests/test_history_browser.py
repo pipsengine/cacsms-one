@@ -1,6 +1,7 @@
 import sys
 import tempfile
 import unittest
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from history_browser import (
     parse_soccerway_results,
     plan_visits,
     repair_imported_settlements,
+    ticket_result_visits,
 )
 
 NOW = datetime(2026, 11, 7, 8, 0, tzinfo=timezone.utc)
@@ -117,6 +119,30 @@ class HistoryParseTests(unittest.TestCase):
 
 
 class HistoryPlanTests(unittest.TestCase):
+    def test_missing_ticket_results_are_prioritized_and_throttled(self):
+        connection = sqlite3.connect(':memory:')
+        connection.row_factory = sqlite3.Row
+        self.addCleanup(connection.close)
+        connection.executescript('''
+            CREATE TABLE sports_ai_fixtures(id TEXT,sport TEXT,starts_at TEXT);
+            CREATE TABLE sports_ai_accumulator_legs(ticket_id TEXT,fixture_id TEXT);
+            CREATE TABLE sports_ai_ticket_settlements(ticket_id TEXT);
+            CREATE TABLE sports_ai_results(fixture_id TEXT,status TEXT);
+            INSERT INTO sports_ai_fixtures VALUES('missing','football','2026-11-05T17:45:00+00:00'),
+                ('future','basketball','2026-11-09T12:00:00+00:00'),
+                ('settled','basketball','2026-11-04T12:00:00+00:00');
+            INSERT INTO sports_ai_accumulator_legs VALUES('t','missing'),('f','future'),('s','settled');
+            INSERT INTO sports_ai_ticket_settlements VALUES('s');
+        ''')
+        state = _blank_state()
+        visits = ticket_result_visits(connection, state, NOW)
+        self.assertEqual(len(visits), 1)
+        self.assertIn('year=2026&month=11&day=05', visits[0]['url'])
+        previous = (state['sport_index'], state['day_offset'])
+        _advance(state, visits[0], NOW)
+        self.assertEqual(ticket_result_visits(connection, state, NOW), [])
+        self.assertEqual((state['sport_index'], state['day_offset']), previous)
+
     def test_waiting_leagues_reserve_general_history_capacity(self):
         waiting = plan_visits(_blank_state(), {'premier-league'}, NOW)
         sports = [visit['sport'] for visit in waiting if visit['kind'] == 'betexplorer']
@@ -244,6 +270,33 @@ class HistoryCollectTests(unittest.TestCase):
             [('Montreal Canadiens', 4, 2), ('Ottawa Senators', 4, 3)],
         )
         self.assertEqual(issues, 0)
+
+    def test_doubleheaders_keep_distinct_provider_event_ids(self):
+        first = {
+            'external_id': 'game-one', 'sport': 'baseball', 'competition': 'Mexico: LMP',
+            'home': 'Mayos de Navojoa', 'away': 'Mazatlan',
+            'starts_at': '2026-11-05T22:00:00+00:00',
+            'home_score': 0, 'away_score': 1, 'observed_at': OBSERVED,
+            'source_url': 'https://www.betexplorer.com/baseball/game-one/',
+        }
+        second = {**first, 'external_id': 'game-two',
+                  'starts_at': '2026-11-06T00:30:00+00:00',
+                  'home_score': 5, 'away_score': 4,
+                  'source_url': 'https://www.betexplorer.com/baseball/game-two/'}
+        with db.connect() as connection:
+            provider = dict(connection.execute(
+                "SELECT * FROM sports_ai_provider_registry WHERE provider_key='betexplorer'",
+            ).fetchone())
+            _store(connection, provider, [first, second], OBSERVED)
+            _store(connection, provider, [second, first], OBSERVED)
+            rows = connection.execute('''SELECT f.external_id,r.home_score,r.away_score
+                FROM sports_ai_fixtures f JOIN sports_ai_results r ON r.fixture_id=f.id
+                WHERE f.sport='baseball' ORDER BY f.external_id''').fetchall()
+            self.assertEqual([tuple(r) for r in rows], [('game-one', 0, 1), ('game-two', 5, 4)])
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM sports_ai_data_quality_issues WHERE issue_type='result_conflict'").fetchone()[0], 0)
+            # A changed score for the SAME event must still raise an alert.
+            _store(connection, provider, [{**first, 'home_score': 9}], OBSERVED)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM sports_ai_data_quality_issues WHERE issue_type='result_conflict'").fetchone()[0], 1)
 
     def test_an_archived_result_settles_when_the_match_closed(self):
         kickoff = '2026-10-01T18:00:00+00:00'

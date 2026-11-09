@@ -414,7 +414,7 @@ def next_ticket_id(connection, now):
                  AND (j.status IN ('QUEUED','PREPARING','CODE_GENERATED') OR j.updated_at>?)
              )
              AND COALESCE(json_extract(t.parameters_json, '$.tier_mode'), 'standard')!='simulation'
-             AND t.probability_basis='independent' AND t.joint_probability>0.70
+             AND t.probability_basis='independent' AND t.joint_probability>0
              AND NOT EXISTS (
                SELECT 1 FROM sports_ai_accumulator_legs l
                WHERE l.ticket_id=t.id AND l.decimal_odds<1.3
@@ -1312,6 +1312,7 @@ def _drop_unpriced_legs(connection, ticket_id, skipped):
 async def execute_job(job_id, page_url=None):
     from playwright.async_api import async_playwright
     session_id = None
+    replaced_ticket_id = None
     with connect() as connection:
         connection.execute('BEGIN IMMEDIATE')
         job = connection.execute('SELECT * FROM sports_ai_booking_jobs WHERE id=?', (job_id,)).fetchone()
@@ -1383,7 +1384,33 @@ async def execute_job(job_id, page_url=None):
                         }
                     else:
                         from high_odds_service import check_displayed_prices
-                        check_displayed_prices(optimized_id, booked, seen)
+                        try:
+                            check_displayed_prices(optimized_id, booked, seen)
+                        except ValueError as price_error:
+                            if 'Displayed price changed' not in str(price_error):
+                                raise
+                            from high_odds_service import requalify_displayed_ticket
+                            with connect() as connection:
+                                connection.execute('BEGIN IMMEDIATE')
+                                replacement = requalify_displayed_ticket(connection, optimized_id, seen)
+                                if not replacement:
+                                    raise
+                                next_selections = ticket_selections(connection, replacement)
+                                next_job = create_job(connection, next_selections)
+                                if next_job.get('duplicate'):
+                                    raise ValueError('Replacement booking is already being processed')
+                                _set_job(connection, job_id, 'SUPERSEDED', reason_code='ODDS_CHANGED',
+                                         error='Requalified at displayed prices; replacement ticket '+replacement,
+                                         odds_json=json.dumps(seen))
+                                _close_session(connection, session_id, 'SUPERSEDED', 'Requalified displayed prices')
+                                replaced_ticket_id = ticket_id
+                                ticket_id = optimized_id = replacement
+                                job_id = next_job['id']
+                                session_id = _open_session(connection, job_id)
+                                connection.execute("UPDATE sports_ai_booking_jobs SET status='PREPARING',attempt=1 WHERE id=?", (job_id,))
+                                connection.execute("UPDATE sports_ai_high_odds_tickets SET registration_state='queued',booking_job_id=? WHERE ticket_id=?", (job_id,ticket_id))
+                            selections = booked = next_selections
+                            check_displayed_prices(optimized_id, booked, seen)
                         result = await request_displayed_code(page, booked, seen)
                         result['skipped'] = [item for item in selections if item.get('fixture_id') not in clicked]
                 EVIDENCE.mkdir(parents=True, exist_ok=True)
@@ -1420,6 +1447,11 @@ async def execute_job(job_id, page_url=None):
                     _record_diagnostic(connection, ticket_id, reason, 'The displayed price no longer matches the qualified quote.', _now())
                 _log_booking(connection, job_id, 'odds', 'The displayed price no longer matches the qualified quote', level='warning', ticket_id=ticket_id, session_id=session_id)
                 _close_session(connection, session_id, result['status'], 'Displayed price changed')
+        if replaced_ticket_id:
+            from high_odds_service import registration_result
+            with connect() as connection:
+                registration_result(connection,ticket_id,result)
+            result.update({'ticket_id':ticket_id,'supersedes_ticket_id':replaced_ticket_id})
         result.update({'id': job_id, 'places_wager': False})
         return result
     except Exception as exc:
@@ -1439,7 +1471,7 @@ def classify_booking_failure(message, status=None):
     text = (message or '').casefold()
     if status == 'CODE_GENERATED':
         return 'CODE_VERIFIED'
-    if status == 'ODDS_CHANGED' or 'no longer matches' in text:
+    if status == 'ODDS_CHANGED' or 'no longer matches' in text or 'displayed price changed' in text:
         return 'ODDS_CHANGED'
     if any(marker in text for marker in ('challenge', 'captcha', 'verify you are human', 'blocked')):
         return 'ACCESS_CHALLENGE'
@@ -1633,6 +1665,19 @@ def _parse_booking_time(value):
     return parsed.astimezone(timezone.utc)
 
 
+def recover_stopped_bookings(connection, now=None):
+    """Release interrupted browser jobs; a dead PREPARING row cannot block forever."""
+    current = now or _now()
+    cutoff = (current-timedelta(hours=1)).isoformat()
+    rows = connection.execute("SELECT id,ticket_id,session_id FROM sports_ai_booking_jobs WHERE status='PREPARING' AND updated_at<?", (cutoff,)).fetchall()
+    for row in rows:
+        _set_job(connection,row['id'],'FAILED',reason_code='WORKER_STOPPED',error='Booking worker stopped before displaying a code; eligible tickets will be retried.')
+        _close_session(connection,row['session_id'],'FAILED','Interrupted booking recovered')
+        if row['ticket_id']:
+            _record_diagnostic(connection,row['ticket_id'],'WORKER_STOPPED','Interrupted booking recovered; no code was recorded.',current)
+    return len(rows)
+
+
 def process_booking_queue(now=None):
     """Request one prepared ticket's booking code every 15 minutes during testing.
 
@@ -1641,6 +1686,7 @@ def process_booking_queue(now=None):
     moment = now or _now()
     phase = phase_at(moment)
     with connect() as connection:
+        recover_stopped_bookings(connection, moment)
         open_now = publication_due(moment, _publication_anchor(connection))
         examined = examine_ready_tickets(connection, moment, window_open=open_now)
         expired = expire_displayed_codes(connection, moment)

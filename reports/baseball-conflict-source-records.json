@@ -1,0 +1,86 @@
+[
+  {
+    "external_id": "lO04gs1C",
+    "sport": "baseball",
+    "competition": "Mexico: LMP",
+    "home": "Mayos de Navojoa",
+    "away": "Mazatlan",
+    "starts_at": "2026-11-07T22:00:00+00:00",
+    "home_score": 0,
+    "away_score": 1,
+    "source_url": "https://www.betexplorer.com/baseball/mexico/lmp/mayos-de-navojoa-venados-mazatlan/lO04gs1C/",
+    "observed_at": "2026-11-09T09:01:56.388202+00:00"
+  },
+  {
+    "external_id": "8palcP1m",
+    "sport": "baseball",
+    "competition": "Mexico: LMP",
+    "home": "Algodoneros",
+    "away": "Hermosillo",
+    "starts_at": "2026-11-08T00:00:00+00:00",
+    "home_score": 6,
+    "away_score": 0,
+    "source_url": "https://www.betexplorer.com/baseball/mexico/lmp/algodoneros-guasave-naranjeros-hermosillo/8palcP1m/",
+    "observed_at": "2026-11-09T09:01:56.388202+00:00"
+  },
+  {
+    "external_id": "r1G8pnIs",
+    "sport": "baseball",
+    "competition": "Mexico: LMP",
+    "home": "Mayos de Navojoa",
+    "away": "Mazatlan",
+    "starts_at": "2026-11-08T00:30:00+00:00",
+    "home_score": 5,
+    "away_score": 4,
+    "source_url": "https://www.betexplorer.com/baseball/mexico/lmp/mayos-de-navojoa-venados-mazatlan/r1G8pnIs/",
+    "observed_at": "2026-11-09T09:01:56.388202+00:00"
+  },
+  {
+    "external_id": "0Qnjuit2",
+    "sport": "baseball",
+    "competition": "Mexico: LMP",
+    "home": "Algodoneros",
+    "away": "Hermosillo",
+    "starts_at": "2026-11-08T02:30:00+00:00",
+    "home_score": 4,
+    "away_score": 1,
+    "source_url": "https://www.betexplorer.com/baseball/mexico/lmp/algodoneros-guasave-naranjeros-hermosillo/0Qnjuit2/",
+    "observed_at": "2026-11-09T09:01:56.388202+00:00"
+  },
+  {
+    "external_id": "8palcP1m",
+    "sport": "baseball",
+    "competition": "Mexico: LMP",
+    "home": "Algodoneros",
+    "away": "Hermosillo",
+    "starts_at": "2026-11-08T00:00:00+00:00",
+    "home_score": 6,
+    "away_score": 0,
+    "source_url": "https://www.betexplorer.com/baseball/mexico/lmp/algodoneros-guasave-naranjeros-hermosillo/8palcP1m/",
+    "observed_at": "2026-11-09T09:01:56.388202+00:00"
+  },
+  {
+    "external_id": "r1G8pnIs",
+    "sport": "baseball",
+    "competition": "Mexico: LMP",
+    "home": "Mayos de Navojoa",
+    "away": "Mazatlan",
+    "starts_at": "2026-11-08T00:30:00+00:00",
+    "home_score": 5,
+    "away_score": 4,
+    "source_url": "https://www.betexplorer.com/baseball/mexico/lmp/mayos-de-navojoa-venados-mazatlan/r1G8pnIs/",
+    "observed_at": "2026-11-09T09:01:56.388202+00:00"
+  },
+  {
+    "external_id": "0Qnjuit2",
+    "sport": "baseball",
+    "competition": "Mexico: LMP",
+    "home": "Algodoneros",
+    "away": "Hermosillo",
+    "starts_at": "2026-11-08T02:30:00+00:00",
+    "home_score": 4,
+    "away_score": 1,
+    "source_url": "https://www.betexplorer.com/baseball/mexico/lmp/algodoneros-guasave-naranjeros-hermosillo/0Qnjuit2/",
+    "observed_at": "2026-11-09T09:01:56.388202+00:00"
+  }
+]

@@ -175,6 +175,12 @@ def health():
 
 _DISPLAYED_CODE_METHODS = ('displayed', 'sportybet_page', 'page')
 
+@router.get('/maintenance/snapshot-cleanup')
+def snapshot_cleanup_status(user=Depends(auth)):
+    with connect() as connection:
+        row=connection.execute("SELECT value_json FROM sports_ai_settings WHERE key='snapshot_cleanup'").fetchone()
+    return json.loads(row[0]) if row else {'status':'not_run','deleted_odds_snapshots':0}
+
 def _code_still_valid(expires_at, now):
     if not expires_at:
         return True

@@ -41,6 +41,21 @@ Open `http://localhost:5173/sports/dashboard`. Vite proxies `/api/sports-ai/*` t
 
 ## Sports AI capabilities and data requirements
 
+The worker automatically removes raw odds snapshots after every related ticket
+has a completed settlement and every leg has been rechecked against a stored
+final score. Expiry alone never triggers deletion. Shared fixtures are retained
+until all related tickets are verified; missing results, postponed matches and
+corrected outcomes defer cleanup. Each pass removes at most 5,000 odds snapshots
+and records an audit event. Ticket selections, original prices, booking codes,
+settlements, predictions and model feature snapshots remain available. Settlement
+is derived from collected results, not a bookmaker account settlement feed.
+Deleted rows make SQLite space reusable; this job does not run VACUUM or shrink
+the database file automatically.
+
+Settlement is checked before cleanup every five minutes. The latest cleanup
+check, including zero-deletion runs and blocker counts, is available to
+authenticated readers at `GET /api/sports-ai/maintenance/snapshot-cleanup`.
+
 - **Provider Registry:** The Source Management Centre contains Provider Registry, Website Explorer, Browser Sessions, Extraction Configuration, Data Quality, Collection Scheduler, Collection History and Source Permissions. Collection jobs, source URLs, timestamps, quality errors and admin actions are persisted in the existing SQLite database using additive `sports_ai_` tables.
 - **Football:** OpenLigaDB and OpenFootball JSON have working HTTPS adapters. OpenLigaDB uses league/season snapshots; OpenFootball accepts a reviewed raw `openfootball/football.json` season file. Both deduplicate updates by provider ID and map matching fixtures across providers. Their current terms still need administrator review before activation.
 - **football-data.org:** The adapter supports competition fixtures, results and standings. Set `SPORTS_FOOTBALL_DATA_API_KEY`; the provider's [coverage page](https://www.football-data.org/coverage) lists free coverage for selected competitions, while its [pricing page](https://www.football-data.org/pricing) describes current plan/rate limits. No key was configured for this implementation's live test, so access was not verified.

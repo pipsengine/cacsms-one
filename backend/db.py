@@ -6,6 +6,18 @@ DB=Path(os.environ.get('SPORTS_SQLITE_PATH',str(Path(__file__).parent/'sports_de
 _migration_lock=threading.Lock()
 
 @contextmanager
+def _process_migration_lock():
+ # Use a separate database so the lock can span backups and commits on DB.
+ # API and scheduler startup must not make concurrent multi-GB backups.
+ DB.parent.mkdir(parents=True,exist_ok=True)
+ with closing(sqlite3.connect(str(DB)+'.migration-lock',timeout=600)) as guard:
+  guard.execute('BEGIN IMMEDIATE')
+  try:
+   yield
+  finally:
+   guard.rollback()
+
+@contextmanager
 def connect(busy_timeout_ms=20000):
  DB.parent.mkdir(parents=True,exist_ok=True)
  c=sqlite3.connect(DB,timeout=max(5,int(busy_timeout_ms)/1000))
@@ -23,7 +35,7 @@ def connect(busy_timeout_ms=20000):
 
 def initialize():
  migrations=sorted((Path(__file__).parent.parent/'migrations').glob('*.sql'))
- with _migration_lock:
+ with _migration_lock, _process_migration_lock():
   existed=DB.exists() and DB.stat().st_size>0
   DB.parent.mkdir(parents=True,exist_ok=True)
   with connect() as c:
@@ -55,11 +67,25 @@ def initialize():
      c.execute('PRAGMA foreign_keys=OFF')
     c.execute('BEGIN IMMEDIATE')
     try:
+     # Another process (API or scheduler) may have applied this migration
+     # since we built the pending list. Check while holding the write lock.
+     if c.execute('SELECT 1 FROM sports_ai_schema_migrations WHERE name=?',
+      (migration.name,)).fetchone():
+      c.rollback()
+      if rebuild_references:
+       c.execute('PRAGMA foreign_keys=ON')
+      continue
      for sql_statement in statements:c.execute(sql_statement)
      c.execute('INSERT INTO sports_ai_schema_migrations(name,applied_at) VALUES(?,?)',
       (migration.name,datetime.now(timezone.utc).isoformat()))
-     if migration.name.startswith('042_') and c.execute('PRAGMA foreign_key_check').fetchone():
-      raise ValueError('Jackpot migration failed foreign key validation')
+     if migration.name.startswith('042_'):
+      # This migration rebuilds categories only. Historical violations in
+      # unrelated tables must not prevent the API from starting.
+      for table in ('sports_ai_high_odds_tickets','sports_ai_high_odds_runs'):
+       if c.execute(f'''SELECT 1 FROM {table} child
+        LEFT JOIN sports_ai_high_odds_categories parent ON parent.id=child.category_id
+        WHERE child.category_id IS NOT NULL AND parent.id IS NULL LIMIT 1''').fetchone():
+        raise ValueError('Jackpot migration failed category foreign key validation')
      c.commit()
      if rebuild_references:
       c.execute('PRAGMA foreign_keys=ON')

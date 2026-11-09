@@ -168,6 +168,8 @@ def _run_cycle():
     with connect() as connection:
         reconcile(connection)
     _release_stopped_jobs()
+    _monitor_accumulators()
+    _settled_snapshot_cleanup()
     _high_odds_booking_tick()
     _qualify_priced_board()
     _operator_booking()
@@ -200,6 +202,16 @@ def _run_cycle():
     _rollover_tick()
     _publication_tick()
     _pipeline_snapshot_tick()
+
+
+def _settled_snapshot_cleanup():
+    try:
+        from snapshot_retention import cleanup_settled_odds
+        with connect() as connection:
+            result = cleanup_settled_odds(connection)
+        print('settled snapshot cleanup', result)
+    except Exception as error:
+        _report('settled snapshot cleanup failed', error)
 
 
 def _qualification_tick():
@@ -676,10 +688,11 @@ def _govern_cycle():
 
 def _monitor_accumulators():
     try:
-        hour=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H')
+        current=datetime.now(timezone.utc)
+        window=current.replace(minute=(current.minute // 5) * 5,second=0,microsecond=0).isoformat()
         with connect() as connection:
             result=monitor_accumulators(
-                connection,'sports-ai-worker',_audit,f'accumulator-monitor:v2:{hour}',
+                connection,'sports-ai-worker',_audit,f'accumulator-monitor:v3:{window}',
             )
         print('accumulator monitor',result.get('status'),
               'settled',result.get('settled',0),'expired',result.get('expired',0),
