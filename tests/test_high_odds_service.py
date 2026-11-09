@@ -24,6 +24,8 @@ class HighOddsServiceTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.previous=db.DB
         db.DB=Path(self.temp.name)/'high-odds.sqlite3';db.initialize()
+        with db.connect() as _c:
+            __import__('market_anchor').set_model_only(_c)  # these tests cover other behaviour than anchoring
         self.now=datetime(2026,11,3,12,tzinfo=timezone.utc)
         with db.connect() as c:
             self.run_id=self._analysis(c)

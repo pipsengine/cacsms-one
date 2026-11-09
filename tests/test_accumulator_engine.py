@@ -411,6 +411,8 @@ class AccumulatorPersistenceTests(unittest.TestCase):
 
     def setUp(self):
         self.now = datetime(2026, 11, 3, 12, tzinfo=timezone.utc)
+        with db.connect() as _c:
+            __import__('market_anchor').set_model_only(_c)  # these tests cover other behaviour than anchoring
         with db.connect() as connection:
             for table in (
                 'sports_ai_booking_codes', 'sports_ai_ticket_settlements',

@@ -63,8 +63,20 @@ def parameters(anchors, sport, league):
     return {'weight': DEFAULT_WEIGHT, 'margin': DEFAULT_MARGIN, 'cap': DEFAULT_CAP, 'source': 'default'}
 
 
+def set_model_only(connection):
+    """Use the model's probability unchanged (tests of other behaviour; not for production)."""
+    connection.execute(
+        """INSERT INTO sports_ai_settings(key,value_json,updated_at) VALUES(?,?,CURRENT_TIMESTAMP)
+           ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json""", (KEY, json.dumps({'mode': 'model_only'})),
+    )
+
+
 def anchor(anchors, sport, league, model_probability, odds):
     """Blend the model probability with SportyBet's fair price."""
+    fair = min(0.999, max(0.001, (1.0 / float(odds)) / DEFAULT_MARGIN))
+    if (anchors or {}).get('mode') == 'model_only':
+        return {'probability': float(model_probability), 'fair': fair, 'weight': 1.0,
+                'gap': float(model_probability) - fair, 'cap': 1.0, 'source': 'model_only'}
     params = parameters(anchors or {}, sport, league)
     fair = min(0.999, max(0.001, (1.0 / float(odds)) / float(params['margin'])))
     weight = float(params['weight'])
@@ -149,6 +161,8 @@ def _fit(pairs, fallback=None):
 def learn(connection, now=None):
     """Refit every sport and league from settled data and store the result."""
     current = _now(now)
+    if load(connection).get('mode') == 'model_only':
+        return load(connection)
     pairs = _pairs(connection)
     by_sport, by_league = defaultdict(list), defaultdict(list)
     for item in pairs:
@@ -184,6 +198,8 @@ def learn(connection, now=None):
 
 def due(connection, now=None, hours=6):
     stored = load(connection)
+    if stored.get('mode') == 'model_only':
+        return False
     learned = stored.get('learned_at')
     if not learned:
         return True

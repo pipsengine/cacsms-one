@@ -285,7 +285,9 @@ def decide(row, policy, now=None):
         return finish('REJECTED', 'DATA_INCOMPLETE', 'Stored feature completeness is below the engine threshold of 0.50.')
     # Anchor the model to SportyBet's fair price, per sport and league (market_anchor.py).
     from market_anchor import anchor
-    anchored = anchor(policy.get('anchors') or {}, sport, row.get('competition'), probability, odds)
+    # revalidate() always supplies anchors; a caller without them keeps the model probability.
+    anchors = policy.get('anchors')
+    anchored = anchor({'mode': 'model_only'} if anchors is None else anchors, sport, row.get('competition'), probability, odds)
     evidence.update(
         model_probability=round(probability, 6), anchored_probability=round(anchored['probability'], 6),
         market_fair_probability=round(anchored['fair'], 6), anchor_weight=anchored['weight'],
@@ -301,7 +303,12 @@ def decide(row, policy, now=None):
     probability = anchored['probability']
     evidence['probability'] = round(probability, 6)
     evidence['uncertainty'] = round(binary_entropy(probability), 4)
-    edge = probability * odds - 1
+    if anchored['source'] == 'model_only':
+        edge = row.get('expected_edge')
+        if edge is None:
+            edge = probability * odds - 1
+    else:
+        edge = probability * odds - 1  # the stored edge was computed from the unanchored model
     try:
         edge = float(edge)
     except (TypeError, ValueError):

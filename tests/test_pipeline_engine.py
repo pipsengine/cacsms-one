@@ -26,6 +26,8 @@ class PipelineTests(unittest.TestCase):
         self.temp = __import__('tempfile').TemporaryDirectory()
         db.DB = Path(self.temp.name) / 'sports.sqlite3'
         db.initialize()
+        with db.connect() as _c:
+            __import__('market_anchor').set_model_only(_c)  # these tests cover other behaviour than anchoring
 
     def tearDown(self):
         db.DB = self.previous
