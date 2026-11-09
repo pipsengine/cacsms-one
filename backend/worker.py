@@ -596,7 +596,7 @@ def _book_sure_odds():
     from sportybet_booking import execute_job
     seen = set()
     status = 'waiting'
-    while True:
+    while len(seen) < 3:  # hard cap per cycle: a logic error can never hammer SportyBet
         job_id = prepare_sure_odds_booking()
         if not job_id or job_id in seen:
             if not seen:
@@ -610,6 +610,8 @@ def _book_sure_odds():
             result.get('code') or result.get('error') or '',
             'places_wager', False,
         )
+        if status != 'CODE_GENERATED':
+            break
     return status
 
 
@@ -709,6 +711,16 @@ def _learning_loop_tick():
             waiting = reassess_awaiting_model(connection)
         with connect() as connection:
             drift = drift_retraining(connection, 'sports-ai-worker', _audit)
+        from market_anchor import due, learn
+        from result_linker import link_results
+        with connect() as connection:
+            linked = link_results(connection)
+        if linked['linked']:
+            print('result linker', linked)
+        with connect() as connection:
+            if linked['linked'] or due(connection):
+                anchors = learn(connection)
+                print('market anchor', 'pairs', anchors['pairs'], 'sports', {k: v['weight'] for k, v in anchors['sports'].items()})
         print('learning loop', 'reassessed', waiting['reassessed'], waiting['counts'],
               'drift_retrained', [item['sport'] for item in drift['trained']], 'places_wager', False)
         _observed('learning_loop', {'status': 'complete', 'reassessed': waiting['reassessed'], 'counts': waiting['counts']})

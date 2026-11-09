@@ -154,7 +154,13 @@ def learning_status(connection, now=None):
         """SELECT id,sport,version,status,active,calibration_status,activated_at,created_at
            FROM sports_ai_model_registry WHERE active=1 OR status IN ('validated','active') ORDER BY sport,created_at DESC""",
     )]
+    from market_anchor import load as load_anchors
+    anchors = load_anchors(connection)
+    anchor_rows = [{'scope': 'sport', 'name': sport, **values} for sport, values in (anchors.get('sports') or {}).items()]
+    anchor_rows += [{'scope': 'league', 'name': key.split('|', 1)[1], 'sport': key.split('|', 1)[0], **values}
+                    for key, values in (anchors.get('leagues') or {}).items()]
     return {
+        'anchors': anchor_rows, 'anchors_learned_at': anchors.get('learned_at'), 'anchor_pairs': anchors.get('pairs'),
         'generated_at': current.isoformat(), 'models': models, 'evaluations': evaluations,
         'drift': drift, 'training_runs': runs, 'places_wager': False,
     }

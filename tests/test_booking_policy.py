@@ -70,7 +70,7 @@ class BookingPolicyTests(unittest.TestCase):
         db.DB = self.previous
         self.temp.cleanup()
 
-    def _ticket(self, c, status='review_required', legs=LEGS, ticket_id='t1'):
+    def _ticket(self, c, status='review_required', legs=LEGS, ticket_id='t1', unlisted=()):
         observed = (self.now - timedelta(hours=3)).isoformat()  # stale price, no qualification decisions
         c.execute(
             """INSERT INTO sports_ai_accumulator_tickets
@@ -94,6 +94,14 @@ class BookingPolicyTests(unittest.TestCase):
                    VALUES(?,?,?,?,'basketball','NBA',?,?,?,?,?,?,0.6,'SportyBet',?,?,?,'m','1','binary','{}')""",
                 (f'{ticket_id}-{fixture}', ticket_id, f'o-{fixture}', fixture, home, away, kickoff, market, home, odds, observed, market, market),
             )
+            if fixture not in unlisted:  # SportyBet listed this match within the last day
+                c.execute(
+                    """INSERT OR IGNORE INTO sports_ai_sportybet_observations
+                       (id,sport,competition,home,away,market_label,selection_label,decimal_odds,source_url,observed_at,
+                        confirmation_status,fixture_id,evidence_json,created_at)
+                       VALUES(?,'basketball','NBA',?,?,'Winner','Home',?,'https://www.sportybet.com/ng/sport/basketball',?,'confirmed',?,'{}',?)""",
+                    (f'obs-{fixture}', home, away, odds, observed, fixture, observed),
+                )
 
     def test_defaults_and_validation(self):
         with db.connect() as c:
@@ -158,6 +166,46 @@ class BookingPolicyTests(unittest.TestCase):
         self.assertTrue(any('dropped' in entry for entry in logs))
         self.assertTrue(any(entry.get('changes', [{}])[0].get('displayed') == 1.95 for entry in logs if 'changes' in entry))
 
+    def test_unlisted_legs_fail_honestly_without_opening_a_browser(self):
+        from unittest.mock import patch
+        import sportybet_booking
+        with db.connect() as c:
+            self._ticket(c, status='qualified', unlisted=('pistons', 'lakers'))
+            job = create_job(c, ticket_selections(c, 't1'))['id']
+
+        async def no_browser(*a, **k):
+            raise AssertionError('a browser was opened')
+        with patch.object(sportybet_booking, '_open_sport', no_browser):
+            result = asyncio.run(execute_job(job, page_url=self.url))
+        self.assertEqual((result['status'], result['reason_code']), ('FAILED', 'LEGS_NOT_OFFERED'))
+        self.assertIn('not listed by SportyBet', result['error'])
+        self.assertIn('Pistons vs 76ers', result['error'])
+
+    def test_a_ticket_that_keeps_failing_is_not_retried_the_same_day(self):
+        with db.connect() as c:
+            self._ticket(c, status='qualified')
+            for index in range(3):
+                old = (self.now - timedelta(hours=1, minutes=index)).isoformat()
+                c.execute("""INSERT INTO sports_ai_booking_jobs(id,created_at,updated_at,status,sport,selections_json,signature,places_wager,ticket_id)
+                             VALUES(?,?,?,'FAILED','basketball','[]',?,0,'t1')""", (f'j{index}', old, old, f'x{index}'))
+            self.assertIsNone(next_ticket_id(c, self.now))
+
+    def test_duplicate_tickets_are_retired_and_their_failures_superseded(self):
+        from sportybet_booking import retire_duplicate_tickets
+        with db.connect() as c:
+            self._ticket(c, status='qualified', ticket_id='first')
+            self._ticket(c, status='unverified_probability', ticket_id='twin')
+            c.execute("""INSERT INTO sports_ai_booking_codes(id,accumulator_ticket_id,code,verification_method,evidence,status,bookmaker,verified_at,integration_status,created_at)
+                         VALUES('c1','first','ORIG01','displayed','x','verified','SportyBet',?,'displayed',?)""", (self.now.isoformat(), self.now.isoformat()))
+            c.execute("""INSERT INTO sports_ai_booking_jobs(id,created_at,updated_at,status,sport,selections_json,signature,places_wager,ticket_id,error)
+                         VALUES('dup-job',?,?,'FAILED','basketball','[]','twin|x',0,'twin','SportyBet returned a code already registered to another ticket')""",
+                      (self.now.isoformat(), self.now.isoformat()))
+            self.assertEqual(retire_duplicate_tickets(c, self.now), 1)
+            self.assertEqual(c.execute("SELECT status FROM sports_ai_accumulator_tickets WHERE id='twin'").fetchone()[0], 'expired')
+            job = c.execute("SELECT status,reason_code,error FROM sports_ai_booking_jobs WHERE id='dup-job'").fetchone()
+        self.assertEqual((job[0], job[1]), ('SUPERSEDED', 'DUPLICATE_SLIP'))
+        self.assertIn('ORIG01', job[2])
+
     def test_too_few_offered_legs_does_not_request_a_code(self):
         with db.connect() as c:
             booking_policy.save(c, {'min_legs': 3})
@@ -221,6 +269,21 @@ if __name__ == '__main__':
     unittest.main()
 
 
+    def test_same_selections_returning_the_same_code_retire_the_duplicate(self):
+        from sportybet_booking import _store_displayed_code
+        with db.connect() as c:
+            self._ticket(c, status='qualified', ticket_id='first')
+            self._ticket(c, status='qualified', ticket_id='twin')
+            self._ticket(c, status='qualified', legs=LEGS[:2], ticket_id='other')
+            _store_displayed_code(c, 'first', 'SAME01', 'x')
+            _store_displayed_code(c, 'twin', 'SAME01', 'x')
+            twin = c.execute("SELECT status,publication_state,parameters_json FROM sports_ai_accumulator_tickets WHERE id='twin'").fetchone()
+            self.assertEqual((twin[0], twin[1], json.loads(twin[2])['duplicate_of']), ('expired', 'DUPLICATE', 'first'))
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM sports_ai_booking_codes WHERE code='SAME01'").fetchone()[0], 1)
+            with self.assertRaisesRegex(ValueError, 'already registered'):
+                _store_displayed_code(c, 'other', 'SAME01', 'x')
+
+
 class SureOddsTodayTests(unittest.TestCase):
     """The daily sure-odds product works on weekdays and follows the booking policy."""
 
@@ -271,6 +334,25 @@ class SureOddsDuplicateTests(SureOddsTodayTests):
             with db.connect() as c:
                 tickets = hb.sure_odds_board(c, self.monday)['sure_tickets']
         self.assertEqual(len(tickets), 1)
+
+
+class SureOddsLoopTests(SureOddsTodayTests):
+    def test_a_coded_slip_is_never_rebuilt_after_its_ticket_is_expired(self):
+        from unittest.mock import patch
+        import high_odds_board as hb
+        legs = self._legs()
+        with patch.object(hb, '_candidates', lambda c, day, now: [dict(l, opportunity_id='o', selection='x', odds_observed_at='t') for l in legs]):
+            with db.connect() as c:
+                day = hb._today_window(self.monday)[0]
+                first = hb._sure_today(c, day, self.monday)
+                ticket_id = hb._upsert_ticket(c, day, first[0], self.monday, product='sure_odds')
+                c.execute("""INSERT INTO sports_ai_booking_codes(id,accumulator_ticket_id,code,verification_method,evidence,status,bookmaker,verified_at,integration_status,created_at)
+                             VALUES('c','%s','LOOP01','displayed','x','verified','SportyBet','t','displayed','t')""" % ticket_id)
+                c.execute("UPDATE sports_ai_accumulator_tickets SET status='expired',publication_state='DIVERSITY_RETIRED' WHERE id=?", (ticket_id,))
+                again = hb._sure_today(c, day, self.monday)
+                self.assertEqual([t for t in again if t.get('status') == 'ready' and 'id' not in t], [])
+                self.assertIsNone(hb._upsert_ticket(c, day, first[0], self.monday, product='sure_odds'))
+                self.assertEqual(c.execute("SELECT COUNT(*) FROM sports_ai_accumulator_tickets").fetchone()[0], 1)
 
 
 class WrongSelectionGuardTests(unittest.TestCase):

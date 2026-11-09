@@ -15,6 +15,10 @@ from sportybet_research import blocked_page
 BOOK = re.compile(r'^(book(\s*bet)?|booking\s*code|share\s*code)$', re.I)
 CODE = re.compile(r'^[A-Z0-9]{5,16}$')
 REFRESH_MINUTES = 15
+# A selection SportyBet has not listed within this many hours is treated as not offered.
+OFFER_HOURS = 24
+# A ticket that failed this many times in a day is not retried until the next day.
+MAX_DAILY_FAILURES = 3
 EVIDENCE = Path(__file__).resolve().parent / 'booking_evidence'
 
 FIND_ODDS = '''(args) => {
@@ -475,7 +479,7 @@ def next_ticket_id(connection, now):
     from booking_policy import load
     policy = load(connection)
     cutoff = (now - timedelta(minutes=REFRESH_MINUTES)).isoformat()
-    clauses, args = [], [cutoff]
+    clauses, args = [], [cutoff, (now - timedelta(days=1)).isoformat(), MAX_DAILY_FAILURES]
     if policy['require_live_qualification']:
         clauses.append("""AND NOT EXISTS (
                SELECT 1 FROM sports_ai_accumulator_legs l
@@ -515,6 +519,8 @@ def next_ticket_id(connection, now):
              )
              AND COALESCE(json_extract(t.parameters_json, '$.tier_mode'), 'standard')!='simulation'
              AND t.probability_basis='independent' AND t.joint_probability>0
+             AND (SELECT COUNT(*) FROM sports_ai_booking_jobs j WHERE j.ticket_id=t.id
+                  AND j.status IN ('FAILED','ODDS_CHANGED') AND j.updated_at>?) < ?
              {' '.join(clauses)}
            ORDER BY (SELECT MIN(starts_at) FROM sports_ai_accumulator_legs l WHERE l.ticket_id=t.id), t.created_at DESC
            LIMIT 1""",
@@ -672,8 +678,24 @@ def _store_displayed_code(connection, ticket_id, code, evidence):
         "SELECT accumulator_ticket_id FROM sports_ai_booking_codes WHERE code=? AND bookmaker='SportyBet'",
         (code,),
     ).fetchall()
-    if any(row['accumulator_ticket_id'] != ticket_id for row in existing):
-        raise ValueError('SportyBet returned a code already registered to another ticket')
+    others = [row['accumulator_ticket_id'] for row in existing if row['accumulator_ticket_id'] != ticket_id]
+    if others:
+        def selections(identifier):
+            return {(r['fixture_id'], str(r['market']).upper()) for r in connection.execute(
+                'SELECT fixture_id, market FROM sports_ai_accumulator_legs WHERE ticket_id=?', (identifier,))}
+        mine = selections(ticket_id)
+        twin = next((other for other in others if selections(other) == mine), None)
+        if not twin:
+            raise ValueError('SportyBet returned a code already registered to another ticket')
+        # Same selections, same slip: this ticket duplicates one that is already coded. Retire it.
+        row = connection.execute('SELECT parameters_json FROM sports_ai_accumulator_tickets WHERE id=?', (ticket_id,)).fetchone()
+        parameters = json.loads((row['parameters_json'] if row else None) or '{}')
+        parameters['duplicate_of'] = twin
+        connection.execute(
+            """UPDATE sports_ai_accumulator_tickets SET status='expired', publication_state='DUPLICATE', parameters_json=?
+               WHERE id=?""", (json.dumps(parameters), ticket_id),
+        )
+        return
     if existing:
         return
     from booking_policy import load
@@ -1479,12 +1501,24 @@ async def _execute_job(job_id, page_url=None):
                         and item.get('starts_at')]
         from booking_policy import legs_needed
         minimum = legs_needed(policy, len(selections))
+        # A leg SportyBet has not listed for a day is not on its pages; do not open a browser for it.
+        since = (moment - timedelta(hours=OFFER_HOURS)).isoformat()
+        unlisted = [item for item in selections if item not in started_legs and not connection.execute(
+            'SELECT 1 FROM sports_ai_sportybet_observations WHERE fixture_id=? AND observed_at>=? LIMIT 1',
+            (item.get('fixture_id'), since)).fetchone()]
+        if unlisted and policy['drop_unavailable_legs']:
+            started_legs = started_legs + unlisted
         if started_legs:
             selections = [item for item in selections if item not in started_legs]
             if not policy['drop_unavailable_legs'] or len(selections) < minimum:
-                message = f'{len(started_legs)} selection(s) already kicked off; {len(selections)} remain'
-                _set_job(connection, job_id, 'FAILED', error=message, reason_code='FIXTURE_STARTED')
-                return {'id': job_id, 'status': 'FAILED', 'reason_code': 'FIXTURE_STARTED', 'error': message, 'places_wager': False}
+                names = ', '.join(f"{i.get('home')} vs {i.get('away')}" for i in unlisted[:6])
+                message = (f'{len(started_legs) - len(unlisted)} selection(s) already kicked off and {len(unlisted)} are not listed by SportyBet'
+                           f"{(': ' + names) if names else ''}; {len(selections)} remain, {minimum} needed")
+                code = 'LEGS_NOT_OFFERED' if unlisted else 'FIXTURE_STARTED'
+                _set_job(connection, job_id, 'FAILED', error=message, reason_code=code)
+                if ticket_id_for_job := next((i.get('ticket_id') for i in started_legs if i.get('ticket_id')), None):
+                    _record_diagnostic(connection, ticket_id_for_job, code, message[:500], moment)
+                return {'id': job_id, 'status': 'FAILED', 'reason_code': code, 'error': message, 'places_wager': False}
         session_id = _open_session(connection, job_id)
         connection.execute(
             """UPDATE sports_ai_booking_jobs
@@ -1524,9 +1558,12 @@ async def _execute_job(job_id, page_url=None):
                     clicked = {item.get('fixture_id') for item in seen}
                     booked = [item for item in selections if item.get('fixture_id') in clicked]
                     if flexible and len(booked) < needed:
+                        missing = [item for item in selections if item.get('fixture_id') not in clicked]
+                        names = ', '.join(f"{i.get('home')} vs {i.get('away')} ({i.get('market')})" for i in missing[:6])
                         result = {
-                            'status': 'ODDS_CHANGED', 'seen': seen, 'code': None,
-                            'error': 'SportyBet is not showing enough of these lines to book the ticket.',
+                            'status': 'FAILED', 'reason_code': 'LEGS_NOT_OFFERED', 'seen': seen, 'code': None,
+                            'error': f'SportyBet is not offering {len(missing)} of {len(selections)} selection(s): {names}. '
+                                     f'At least {needed} are needed to book.',
                         }
                     elif policy['accept_displayed_odds']:
                         # Book at the prices on the page; they are stored on the ticket below.
@@ -1608,12 +1645,13 @@ async def _execute_job(job_id, page_url=None):
                 _log_booking(connection, job_id, 'published', 'SportyBet displayed a booking code', ticket_id=ticket_id, session_id=session_id, detail={'evidence': str(shot)})
                 _close_session(connection, session_id, 'CODE_GENERATED', 'Displayed booking code stored')
             else:
-                reason = classify_booking_failure('', result['status'])
-                _set_job(connection, job_id, result['status'], odds_json=json.dumps(result['seen']), error=result.get('error') or 'The displayed price no longer matches the qualified quote', reason_code=reason)
+                reason = result.get('reason_code') or classify_booking_failure('', result['status'])
+                message = result.get('error') or 'The displayed price no longer matches the qualified quote'
+                _set_job(connection, job_id, result['status'], odds_json=json.dumps(result['seen']), error=message, reason_code=reason)
                 if ticket_id:
-                    _record_diagnostic(connection, ticket_id, reason, 'The displayed price no longer matches the qualified quote.', _now())
-                _log_booking(connection, job_id, 'odds', 'The displayed price no longer matches the qualified quote', level='warning', ticket_id=ticket_id, session_id=session_id)
-                _close_session(connection, session_id, result['status'], 'Displayed price changed')
+                    _record_diagnostic(connection, ticket_id, reason, message[:500], _now())
+                _log_booking(connection, job_id, 'odds' if reason == 'ODDS_CHANGED' else 'availability', message, level='warning', ticket_id=ticket_id, session_id=session_id)
+                _close_session(connection, session_id, result['status'], message)
         if replaced_ticket_id:
             from high_odds_service import registration_result
             with connect() as connection:
@@ -1714,6 +1752,77 @@ def _latest_leg_quote(connection, leg):
     ).fetchone()
 
 
+def retire_duplicate_tickets(connection, now=None):
+    """Retire uncoded tickets whose selections equal a ticket that already has a code.
+
+    SportyBet returns the same code for the same slip, so such a ticket can never get
+    its own code. Its failed jobs are marked SUPERSEDED with the original code.
+    """
+    moment = (now or _now()).isoformat()
+    # Older runs reported missing selections as an odds change; give them their real reason.
+    connection.execute(
+        """UPDATE sports_ai_booking_jobs SET status='FAILED', reason_code='LEGS_NOT_OFFERED',
+             error='SportyBet was not offering enough of these selections to book the ticket (not an odds change).'
+           WHERE status='ODDS_CHANGED' AND error='SportyBet is not showing enough of these lines to book the ticket.'""",
+    )
+    # Jobs that only re-displayed another ticket's code are duplicates, not new codes.
+    connection.execute(
+        """UPDATE sports_ai_booking_jobs SET status='SUPERSEDED', reason_code='DUPLICATE_SLIP',
+             error='Same selections as a ticket already coded ' || COALESCE(code,'') || '; this duplicate was retired.'
+           WHERE status='CODE_GENERATED' AND ticket_id IN (
+             SELECT id FROM sports_ai_accumulator_tickets WHERE publication_state='DUPLICATE')""",
+    )
+    # A ticket holding a displayed code is not retired for sharing a match; restore any that were.
+    from booking_policy import load as booking_policy
+    if not booking_policy(connection)['enforce_match_exposure']:
+        connection.execute(
+            """UPDATE sports_ai_accumulator_tickets
+               SET status=CASE WHEN json_extract(parameters_json,'$.product') IN ('sure_odds','high_odds')
+                               THEN 'unverified_probability' ELSE 'qualified' END,
+                   publication_state=NULL
+               WHERE publication_state='DIVERSITY_RETIRED'
+                 AND EXISTS (SELECT 1 FROM sports_ai_booking_codes b WHERE b.accumulator_ticket_id=sports_ai_accumulator_tickets.id
+                             AND b.verification_method='displayed' AND TRIM(COALESCE(b.code,''))<>'')
+                 AND EXISTS (SELECT 1 FROM sports_ai_accumulator_legs l WHERE l.ticket_id=sports_ai_accumulator_tickets.id
+                             AND julianday(l.starts_at)>julianday(?))""", (moment,),
+        )
+    rows = connection.execute(
+        """SELECT t.id, l.fixture_id, upper(l.market) market,
+                  (SELECT b.code FROM sports_ai_booking_codes b WHERE b.accumulator_ticket_id=t.id
+                     AND b.verification_method='displayed' AND TRIM(COALESCE(b.code,''))<>'' LIMIT 1) code
+           FROM sports_ai_accumulator_tickets t JOIN sports_ai_accumulator_legs l ON l.ticket_id=t.id
+           WHERE t.status NOT IN ('expired','void','settled')
+              OR EXISTS (SELECT 1 FROM sports_ai_booking_codes b WHERE b.accumulator_ticket_id=t.id
+                         AND b.verification_method='displayed' AND TRIM(COALESCE(b.code,''))<>'')""",
+    ).fetchall()
+    tickets = {}
+    for row in rows:
+        entry = tickets.setdefault(row['id'], {'code': row['code'], 'legs': set()})
+        entry['legs'].add((row['fixture_id'], row['market']))
+    coded = {frozenset(v['legs']): (k, v['code']) for k, v in tickets.items() if v['code']}
+    retired = 0
+    for ticket_id, entry in tickets.items():
+        twin = coded.get(frozenset(entry['legs']))
+        if entry['code'] or not twin or twin[0] == ticket_id:
+            continue
+        row = connection.execute('SELECT status,parameters_json FROM sports_ai_accumulator_tickets WHERE id=?', (ticket_id,)).fetchone()
+        if not row or row['status'] in ('expired', 'void', 'settled'):
+            continue
+        parameters = json.loads(row['parameters_json'] or '{}')
+        parameters['duplicate_of'] = twin[0]
+        connection.execute(
+            """UPDATE sports_ai_accumulator_tickets SET status='expired', publication_state='DUPLICATE', parameters_json=?
+               WHERE id=?""", (json.dumps(parameters), ticket_id),
+        )
+        connection.execute(
+            """UPDATE sports_ai_booking_jobs SET status='SUPERSEDED', reason_code='DUPLICATE_SLIP', error=?, updated_at=?
+               WHERE ticket_id=? AND status IN ('FAILED','ODDS_CHANGED','QUEUED')""",
+            (f'Same selections as a ticket already coded {twin[1]}; this duplicate was retired.', moment, ticket_id),
+        )
+        retired += 1
+    return retired
+
+
 def examine_ready_tickets(connection, now=None, window_open=None):
     """Revalidate tickets before a booking window. A closed window does not open a browser."""
     current = now or _now()
@@ -1721,6 +1830,7 @@ def examine_ready_tickets(connection, now=None, window_open=None):
     if window_open is None:
         window_open = publication_open(phase)
     minutes = REFRESH_MINUTES
+    duplicates = retire_duplicate_tickets(connection, current)
     qualified = connection.execute(
         """SELECT id, status, combined_odds, publication_state, parameters_json
            FROM sports_ai_accumulator_tickets
@@ -1742,6 +1852,7 @@ def examine_ready_tickets(connection, now=None, window_open=None):
     ).fetchall()
     tickets = list(qualified) + list(held)
     summary = {'examined': 0, 'ready': 0, 'demoted': 0, 'restored': 0, 'reasons': {}, 'opens_browser': False, 'places_wager': False, 'phase': phase}
+    summary['duplicates_retired'] = duplicates
     _record_recent_lapses(connection, current)
     for ticket in tickets:
         summary['examined'] += 1

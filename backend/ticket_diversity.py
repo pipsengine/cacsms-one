@@ -111,6 +111,10 @@ def reconcile(connection, now=None):
         ).fetchall()
         keys = keys_for(legs)
         conflicts = sorted({occupied[key] for key in keys & occupied.keys()})
+        from booking_policy import load as booking_policy
+        # A displayed code is fixed and already handed out; sharing matches is allowed by the policy.
+        if conflicts and (ticket['coded_at'] or not booking_policy(connection)['enforce_match_exposure']):
+            conflicts = []
         if conflicts:
             parameters = json.loads(ticket['parameters_json'] or '{}')
             parameters.update({'diversity_retired': True, 'conflicts_with': conflicts})

@@ -85,6 +85,9 @@ function Sources({sources,reload}){
 
 function Learning({learning}){
  return <>
+  <section className="sp-panel"><div className="sp-panel-head"><div><h3>Model vs SportyBet, per sport and league</h3><p>How much each model is trusted against SportyBet's fair price, learned from {learning.anchor_pairs??0} settled pre-kickoff picks (updated {stamp(learning.anchors_learned_at)}). Weight 0 means the market alone; held-out Brier: lower is better.</p></div></div>
+   <Table headers={['Scope','Sport / league','Settled picks','Model weight','Held-out Brier: model','Market','Blend','Max gap above market','Status']} empty="Not learned yet: it runs with the worker's learning pass." rows={(learning.anchors||[]).map(a=>[a.scope,a.scope==='league'?`${human(a.sport)} · ${a.name}`:human(a.name),a.pairs??'—',num(a.weight,2),num(a.holdout_brier?.model),num(a.holdout_brier?.market),num(a.holdout_brier?.blend),`${Math.round((a.cap??0.15)*100)} pts`,<Pill tone={a.proven?'success':a.status==='default'?'neutral':'warning'}>{a.proven?'Beats market':a.status==='default'?'Too little data':'Learning'}</Pill>])}/>
+  </section>
   <section className="sp-panel"><div className="sp-panel-head"><div><h3>Prospective model accuracy</h3><p>Scored only on predictions stored before kickoff and settled after. Lower Brier score, log loss and calibration error are better.</p></div></div>
    <Table headers={['Sport','Market','Model','Samples','Brier','Log loss','Calibration error','Hit rate','Scored']} empty="No prospective evaluation has been stored yet." rows={(learning.evaluations||[]).map(e=>[human(e.sport),e.market,e.version?`v${e.version}${e.active?' · active':''}`:'—',e.sample_size,num(e.brier_score),num(e.log_loss),<span className={e.calibration_error>0.1?'ah-bad':''}>{num(e.calibration_error)}</span>,pct(e.hit_rate),stamp(e.created_at)])}/>
   </section>

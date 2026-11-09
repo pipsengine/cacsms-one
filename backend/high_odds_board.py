@@ -138,6 +138,15 @@ def _sure_today(connection, day, now, candidates=None):
     """
     stored = _stored_slips(connection, day, 'sure_odds')
     used = {leg['fixture_id'] for ticket in stored for leg in ticket.get('legs') or []}
+    # Matches on a sure ticket that already got a code (or was retired as its duplicate) are never re-packed,
+    # even if that ticket was later expired; SportyBet would only return the same code again.
+    used |= {row[0] for row in connection.execute(
+        """SELECT l.fixture_id FROM sports_ai_accumulator_legs l JOIN sports_ai_accumulator_tickets t ON t.id=l.ticket_id
+           WHERE json_extract(t.parameters_json,'$.product')='sure_odds'
+             AND julianday(l.starts_at)>=julianday(?) AND julianday(l.starts_at)<julianday(?)
+             AND (t.publication_state='DUPLICATE' OR EXISTS (SELECT 1 FROM sports_ai_booking_codes b
+                  WHERE b.accumulator_ticket_id=t.id AND b.verification_method='displayed' AND TRIM(COALESCE(b.code,''))<>''))""",
+        (day['start'].isoformat(), day['end'].isoformat()))}
     pool = _sure_pool(connection, _candidates(connection, day, now), now) if candidates is None else candidates
     return stored + pack_sure_tickets([leg for leg in pool if leg['fixture_id'] not in used], day)
 
@@ -548,6 +557,8 @@ def _rows(connection, start, end):
         row['id']: confidence_from_metrics(row['metrics_json'])
         for row in connection.execute('SELECT id, metrics_json FROM sports_ai_model_registry')
     }
+    from market_anchor import anchor, load as load_anchors
+    anchors = load_anchors(connection)
     stored = []
     for item in latest_prediction.values():
         link = linked.get(item['id'])
@@ -565,6 +576,12 @@ def _rows(connection, start, end):
         fixture = fixtures[item['fixture_id']]
         if fixture['sport'] not in BOOKABLE_SPORTS or not fixture['starts_at']:
             continue
+        # Market-anchored probability: the 80% floor applies to the blend, and large
+        # disagreements with SportyBet are held back (market_anchor.py).
+        anchored = anchor(anchors, fixture['sport'], fixture['competition'], item['probability'], odds)
+        if anchored['gap'] > anchored['cap'] or anchored['probability'] < SELECTION_FLOOR:
+            continue
+        item = {**item, 'model_probability': item['probability'], 'probability': anchored['probability']}
         outcome = quote['outcome'] if 'outcome' in quote.keys() else None
         stored.append({
             'stamp': (item['created_at'], str(quote['observed_at'] or '')),
@@ -819,6 +836,14 @@ def _upsert_ticket(connection, day, ticket, now, product='high_odds'):
     for row in existing:
         if row['signature'] == ticket['signature'] or _signature_body(row['signature']) == body:
             return row['id']
+    for row in connection.execute(
+        """SELECT t.id, t.signature FROM sports_ai_accumulator_tickets t
+           WHERE json_extract(t.parameters_json, '$.product')=? AND (t.publication_state='DUPLICATE' OR EXISTS (
+             SELECT 1 FROM sports_ai_booking_codes b WHERE b.accumulator_ticket_id=t.id AND b.verification_method='displayed'))""",
+        (product,),
+    ):
+        if _signature_body(row['signature']) == body:
+            return None  # already coded under another ticket; never store the same slip again
     from ticket_diversity import assert_available, TicketExposureConflict
     from booking_policy import load as booking_policy
     # Sure-odds tickets follow the booking policy on shared matches; high-odds keeps one match per ticket.

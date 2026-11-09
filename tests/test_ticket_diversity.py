@@ -20,6 +20,8 @@ class TicketDiversityTests(unittest.TestCase):
         self.previous = db.DB
         db.DB = Path(self.temp.name) / 'diversity.sqlite3'
         db.initialize()
+        with db.connect() as _c:
+            __import__('booking_policy').save(_c, __import__('booking_policy').STRICT)  # these tests cover the strict gates
         self.now = datetime.now(timezone.utc)
         start = self.now.replace(hour=0, minute=0, second=0, microsecond=0)
         self.day = {'name': 'Today', 'date': start.date().isoformat(), 'start': start, 'end': start+timedelta(days=2)}

@@ -283,9 +283,25 @@ def decide(row, policy, now=None):
         return finish('AWAITING_DATA', 'DATA_INCOMPLETE', 'Feature completeness was not stored.')
     if float(completeness) < float(policy['min_completeness']):
         return finish('REJECTED', 'DATA_INCOMPLETE', 'Stored feature completeness is below the engine threshold of 0.50.')
-    edge = row.get('expected_edge')
-    if edge is None:
-        edge = probability * odds - 1
+    # Anchor the model to SportyBet's fair price, per sport and league (market_anchor.py).
+    from market_anchor import anchor
+    anchored = anchor(policy.get('anchors') or {}, sport, row.get('competition'), probability, odds)
+    evidence.update(
+        model_probability=round(probability, 6), anchored_probability=round(anchored['probability'], 6),
+        market_fair_probability=round(anchored['fair'], 6), anchor_weight=anchored['weight'],
+        market_gap=round(anchored['gap'], 6), market_gap_cap=anchored['cap'], anchor_source=anchored['source'],
+    )
+    if anchored['gap'] > anchored['cap']:
+        return finish(
+            'MONITORING', 'MARKET_DISAGREEMENT',
+            f"The model is {anchored['gap'] * 100:.0f} points above SportyBet's fair price (cap {anchored['cap'] * 100:.0f}). "
+            'Settled results show such gaps are mostly overconfidence, so this selection is held.',
+            None,
+        )
+    probability = anchored['probability']
+    evidence['probability'] = round(probability, 6)
+    evidence['uncertainty'] = round(binary_entropy(probability), 4)
+    edge = probability * odds - 1
     try:
         edge = float(edge)
     except (TypeError, ValueError):
@@ -641,6 +657,8 @@ def revalidate(connection, actor='sports-ai-worker', now=None, limit=400, fixtur
     from suitability import sync_lifecycles
     sync_lifecycles(connection)
     policy = load_policy(connection)
+    from market_anchor import load as load_anchors
+    policy['anchors'] = load_anchors(connection)
     expired = expire_started(connection, actor, current)
     prepared = []
     seen = set()
@@ -657,7 +675,8 @@ def revalidate(connection, actor='sports-ai-worker', now=None, limit=400, fixtur
         prepared.append({
             'row': row,
             'result': decide(row, policy, current),
-            'fingerprint': _fingerprint(row, policy['version']),
+            # New anchor weights re-decide every selection.
+            'fingerprint': _fingerprint(row, f"{policy['version']}|{(policy.get('anchors') or {}).get('learned_at')}"),
         })
     _apply_limits(prepared, policy)
     changed = 0

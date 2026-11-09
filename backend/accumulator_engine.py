@@ -1629,7 +1629,8 @@ def load_opportunity_rows(connection, now=None, keep_markets=False):
                   q.decimal_odds, q.bookmaker, q.observed_at, q.source_url, q.market AS quote_market, q.outcome AS quote_outcome, q.line AS quote_line,
                   m.version AS model_version, m.model_name, m.sport AS model_sport, m.lifecycle AS model_lifecycle,
                   m.status AS model_status, m.active AS model_active,
-                  m.metrics_json, m.calibration_status
+                  m.metrics_json, m.calibration_status,
+                  json_extract(d.evidence_json,'$.anchored_probability') AS anchored_probability
            FROM sports_ai_value_opportunities o
            JOIN sports_ai_engine_predictions p ON p.id=o.prediction_id
            JOIN sports_ai_fixtures f ON f.id=p.fixture_id
@@ -1642,6 +1643,11 @@ def load_opportunity_rows(connection, now=None, keep_markets=False):
     ).fetchall()
     from market_registry import choose_best
     material=[dict(row) for row in rows]
+    for item in material:
+        # Joint probabilities and value use the market-anchored figure the decision was made on.
+        if item.get('anchored_probability') is not None:
+            item['model_probability'] = item['probability']
+            item['probability'] = float(item['anchored_probability'])
     return material if keep_markets else choose_best(material)
 
 
