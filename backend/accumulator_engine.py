@@ -2325,7 +2325,8 @@ def list_tickets(connection, tier=None, sport_mode=None, status=None, family_id=
         args.append(family_id)
     rows = connection.execute(
         f"""SELECT * FROM sports_ai_accumulator_tickets WHERE {' AND '.join(clauses)}
-            ORDER BY created_at DESC, tier, signature LIMIT 200""",
+            ORDER BY CASE WHEN status IN ('qualified','unverified_probability','review_required') THEN 0 ELSE 1 END,
+                     created_at DESC, tier, signature LIMIT 200""",
         args,
     ).fetchall()
     tickets = [_ticket_payload(connection, row['id']) for row in rows]

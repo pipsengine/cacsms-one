@@ -146,3 +146,35 @@ class LeadTimeTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TicketListTests(unittest.TestCase):
+    """Current tickets must not be pushed out of the 200-row list by newer expired ones."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.previous = db.DB
+        db.DB = Path(self.temp.name) / 'tickets.sqlite3'
+        db.initialize()
+
+    def tearDown(self):
+        db.DB = self.previous
+        self.temp.cleanup()
+
+    def test_current_ticket_survives_many_newer_expired_tickets(self):
+        from accumulator_engine import list_tickets
+        with db.connect() as c:
+            def add(ticket_id, status, created):
+                c.execute(
+                    """INSERT INTO sports_ai_accumulator_tickets
+                       (id,family_id,version,signature,tier,sport_mode,status,combined_odds,leg_count,
+                        probability_basis,explanation,parameters_json,created_at)
+                       VALUES(?,?,1,?,2,'football',?,3.0,0,'unverified','test','{}',?)""",
+                    (ticket_id, ticket_id, ticket_id, status, created),
+                )
+            add('current', 'unverified_probability', '2026-11-05T13:00:00+00:00')
+            for index in range(210):
+                add(f'old-{index}', 'expired', f'2026-11-06T{index // 60:02d}:{index % 60:02d}:00+00:00')
+            ids = [ticket['id'] for ticket in list_tickets(c)]
+        self.assertIn('current', ids)
+        self.assertEqual(len(ids), 200)
