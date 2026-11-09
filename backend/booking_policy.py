@@ -30,7 +30,10 @@ DEFAULTS = {
     'enforce_match_exposure': False,
     'min_legs': 2,
     'min_leg_odds': 1.01,
-    'request_gap_minutes': 2,
+    'request_gap_minutes': 3,
+    'batch_size': 5,
+    # A displayed price this far from the stored one is treated as the wrong control, not a price move.
+    'max_price_move': 0.30,
 }
 
 # The gates in force before this policy existed.
@@ -41,9 +44,11 @@ STRICT = {
     'enforce_match_exposure': True,
     'min_leg_odds': 1.3,
     'request_gap_minutes': 15,
+    'batch_size': 1,
+    'max_price_move': 0.30,
 }
 
-LIMITS = {'min_legs': (1, 25), 'min_leg_odds': (1.01, 10.0), 'request_gap_minutes': (1, 60)}
+LIMITS = {'max_price_move': (0.05, 5.0), 'batch_size': (1, 20), 'min_legs': (1, 25), 'min_leg_odds': (1.01, 10.0), 'request_gap_minutes': (1, 60)}
 
 
 def load(connection):
@@ -81,6 +86,7 @@ def save(connection, updates, now=None):
         if not low <= value <= high:
             raise ValueError(f'{name} must be between {low} and {high}')
     merged['min_legs'] = int(merged['min_legs'])
+    merged['batch_size'] = int(merged['batch_size'])
     moment = (now or datetime.now(timezone.utc)).isoformat()
     connection.execute(
         """INSERT INTO sports_ai_settings(key,value_json,updated_at) VALUES(?,?,?)

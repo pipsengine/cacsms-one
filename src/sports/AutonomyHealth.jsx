@@ -37,6 +37,7 @@ function Overview({data}){
     ['Require a live QUALIFIED decision on every leg',data.booking_policy.require_live_qualification?'Yes':'No'],
     ['Book at the price SportyBet displays',data.booking_policy.accept_displayed_odds?'Yes — changes are stored on the ticket':'No — a changed price stops the booking'],
     ['Drop legs SportyBet does not offer or that kicked off',data.booking_policy.drop_unavailable_legs?`Yes, keeping at least ${data.booking_policy.min_legs}`:'No'],
+    ['Largest price move booked as displayed',`${Math.round((data.booking_policy.max_price_move??0.3)*100)}% — larger gaps are treated as the wrong selection and that leg is dropped`],
     ['Block tickets that share a match',data.booking_policy.enforce_match_exposure?'Yes':'No'],
     ['Lowest leg price',data.booking_policy.min_leg_odds],
     ['Gap between code requests',`${data.booking_policy.request_gap_minutes} min`],

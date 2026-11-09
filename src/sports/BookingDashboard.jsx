@@ -55,7 +55,7 @@ export default function BookingDashboard({embedded=false}){
  const counts=Object.fromEntries([...CATEGORIES.map(([id])=>id),'jackpot'].map(id=>[id,date===day(now)?(data?.categories?.find(c=>c.id===id)?.daily_verified??verified.filter(t=>t.category_id===id).length):verified.filter(t=>t.category_id===id).length]));
  const jackpot=data?.categories?.find(c=>c.id==='jackpot');
  const jackpotTarget=jackpot?.daily_target||5;
- const visible=verified.filter(t=>(!category||t.category_id===category)&&(!status||(status==='verified'?codeLabel(t)==='Verified'||codeLabel(t)==='In Play':t.status===status||t.outcome===status))&&(!search||t.booking_code.toLowerCase().includes(search.toLowerCase())));
+ const visible=verified.filter(t=>(!category||t.category_id===category)&&(!status||(status==='verified'?codeLabel(t)==='Verified'||codeLabel(t)==='In Play':t.status===status||t.outcome===status))&&(!search||t.booking_code.toLowerCase().includes(search.toLowerCase()))).sort((a,b)=>(Date.parse(a.start_at)||Infinity)-(Date.parse(b.start_at)||Infinity));
  const online=!!data?.worker?.healthy&&!error,running=online&&engine.data?.status==='running',tasks=engine.data?.tasks||[],next=engine.data?.next_cycle;
  const seconds=next?Math.max(0,Math.ceil((new Date(next).getTime()-now)/1000)):null;
  const countdown=seconds==null?'—':seconds===0?'Due now':`${String(Math.floor(seconds/3600)).padStart(2,'0')}:${String(Math.floor(seconds%3600/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;

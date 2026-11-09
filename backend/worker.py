@@ -511,8 +511,43 @@ def _operator_booking():
         _report('operator booking failed', error)
 
 
+_BOOKING_LANE = None
+
+
+def _booking_lane(stop):
+    """Book codes on their own thread so the long worker cycle does not hold them.
+
+    Every 30 seconds: when the request gap has passed, book up to batch_size codes.
+    """
+    from sportybet_booking import _booking_due, book_batch
+    while not stop.wait(30):
+        try:
+            with connect() as connection:
+                due = _booking_due(connection, datetime.now(timezone.utc))
+            if not due:
+                continue
+            result = book_batch()
+            if result['attempts']:
+                print('booking lane', result['status'], 'codes', result['codes'], 'attempts', result['attempts'], 'places_wager', False)
+            _observed('booking_lane', {'status': result['status']})
+        except Exception as error:
+            _observed('booking_lane', {'status': 'failed'}, failed=True, error=error)
+            _report('booking lane failed', error)
+
+
+def start_booking_lane():
+    global _BOOKING_LANE
+    if _BOOKING_LANE and _BOOKING_LANE.is_alive():
+        return _BOOKING_LANE
+    _BOOKING_LANE = threading.Thread(target=_booking_lane, args=(threading.Event(),), name='booking-lane', daemon=True)
+    _BOOKING_LANE.start()
+    return _BOOKING_LANE
+
+
 def _booking_tick():
     _operator_booking()
+    if _BOOKING_LANE and _BOOKING_LANE.is_alive():
+        return  # the booking lane requests codes; the cycle does not compete with it
     try:
         from sportybet_booking import process_booking_queue
         booked = process_booking_queue()
@@ -736,6 +771,7 @@ if __name__=='__main__':
     if args.loop:
         from high_odds_service import start_background
         start_background(_leader_name())
+        start_booking_lane()
     if args.once:
         tick()
     else:

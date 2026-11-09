@@ -121,6 +121,35 @@ def _day_window(now):
     )
 
 
+def _sure_pool(connection, candidates, now):
+    """Sure-odds candidates. Matches on other tickets are excluded only when the booking policy says so."""
+    from booking_policy import load
+    if not load(connection)['enforce_match_exposure']:
+        return candidates
+    from ticket_diversity import unallocated
+    return unallocated(connection, candidates, now)
+
+
+def _sure_today(connection, day, now, candidates=None):
+    """Stored sure-odds tickets plus new ones built only from matches not already on them.
+
+    Without this, the same selections were packed again as a fresh preview next to
+    the stored ticket and both showed the same booking code.
+    """
+    stored = _stored_slips(connection, day, 'sure_odds')
+    used = {leg['fixture_id'] for ticket in stored for leg in ticket.get('legs') or []}
+    pool = _sure_pool(connection, _candidates(connection, day, now), now) if candidates is None else candidates
+    return stored + pack_sure_tickets([leg for leg in pool if leg['fixture_id'] not in used], day)
+
+
+def _today_window(now):
+    """Today in WAT, for the daily sure-odds product (the high-odds board stays weekend-only)."""
+    local = now.astimezone(WAT)
+    start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    return ({'name': start.strftime('%A'), 'start': start, 'end': start + timedelta(days=1),
+             'date': start.date().isoformat()},)
+
+
 def _preferred(row):
     confidence = row.get('confidence')
     return (
@@ -727,10 +756,8 @@ def sure_odds_board(connection, now):
     from ticket_diversity import unallocated
     today=now.astimezone(WAT).date().isoformat()
     sure=[]
-    for day in _day_window(now):
-        if day['start'].date().isoformat()!=today:continue
-        sure.extend(_stored_slips(connection,{**day,'date':today},'sure_odds'))
-        sure.extend(pack_sure_tickets(unallocated(connection,_candidates(connection,day,now),now),day))
+    for day in _today_window(now):
+        sure.extend(_sure_today(connection,{**day,'date':today},now))
     _attach_booking(connection,[{'tickets':sure}])
     for ticket in sure:ticket.pop('legs',None)
     return {'sure_tickets':sure}
@@ -750,8 +777,10 @@ def high_odds_board(connection, now):
         days.append(built)
         if built['date'] == today:
             allocated = keys_for([leg for ticket in built['tickets'] for leg in ticket.get('legs', [])])
-            sure.extend(_stored_slips(connection, day, 'sure_odds'))
-            sure.extend(pack_sure_tickets([leg for leg in candidates if not event_keys(leg) & allocated], day))
+            sure.extend(_sure_today(connection, day, now, [leg for leg in candidates if not event_keys(leg) & allocated]))
+    if not any(day['date'] == today for day in days):
+        for day in _today_window(now):
+            sure.extend(_sure_today(connection, day, now))
     _attach_booking(connection, days)
     _attach_booking(connection, [{'tickets': sure}])
     for day in days:
@@ -791,10 +820,13 @@ def _upsert_ticket(connection, day, ticket, now, product='high_odds'):
         if row['signature'] == ticket['signature'] or _signature_body(row['signature']) == body:
             return row['id']
     from ticket_diversity import assert_available, TicketExposureConflict
-    try:
-        assert_available(connection, ticket['legs'], now)
-    except TicketExposureConflict:
-        return None
+    from booking_policy import load as booking_policy
+    # Sure-odds tickets follow the booking policy on shared matches; high-odds keeps one match per ticket.
+    if product != 'sure_odds' or booking_policy(connection)['enforce_match_exposure']:
+        try:
+            assert_available(connection, ticket['legs'], now)
+        except TicketExposureConflict:
+            return None
     sports = {leg['sport'] for leg in ticket['legs']}
     sport_mode = next(iter(sports)) if len(sports) == 1 else 'mixed'
     ticket_id = str(uuid.uuid4())
@@ -958,13 +990,10 @@ def prepare_sure_odds_booking(now=None):
     today = moment.astimezone(WAT).date().isoformat()
     with connect() as connection:
         tickets = []
-        for day in _day_window(moment):
+        for day in _today_window(moment):
             dated = dict(day)
-            dated['date'] = day['start'].astimezone(WAT).date().isoformat()
-            if dated['date'] != today:
-                continue
             from ticket_diversity import unallocated
-            tickets = _stored_slips(connection, day, 'sure_odds') + pack_sure_tickets(unallocated(connection, _candidates(connection, day, moment), moment), dated)
+            tickets = _sure_today(connection, dated, moment)
             signatures = {ticket['signature'] for ticket in tickets}
             for ticket in tickets:
                 _upsert_ticket(connection, dated, ticket, moment, product='sure_odds')

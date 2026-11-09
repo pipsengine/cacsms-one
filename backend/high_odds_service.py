@@ -720,6 +720,60 @@ def _worker_tick(now=None):
     return result
 
 
+def _category_for(odds, cats):
+    for category in cats:
+        if category['min_odds'] <= round(float(odds), 2) <= category['max_odds']:
+            return category['id']
+    return None
+
+
+def coded_accumulator_tickets(connection, now=None, cats=None, limit=500):
+    """Tickets from any builder with a SportyBet-displayed code, outside the optimizer table.
+
+    Each is placed in the category its combined odds fall in and dated by when the
+    code was verified. Tickets below 2.00 belong to no category and are left out.
+    """
+    current = now_utc(now)
+    cats = cats or categories(connection)
+    rows = connection.execute(
+        """SELECT t.id,t.combined_odds,t.joint_probability,t.estimated_edge,t.leg_count,t.status,t.created_at ticket_created_at,
+                  b.code,b.status code_status,b.verified_at,s.outcome,s.hypothetical_profit
+           FROM sports_ai_booking_codes b
+           JOIN sports_ai_accumulator_tickets t ON t.id=b.accumulator_ticket_id
+           LEFT JOIN sports_ai_ticket_settlements s ON s.ticket_id=t.id
+           WHERE b.verification_method='displayed' AND TRIM(COALESCE(b.code,''))<>'' AND b.verified_at IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM sports_ai_high_odds_tickets h WHERE h.ticket_id=t.id)
+           ORDER BY b.verified_at DESC LIMIT ?""", (limit,),
+    ).fetchall()
+    tickets, seen_codes = [], set()
+    for row in rows:
+        if row['code'] in seen_codes:
+            continue  # one row per displayed code (newest first)
+        seen_codes.add(row['code'])
+        category = _category_for(row['combined_odds'] or 0, cats)
+        if not category:
+            continue
+        legs = [dict(l) for l in connection.execute(
+            """SELECT home,away,competition,starts_at,market,selection,decimal_odds,probability,reliability model_reliability
+               FROM sports_ai_accumulator_legs WHERE ticket_id=? ORDER BY starts_at""", (row['id'],),
+        )]
+        if not legs:
+            continue
+        start = min(l['starts_at'] for l in legs)
+        started = _parse_time(start) and _parse_time(start) <= current
+        state = 'settled' if row['outcome'] else 'monitoring' if started else 'registered'
+        tickets.append({
+            'ticket_id': row['id'], 'ticket_no': f"AC-{row['id'][:8].upper()}", 'category_id': category,
+            'created_at': row['verified_at'], 'ticket_created_at': row['ticket_created_at'],
+            'registration_state': state, 'status': row['status'], 'combined_odds': row['combined_odds'],
+            'joint_probability': row['joint_probability'], 'estimated_edge': row['estimated_edge'],
+            'leg_count': len(legs), 'legs': legs, 'start_at': start, 'booking_code': row['code'],
+            'code_status': row['code_status'], 'outcome': row['outcome'], 'hypothetical_profit': row['hypothetical_profit'],
+            'stake_assumption': None, 'source': 'accumulator',
+        })
+    return tickets
+
+
 def dashboard(connection, now=None, date_from=None, date_to=None, status=None, category_id=None):
     current = now_utc(now)
     filters, args = [], []
@@ -742,8 +796,19 @@ def dashboard(connection, now=None, date_from=None, date_to=None, status=None, c
             code_status=code['status'] if code else None,model_uncertainty=snapshot['model_uncertainty'],
             dependency_policy=snapshot['dependency_policy'],stake_assumption=snapshot.get('stake_assumption'))
         tickets.append(item)
+    cats=categories(connection)
+    coded=coded_accumulator_tickets(connection,current,cats)
+    if date_from: coded=[t for t in coded if t['created_at'][:10]>=date_from]
+    if date_to: coded=[t for t in coded if t['created_at'][:10]<=date_to]
+    if status: coded=[t for t in coded if status in (t['registration_state'],t['status'])]
+    if category_id: coded=[t for t in coded if t['category_id']==category_id]
+    tickets.extend(coded)
+    today=current.astimezone(timezone(timedelta(hours=1))).date().isoformat()
+    def wat_day(value):
+        moment=_parse_time(value)
+        return moment.astimezone(timezone(timedelta(hours=1))).date().isoformat() if moment else None
     summaries=[]
-    for category in categories(connection):
+    for category in cats:
         stats=dict(connection.execute("""SELECT COUNT(*) total,SUM(CASE WHEN t.status='qualified' THEN 1 ELSE 0 END) active,
             AVG(t.joint_probability) avg_probability,COUNT(s.ticket_id) settled,
             SUM(CASE WHEN s.outcome='won' THEN 1 ELSE 0 END) wins,SUM(s.hypothetical_profit) hypothetical_profit
@@ -756,6 +821,9 @@ def dashboard(connection, now=None, date_from=None, date_to=None, status=None, c
                 AND b.verification_method='displayed' AND TRIM(COALESCE(b.code,''))<>'') THEN 1 ELSE 0 END) daily_verified
             FROM sports_ai_high_odds_tickets h WHERE category_id=?
             AND date(created_at,'+1 hour')=date(?,'+1 hour')""",(category['id'],current.isoformat())).fetchone())
+        extra=[t for t in coded if t['category_id']==category['id'] and wat_day(t['created_at'])==today]
+        daily['daily_created']=(daily['daily_created'] or 0)+len(extra)
+        daily['daily_verified']=(daily['daily_verified'] or 0)+len(extra)
         summaries.append({**category,**stats,**daily,'daily_target':DAILY_TARGET,
             'stake_assumption':JACKPOT_STAKE if category['id']==JACKPOT else None,'primary':category['id']==PRIMARY,
             'last_run':None if not run else {'status':run['status'],'created_at':run['created_at'],**json.loads(run['report_json'])}})

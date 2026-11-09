@@ -361,7 +361,7 @@ def _booking_due(connection, moment):
     return publication_due(moment, _publication_anchor(connection), every=gap)
 
 
-def select_booking(connection, now):
+def select_booking(connection, now, ignore_gap=False):
     """Choose the ticket that is qualified now.
 
     During the testing period a code may be requested every 15 minutes. A failed job
@@ -369,7 +369,7 @@ def select_booking(connection, now):
     inside 15 minutes.
     """
     phase = phase_at(now)
-    open_now = _booking_due(connection, now)
+    open_now = ignore_gap or _booking_due(connection, now)
     queued = connection.execute(
         "SELECT id FROM sports_ai_booking_jobs WHERE status='QUEUED' ORDER BY created_at LIMIT 1",
     ).fetchone()
@@ -1196,7 +1196,7 @@ async def _focus_market(page, item):
     return label
 
 
-async def prepare_slip(page, selections, book=True, skip_unpriced=False):
+async def prepare_slip(page, selections, book=True, skip_unpriced=False, max_move=None):
     """Select each ticket outcome at its current displayed price. Never place a wager.
 
     A high-odds ticket can leave out a line SportyBet is not showing, then book the rest.
@@ -1234,6 +1234,19 @@ async def prepare_slip(page, selections, book=True, skip_unpriced=False):
         if hits.get('matched') != 1 and hits.get('line_visible') is False and _market_line(item.get('market')):
             await _switch_line(page, item)
             hits = await find_price(focus=False)
+        if hits['matched'] == 1 and max_move is not None:
+            shown = float(hits.get('shown') or item['decimal_odds'])
+            stored = float(item['decimal_odds'])
+            if stored > 1 and abs(shown / stored - 1) > max_move:
+                # Far too far from the stored price to be a market move: likely the wrong control.
+                item['_rejected_price'] = shown
+                if skip_unpriced:
+                    skipped.append(item)
+                    continue
+                seen.append({'fixture_id': item['fixture_id'], 'stored_odds': stored, 'page_odds': shown})
+                return {'status': 'ODDS_CHANGED', 'seen': seen, 'code': None,
+                        'error': f"{item['home']} vs {item['away']} {item.get('market')}: page shows {shown:.2f} against {stored:.2f}; "
+                                 'not booked because it is probably a different selection.'}
         if hits['matched'] == 1:
             control = await page.evaluate(INSPECT, f'[data-sports-ai-pick="{marker}"]')
             name = (control or {}).get('name') or ''
@@ -1500,7 +1513,8 @@ async def _execute_job(job_id, page_url=None):
                 for index, sport in enumerate(sports):
                     await _open_sport(page, sport, page_url if len(sports) == 1 else None, reuse=index > 0)
                     group = [item for item in selections if page_sport(item) == sport]
-                    part = await prepare_slip(page, group, book=False, skip_unpriced=flexible)
+                    part = await prepare_slip(page, group, book=False, skip_unpriced=flexible,
+                                              max_move=float(policy['max_price_move']) if policy['accept_displayed_odds'] else None)
                     skipped.extend(part.get('skipped') or [])
                     if part['status'] != 'SELECTED':
                         result = part
@@ -1567,6 +1581,12 @@ async def _execute_job(job_id, page_url=None):
             if result['status'] == 'CODE_GENERATED':
                 dropped = (result.get('skipped') or []) + started_legs
                 if ticket_id and dropped:
+                    rejected = [i for i in dropped if i.get('_rejected_price') is not None]
+                    if rejected:
+                        _log_booking(connection, job_id, 'policy', f'{len(rejected)} selection(s) not booked: page price too far from the stored price',
+                                     ticket_id=ticket_id, session_id=session_id,
+                                     detail={'rejected': [{'fixture_id': i['fixture_id'], 'market': i.get('market'),
+                                                           'stored': i.get('decimal_odds'), 'displayed': i['_rejected_price']} for i in rejected]})
                     _drop_unpriced_legs(connection, ticket_id, dropped)
                     _log_booking(connection, job_id, 'policy', f'Dropped {len(dropped)} selection(s) SportyBet did not offer or that had kicked off',
                                  ticket_id=ticket_id, session_id=session_id,
@@ -1873,7 +1893,7 @@ def recover_stopped_bookings(connection, now=None):
     return len(rows)
 
 
-def process_booking_queue(now=None):
+def process_booking_queue(now=None, ignore_gap=False):
     """Request one prepared ticket's booking code every 15 minutes during testing.
 
     Does not open a browser when none qualify, when a code was requested inside the last 15 minutes, or when the retry limit is reached.
@@ -1882,11 +1902,11 @@ def process_booking_queue(now=None):
     phase = phase_at(moment)
     with connect() as connection:
         recover_stopped_bookings(connection, moment)
-        open_now = _booking_due(connection, moment)
+        open_now = ignore_gap or _booking_due(connection, moment)
         examined = examine_ready_tickets(connection, moment, window_open=open_now)
         expired = expire_displayed_codes(connection, moment)
         qualified = qualified_selections(connection, moment)
-        choice = select_booking(connection, moment)
+        choice = select_booking(connection, moment, ignore_gap=ignore_gap)
         if choice['action'] == 'closed':
             return {
                 'status': 'outside_window' if choice.get('job_id') or qualified else 'waiting',
@@ -1925,6 +1945,27 @@ def process_booking_queue(now=None):
     result['expired'] = expired
     result['examined'] = examined
     return result
+
+
+def book_batch(max_codes=None):
+    """Request up to ``max_codes`` codes back to back, then wait for the request gap.
+
+    The first request respects the gap; the rest of the batch follows straight on.
+    Stops early when no ticket is ready or a request did not produce a code.
+    """
+    from booking_policy import current
+    limit = int(max_codes or current()['batch_size'])
+    results = []
+    for index in range(max(1, limit)):
+        result = process_booking_queue(ignore_gap=index > 0)
+        results.append(result)
+        if result.get('status') != 'CODE_GENERATED':
+            # A failed ticket does not end the batch; an empty queue or closed gap does.
+            if result.get('status') in ('waiting', 'outside_window') or result.get('duplicate'):
+                break
+    codes = [r.get('code') for r in results if r.get('status') == 'CODE_GENERATED']
+    return {'status': 'complete' if codes else (results[-1].get('status') if results else 'waiting'),
+            'codes': codes, 'attempts': len(results), 'places_wager': False}
 
 
 def confirm_ticket(ticket_id, now=None):
@@ -2112,6 +2153,6 @@ def build_booking_router(auth):
 
     @router.post('/bookings/run')
     def run_booking(user=Depends(auth)):
-        return process_booking_queue()
+        return book_batch()
 
     return router
