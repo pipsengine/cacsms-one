@@ -452,7 +452,7 @@ def qualified_decision_rows(connection, now):
 def candidate_rows(connection, now, limit=100):
     """Each modelled sport gets its own share, so football kickoffs do not crowd the others out."""
     moment = now.isoformat()
-    per_sport = max(1, min(int(limit), 100))
+    per_sport = max(1, min(int(limit), 250))
     return connection.execute(
         """SELECT * FROM (
            SELECT p.id AS prediction_id, p.market, p.probability, p.explanation_json,s.features_json AS frozen_features_json,
@@ -479,7 +479,16 @@ def candidate_rows(connection, now, limit=100):
                     ORDER BY CASE WHEN EXISTS (
                       SELECT 1 FROM sports_ai_qualification_decisions d
                       WHERE d.prediction_id=p.id AND d.market=p.market AND d.state='QUALIFIED'
-                    ) THEN 0 ELSE 1 END, f.starts_at
+                    ) THEN 0 ELSE 1 END,
+                    -- After a model switch the earliest kickoffs still carry the old model's
+                    -- predictions. The active model's undecided predictions go ahead of them, so
+                    -- the Monday-Sunday board is decided rather than the same earliest kickoffs.
+                    CASE WHEN m.active=1 THEN 0 ELSE 1 END,
+                    CASE WHEN NOT EXISTS (
+                      SELECT 1 FROM sports_ai_qualification_decisions d
+                      WHERE d.prediction_id=p.id AND d.market=p.market
+                    ) THEN 0 ELSE 1 END,
+                    f.starts_at
                   ) AS sport_rank
            FROM sports_ai_engine_predictions p
            JOIN sports_ai_fixtures f ON f.id=p.fixture_id

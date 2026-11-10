@@ -30,11 +30,18 @@ JACKPOT_TARGET = 2_000_000
 JACKPOT_MAX = 2_200_000
 JACKPOT_STAKE = 100
 DAILY_TARGET = 5
+# From these odds up, legs may come from any day Monday-Sunday and day spread breaks ties.
+MULTI_DAY_MIN_ODDS = 50
 DEFAULTS = dict(min_legs=2, max_legs=16, min_leg_odds=1.01, max_per_competition=1, max_per_team=1,
                 min_probability=0.05, min_edge=0.01, min_completeness=0.5,
                 min_model_reliability=0.8, odds_max_age_minutes=15, min_lead_minutes=30,
                 beam_width=100, search_limit=12000, timeout_seconds=3,
                 max_registration_attempts=3, registration_enabled=True, jackpot_max_legs=25)
+
+
+def _wat_day(value):
+    moment = _parse_time(value)
+    return moment.astimezone(timezone(timedelta(hours=1))).date().isoformat() if moment else None
 
 
 def now_utc(now=None):
@@ -302,7 +309,13 @@ def optimize(pool, category, settings):
         beam = beam[:int(settings['beam_width'])]
         if exhausted or not beam:
             break
-    results = sorted(found.values(),key=lambda t:(-t['score'],-t['joint_probability'],t['combined_odds']))
+    for ticket in found.values():
+        ticket['kickoff_days'] = sorted({_wat_day(l.get('starts_at')) for l in ticket['legs']} - {None})
+    spread = float(category.get('min_odds') or 0) >= MULTI_DAY_MIN_ODDS
+    # Probability and conservative value decide first (score rounded to 4 places). For 50+
+    # categories, a tie then goes to the ticket whose legs cover more days of the week.
+    results = sorted(found.values(),key=lambda t:(-round(t['score'],4),
+        -(len(t['kickoff_days']) if spread else 0),-t['joint_probability'],t['combined_odds']))
     return results, {'evaluated':explored,'truncated':truncated,'candidate_count':len(results)}
 
 

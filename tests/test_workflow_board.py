@@ -71,8 +71,27 @@ class WorkflowBoardTests(unittest.TestCase):
                 (now.isoformat(),),
             )
             single = workflow_board(connection, now)
-        self.assertEqual(single['stages'][2]['status'], 'Attention')
-        self.assertEqual(single['stages'][2]['count'], '1 open issue')
+        # A score dispute on a finished match cannot hold a qualification; it belongs to Settle.
+        self.assertEqual(single['stages'][2]['status'], 'Completed')
+        self.assertEqual(single['stages'][2]['count'], 'Clear')
+        self.assertEqual(single['stages'][6]['status'], 'Attention')
+        self.assertIn('1 result conflict', single['stages'][6]['count'])
+        with db.connect() as connection:
+            connection.execute(
+                """INSERT INTO sports_ai_fixtures
+                   (id,external_id,source,sport,competition,home,away,starts_at,status,statistics_json,odds_json,observed_at)
+                   VALUES('fx-2','ext-2','test','football','League','Home','Away','2026-11-07T15:00:00+00:00','scheduled','{}','{}',?)""",
+                (now.isoformat(),),
+            )
+            connection.execute(
+                """INSERT INTO sports_ai_data_quality_issues
+                   (id,fixture_id,severity,issue_type,details_json,created_at)
+                   VALUES('fx-issue-2','fx-2','high','odds_conflict','{}',?)""",
+                (now.isoformat(),),
+            )
+            upcoming = workflow_board(connection, now)
+        self.assertEqual(upcoming['stages'][2]['status'], 'Attention')
+        self.assertEqual(upcoming['stages'][2]['count'], '1 open issue')
 
 
 if __name__ == '__main__':

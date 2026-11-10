@@ -42,9 +42,21 @@ def workflow_board(connection, now=None, ready_slips=0, qualified_visible=0, win
     analysed = connection.execute(
         'SELECT COUNT(DISTINCT fixture_id) FROM sports_ai_engine_predictions',
     ).fetchone()[0]
+    # Validate gates upcoming fixtures only. A dispute about a finished match cannot hold a
+    # qualification, so it is reported on Settle, where it affects grading.
     issues = connection.execute(
-        """SELECT COUNT(*) FROM sports_ai_data_quality_issues
-           WHERE resolved_at IS NULL AND severity IN ('high','critical') AND fixture_id IS NOT NULL""",
+        """SELECT COUNT(*) FROM sports_ai_data_quality_issues i
+           JOIN sports_ai_fixtures f ON f.id=i.fixture_id
+           WHERE i.resolved_at IS NULL AND i.severity IN ('high','critical')
+             AND f.status='scheduled' AND f.starts_at>?""",
+        (current.isoformat(),),
+    ).fetchone()[0]
+    result_conflicts = connection.execute(
+        """SELECT COUNT(*) FROM sports_ai_data_quality_issues i
+           JOIN sports_ai_fixtures f ON f.id=i.fixture_id
+           WHERE i.resolved_at IS NULL AND i.issue_type='result_conflict'
+             AND NOT (f.status='scheduled' AND f.starts_at>?)""",
+        (current.isoformat(),),
     ).fetchone()[0]
     odds_row = connection.execute(
         "SELECT COUNT(*) AS total, MAX(observed_at) AS latest FROM sports_ai_odds_snapshots WHERE bookmaker='SportyBet'",
@@ -112,9 +124,10 @@ def workflow_board(connection, now=None, ready_slips=0, qualified_visible=0, win
                'Running' if fresh and booking_open else 'Completed' if coded else 'Waiting',
                _ticket_note(ready_slips, coded)),
         _stage('Settle', 'Official results for completed matches', 'results', 'completed',
-               f'{_fmt(settled)} finals',
-               'Running' if fresh else 'Waiting',
-               'Completed matches settle on this pass. Upcoming fixtures are not held.'),
+               f'{_fmt(settled)} finals' + (f' · {_fmt(result_conflicts)} result conflict' + ('s' if result_conflicts != 1 else '') if result_conflicts else ''),
+               'Attention' if result_conflicts else 'Running' if fresh else 'Waiting',
+               'Completed matches settle on this pass. Upcoming fixtures are not held.'
+               + (' A provider reported a different final score; resolve it in Diagnostics before that match is graded.' if result_conflicts else '')),
         _stage('Learn', 'Calibration on settled predictions', 'models', 'completed',
                'Held' if learn.get('status') == 'failed' else 'Recorded' if learn_age is not None else 'Scheduled',
                'Attention' if learn.get('status') == 'failed' else 'Completed' if learn_age is not None and learn_age < 6 * 3600 else 'Scheduled',

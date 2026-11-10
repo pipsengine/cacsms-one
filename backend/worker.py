@@ -583,6 +583,11 @@ def _booking_lane(stop):
                 print('booking lane', result['status'], 'codes', result['codes'], 'attempts', result['attempts'], 'places_wager', False)
             _observed('booking_lane', {'status': result['status']})
         except Exception as error:
+            if 'database is locked' in str(error):
+                # The main cycle held the write lock past the busy timeout. Nothing was
+                # written; the lane retries in 30 seconds.
+                _observed('booking_lane', {'status': 'busy'})
+                continue
             _observed('booking_lane', {'status': 'failed'}, failed=True, error=error)
             _report('booking lane failed', error)
 
@@ -793,7 +798,7 @@ def _govern_cycle():
         with connect() as connection:
             review = review_degradation(connection, 'sports-ai-worker', _audit)
             governed = govern_models(connection, 'sports-ai-worker', _audit)
-            priced = reprice_active_batch(connection, 'sports-ai-worker', _audit, limit=20)
+            priced = reprice_active_batch(connection, 'sports-ai-worker', _audit, limit=40)
             from qualification_engine import revalidate
             qualification = revalidate(connection, 'sports-ai-worker')
         print(

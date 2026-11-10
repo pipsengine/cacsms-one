@@ -2779,10 +2779,17 @@ def price_quoted_board(connection, now=None, limit=40):
                 if status == 'qualified'
                 else 'The quoted line is stored for ticket coverage. It is not a qualified booking selection.'
             )
+            # The latest row can point at another quote while an older row already pairs this
+            # prediction with this quote. Refresh that row instead of violating UNIQUE and
+            # rolling back the whole ticket stage.
             connection.execute(
                 """INSERT INTO sports_ai_value_opportunities
                    (id,prediction_id,odds_id,implied_probability,expected_edge,status,reason,evaluated_at,data_completeness)
-                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                   VALUES(?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(prediction_id,odds_id) DO UPDATE SET
+                     implied_probability=excluded.implied_probability, expected_edge=excluded.expected_edge,
+                     status=excluded.status, reason=excluded.reason, evaluated_at=excluded.evaluated_at,
+                     data_completeness=excluded.data_completeness""",
                 (str(uuid.uuid4()), prediction_id, quote['id'], 1 / odds, edge, status, reason,
                  current.isoformat(), snapshot['completeness']),
             )
@@ -2823,6 +2830,13 @@ def reprice_active_batch(connection, actor, audit, limit=20, now=None):
                WHERE q.fixture_id=f.id AND q.bookmaker='SportyBet' AND q.observed_at>=?
              )
              AND EXISTS (SELECT 1 FROM sports_ai_feature_snapshots s WHERE s.fixture_id=f.id)
+             -- A fixture already priced by this model is done. Without this the LIMIT keeps
+             -- returning the same first fixtures and the batch never advances after a switch.
+             AND NOT EXISTS (
+               SELECT 1 FROM sports_ai_engine_predictions done
+               WHERE done.fixture_id=f.id AND done.model_id=m.id
+                 AND done.market IN ('HOME','DRAW','AWAY','MONEYLINE_HOME','MONEYLINE_AWAY')
+             )
            ORDER BY {upcoming_order_sql('f')} LIMIT ?""",
         (fresh_after.isoformat(), max(1, min(int(limit), 40))),
     ).fetchall()

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -19,7 +20,8 @@ REFRESH_MINUTES = 15
 OFFER_HOURS = 24
 # A ticket that failed this many times in a day is not retried until the next day.
 MAX_DAILY_FAILURES = 3
-EVIDENCE = Path(__file__).resolve().parent / 'booking_evidence'
+# Tests redirect this (tests/conftest.py); a test page must never land in production evidence.
+EVIDENCE = Path(os.environ.get('SPORTS_BOOKING_EVIDENCE_DIR') or Path(__file__).resolve().parent / 'booking_evidence')
 
 FIND_ODDS = '''(args) => {
   const fold = value => (value || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').replace(/ä/g, 'a').replace(/ö/g, 'o').replace(/ü/g, 'u').replace(/ß/g, 'ss').replace(/ł/g, 'l').replace(/[^a-z0-9.]+/g, ' ');
