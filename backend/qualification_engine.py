@@ -678,6 +678,8 @@ def revalidate(connection, actor='sports-ai-worker', now=None, limit=400, fixtur
     policy = load_policy(connection)
     from market_anchor import load as load_anchors
     policy['anchors'] = load_anchors(connection)
+    import prediction_integrity
+    integrity = prediction_integrity.prepare(connection)
     expired = expire_started(connection, actor, current)
     prepared = []
     seen = set()
@@ -708,11 +710,13 @@ def revalidate(connection, actor='sports-ai-worker', now=None, limit=400, fixtur
                 row['market_registry_active'] = True
         prepared.append({
             'row': row,
-            'result': decide(row, policy, current),
-            # New anchor weights re-decide every selection.
-            'fingerprint': _fingerprint(row, f"{policy['version']}|{(policy.get('anchors') or {}).get('learned_at')}"),
+            # Integrity, conservative EV and capability level apply after the existing gates.
+            'result': prediction_integrity.evaluate(connection, row, decide(row, policy, current), integrity, current),
+            # New anchor weights, integrity policy or capability levels re-decide every selection.
+            'fingerprint': _fingerprint(row, f"{policy['version']}|{(policy.get('anchors') or {}).get('learned_at')}|{integrity['stamp']}"),
         })
     _apply_limits(prepared, policy)
+    tracked = prediction_integrity.track_selections(connection, prepared, current)
     changed = 0
     counts = {state: 0 for state in STATES}
     for item in prepared:
@@ -725,6 +729,7 @@ def revalidate(connection, actor='sports-ai-worker', now=None, limit=400, fixtur
     summary = {
         'checked': len(prepared), 'changed': changed, 'expired': expired,
         'counts': counts, 'policy_version': policy['version'], 'evaluated_at': current.isoformat(),
+        'clv_tracked': tracked, 'paper_trades': sum(1 for item in prepared if item['result'].get('reason_code') == 'PAPER_TRADE'),
     }
     connection.execute(
         """INSERT INTO sports_ai_settings(key,value_json,updated_at) VALUES('qualification_status',?,?)

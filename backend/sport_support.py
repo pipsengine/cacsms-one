@@ -37,6 +37,23 @@ COLLECTED_SPORTS = {
 }
 
 
+GOAL_FAMILY = 'goal_distribution'
+BASKETBALL_FAMILY = 'basketball_points'
+WINNER_FAMILY = 'match_winner'
+
+
+def family_of(sport):
+    """The sport-specific model family, or None. No sport borrows another family's model."""
+    code = canonical_sport(sport)
+    if code in GOAL_SPORTS:
+        return GOAL_FAMILY
+    if code == 'basketball':
+        return BASKETBALL_FAMILY
+    if code in WINNER_SPORTS:
+        return WINNER_FAMILY
+    return None
+
+
 def recognised(sport):
     code = canonical_sport(sport)
     return code in ANALYSED_SPORTS or code in WINNER_SPORTS

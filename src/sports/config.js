@@ -1,7 +1,8 @@
-import{LayoutDashboard,Activity,CalendarDays,ChartNoAxesCombined,BrainCircuit,Goal,Dribbble,BarChart3,TrendingUp,ScanSearch,Ticket,Layers3,SlidersHorizontal,Hash,Bell,Mail,Clock3,History,ShieldCheck,Database,Settings2,Workflow,Target,BookOpen,ClipboardList,ChartColumnIncreasing,Users,FileClock,MonitorCheck,Code2,Search,Globe,Bot}from'lucide-react';
+import{LayoutDashboard,Activity,CalendarDays,ChartNoAxesCombined,BrainCircuit,Goal,Dribbble,BarChart3,TrendingUp,ScanSearch,Ticket,Layers3,SlidersHorizontal,Hash,Bell,Mail,Clock3,History,ShieldCheck,Database,Settings2,Workflow,Target,BookOpen,ClipboardList,ChartColumnIncreasing,Users,FileClock,MonitorCheck,Code2,Search,Globe,Bot,Gauge}from'lucide-react';
 export const groups=[
 {label:'COMMAND CENTRE',items:[['dashboard','Overview',LayoutDashboard],['activity','Activity & Audit',Activity],['monitor','System Monitoring',MonitorCheck],['autonomous','Autonomous Engine',Bot],['autonomy-health','Autonomy Health',ShieldCheck]]},
-{label:'ALL SPORTS INTELLIGENCE',items:[['all-sports-predictions','All Sports Predictions',Globe]]},
+{label:'SINGLE BETTING AI',items:[['single-dashboard','Dashboard',LayoutDashboard],['single-engine','AI Betting Engine',Gauge]]},
+{label:'ALL SPORTS INTELLIGENCE',items:[['universal','Universal Opportunities',Target],['all-sports-predictions','All Sports Predictions',Globe]]},
 {label:'FOOTBALL INTELLIGENCE',items:[['football-fixtures','Fixtures & Statistics',CalendarDays],['football-analysis','Match Analysis',BrainCircuit],['football-predictions','Predictions',Goal]]},
 {label:'BASKETBALL INTELLIGENCE',items:[['basketball-fixtures','Fixtures & Statistics',Dribbble],['basketball-analysis','Match Analysis',BrainCircuit],['basketball-predictions','Predictions',Target],['basketball-losses','Performance & Loss Analysis',BarChart3]]},
 {label:'VALUE INTELLIGENCE',items:[['market-scanner','Market Scanner',ScanSearch],['odds','Odds Intelligence',TrendingUp],['value','Value Opportunities',ChartNoAxesCombined],['qualification','AI Qualification Centre',ShieldCheck],['sportybet-browser','SportyBet Browser Operator',Globe]]},
@@ -21,9 +22,10 @@ export const sections={
 'diagnostics':['Providers','Browser & SportyBet','Collection Log'],
 'autonomy-health':['Overview','Recovery','Sources & Permissions','Model Learning'],
 'sources':['Provider Registry','Website Explorer','Browser Sessions','Extraction Configuration','Data Quality','Collection Scheduler','Collection History','Source Permissions','Sports Registry','Leagues & Countries','Teams','Coverage & Health'],
+'universal':['Opportunities Centre','All-Market Analyzer','Research Sources','Capability Catalogue','Integrity & Eligibility','Closing-Line Value'],
 'match-research':['Match Research'],
 'activity':['Audit Timeline','Analysis Runs','Changes'],
-'monitor':['Service Health','Data Freshness','Failures'],
+'monitor':['Service Health','Data Freshness','Failures','Integrity & Eligibility'],
 'market-scanner':['All Markets','Football','Basketball','Watchlist'],
 'odds':['Latest Odds','Price History','Implied Probability','Source Quality'],
 'value':['All Opportunities','High Edge','By Sport','Rejected'],
@@ -38,7 +40,7 @@ export const sections={
 'codes':['Code Register','Verification Queue','Manual Entry'],
 'code-history':['All Codes','Verified','Unverified'],
 'results':['Completed Matches','Settlement Queue','Exceptions'],
-'backtesting':['Historical Runs','Evaluation','Performance Report'],
+'backtesting':['Historical Runs','Evaluation','Performance Report','Closing-Line Value'],
 'models':['Calibration','Brier Score','Log Loss','Model Versions'],
 'scheduler':['Schedules','Execution History','Failures'],
 'alerts':['Notification Log','Channels','Rules','Test Delivery'],

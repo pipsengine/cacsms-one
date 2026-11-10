@@ -60,7 +60,8 @@ def build_operations_router(auth, require_admin):
     @router.get('/diagnostics')
     def diagnostics(user=Depends(auth)):
         with connect() as connection:
-            return connection_diagnostics(connection)
+            from source_diagnostics import diagnostics as source_diagnostics
+            return source_diagnostics(connection)
 
     @router.get('/command')
     def command(user=Depends(auth)):

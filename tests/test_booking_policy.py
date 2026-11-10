@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
+from integrity_support import eligible_everywhere
 
 import db
 import booking_policy
@@ -61,6 +62,7 @@ class BookingPolicyTests(unittest.TestCase):
         cls.server.server_close()
 
     def setUp(self):
+        eligible_everywhere(self)
         self.temp = tempfile.TemporaryDirectory()
         self.previous = db.DB
         db.DB = Path(self.temp.name) / 'policy.sqlite3'
@@ -75,7 +77,7 @@ class BookingPolicyTests(unittest.TestCase):
         db.DB = self.previous
         self.temp.cleanup()
 
-    def _ticket(self, c, status='review_required', legs=LEGS, ticket_id='t1', unlisted=()):
+    def _ticket(self, c, status='review_required', legs=LEGS, ticket_id='t1', unlisted=(), qualify=True):
         observed = (self.now - timedelta(hours=3)).isoformat()  # stale price, no qualification decisions
         c.execute(
             """INSERT INTO sports_ai_accumulator_tickets
@@ -99,6 +101,15 @@ class BookingPolicyTests(unittest.TestCase):
                    VALUES(?,?,?,?,'basketball','NBA',?,?,?,?,?,?,0.6,'SportyBet',?,?,?,'m','1','binary','{}')""",
                 (f'{ticket_id}-{fixture}', ticket_id, f'o-{fixture}', fixture, home, away, kickoff, market, home, odds, observed, market, market),
             )
+            if qualify and hours > 0:  # a current QUALIFIED decision; the booking gate can never be relaxed
+                c.execute(
+                    """INSERT OR IGNORE INTO sports_ai_qualification_decisions
+                       (id,prediction_id,fixture_id,sport,competition,market,state,reason_code,reason,evidence_json,products_json,
+                        rank_score,policy_version,decision_version,fingerprint,starts_at,expires_at,created_at,updated_at)
+                       VALUES(?,?,?,'basketball','NBA',?,'QUALIFIED','QUALIFIED_OK','test',?,'["booking"]',0.2,1,1,'f',?,?,?,?)""",
+                    (f'd-{fixture}', f'p-{fixture}', fixture, market, json.dumps({'probability': 0.7, 'implied_probability': 1 / odds}),
+                     kickoff, kickoff, self.now.isoformat(), self.now.isoformat()),
+                )
             if fixture not in unlisted:  # SportyBet listed this match within the last day
                 c.execute(
                     """INSERT OR IGNORE INTO sports_ai_sportybet_observations
@@ -129,10 +140,18 @@ class BookingPolicyTests(unittest.TestCase):
             job = create_job(c, ticket_selections(c, 't1'))
             self.assertFalse(job['duplicate'])
 
+    def test_relaxed_policy_cannot_book_legs_without_qualification(self):
+        with db.connect() as c:
+            self._ticket(c, qualify=False)
+            examine_ready_tickets(c, self.now, window_open=True)
+            with self.assertRaisesRegex(ValueError, 'no current QUALIFIED booking decision'):
+                create_job(c, ticket_selections(c, 't1'))
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM sports_ai_booking_jobs').fetchone()[0], 0)
+
     def test_strict_policy_keeps_the_old_gates(self):
         with db.connect() as c:
             booking_policy.save(c, {'require_live_qualification': True, 'accept_displayed_odds': False})
-            self._ticket(c)
+            self._ticket(c, qualify=False)
             examine_ready_tickets(c, self.now, window_open=True)
             self.assertEqual(c.execute("SELECT status FROM sports_ai_accumulator_tickets").fetchone()[0], 'review_required')
             self.assertIsNone(next_ticket_id(c, self.now))
@@ -295,6 +314,7 @@ class SureOddsTodayTests(unittest.TestCase):
     """The daily sure-odds product works on weekdays and follows the booking policy."""
 
     def setUp(self):
+        eligible_everywhere(self)
         self.temp = tempfile.TemporaryDirectory()
         self.previous = db.DB
         db.DB = Path(self.temp.name) / 'sure.sqlite3'

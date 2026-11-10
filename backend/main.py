@@ -1992,3 +1992,9 @@ from basketball_loss_api import build_basketball_loss_router
 app.include_router(build_basketball_loss_router(auth, require_admin_key))
 from autonomy_api import build_autonomy_router
 app.include_router(build_autonomy_router(auth, require_admin_key))
+from universal_intelligence import build_universal_router
+app.include_router(build_universal_router(auth))
+from prediction_integrity import build_integrity_router
+app.include_router(build_integrity_router(auth, require_admin_key))
+from single_betting import build_single_betting_router
+app.include_router(build_single_betting_router(auth, require_admin_key))

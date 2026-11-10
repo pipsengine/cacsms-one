@@ -179,6 +179,8 @@ def _run_cycle():
     _release_stopped_jobs()
     _monitor_accumulators()
     _basketball_loss_tick()
+    # Closing prices are captured before settled snapshots can be cleaned up.
+    _integrity_tick()
     _settled_snapshot_cleanup()
     _high_odds_booking_tick()
     _qualify_priced_board()
@@ -211,8 +213,24 @@ def _run_cycle():
     _reliability_tick()
     _learning_tick()
     _rollover_tick()
+    _single_betting_tick()
     _publication_tick()
     _pipeline_snapshot_tick()
+
+
+def _integrity_tick():
+    try:
+        from prediction_integrity import run_cycle
+        with connect() as connection:
+            result = run_cycle(connection, 'sports-ai-worker')
+        capabilities = result.get('capabilities') or {}
+        print('integrity', 'closed', result.get('closed'), 'no_close', result.get('no_valid_close'),
+              'settled', result.get('settled'), 'closing_refresh', result.get('closing_refresh_queued'),
+              'eligible', capabilities.get('eligible', ''))
+        _observed('integrity', result)
+    except Exception as error:
+        _observed('integrity', {'status': 'failed'}, failed=True, error=error)
+        _report('integrity failed', error)
 
 
 def _basketball_loss_tick():
@@ -314,6 +332,20 @@ def _rollover_tick():
         _report('rollover failed', error)
 
 
+def _single_betting_tick():
+    """Single Betting AI: paper singles from current QUALIFIED decisions. No wager is placed."""
+    try:
+        from single_betting import run_cycle
+        with connect() as connection:
+            result = run_cycle(connection)
+        print('single betting', result.get('status'), 'placed', result.get('placed'), 'queued', result.get('queued'),
+              'settled', result.get('settled'), 'places_wager', result.get('places_wager'))
+        _observed('single_betting', result)
+    except Exception as error:
+        _observed('single_betting', {'status': 'failed'}, failed=True, error=error)
+        _report('single betting failed', error)
+
+
 def _learning_tick():
     try:
         from learning_engine import refresh_if_due
@@ -331,6 +363,11 @@ def _catalog_tick():
         from catalog_engine import repair_canonical_keys, run_due_catalog
         with connect() as connection:
             repair_canonical_keys(connection)
+        from universal_intelligence import register_discovered_sports
+        with connect() as connection:
+            discovered = register_discovered_sports(connection)
+        if discovered['registered']:
+            print('capability catalogue registered', ','.join(discovered['registered']))
         from prediction_engine import classify_cohorts
         from pipeline_engine import classify_observations
         with connect() as connection:

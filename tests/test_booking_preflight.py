@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -7,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
+from integrity_support import eligible_everywhere
 
 import db
 from main import _assert_production_configuration
@@ -17,6 +19,7 @@ OUTSIDE = datetime(2026, 11, 4, 12, 30, tzinfo=timezone.utc)
 
 class BookingPreflightTests(unittest.TestCase):
     def setUp(self):
+        eligible_everywhere(self)
         self.previous = db.DB
         self.temp = tempfile.TemporaryDirectory()
         db.DB = Path(self.temp.name) / 'sports.sqlite3'
@@ -71,8 +74,11 @@ class BookingPreflightTests(unittest.TestCase):
         with db.connect() as connection:
             self._ticket(connection,OUTSIDE-timedelta(minutes=2))
             identifier=connection.execute('SELECT id FROM sports_ai_accumulator_tickets').fetchone()[0]
-            job=create_job(connection,ticket_selections(connection,identifier))
-            connection.execute("UPDATE sports_ai_booking_jobs SET status='PREPARING',updated_at=?",((OUTSIDE-timedelta(days=2)).isoformat(),))
+            # The ticket is dated around OUTSIDE, so it is queued directly; this test covers recovery, not queueing.
+            stale=(OUTSIDE-timedelta(days=2)).isoformat()
+            connection.execute("""INSERT INTO sports_ai_booking_jobs(id,created_at,updated_at,status,sport,selections_json,signature,places_wager,ticket_id)
+                                  VALUES('stopped',?,?,'PREPARING','football',?,'stopped-sig',0,?)""",
+                               (stale,stale,json.dumps(ticket_selections(connection,identifier)),identifier))
             self.assertEqual(recover_stopped_bookings(connection,OUTSIDE),1)
             self.assertEqual(connection.execute('SELECT status,reason_code FROM sports_ai_booking_jobs').fetchone()['reason_code'],'WORKER_STOPPED')
             self.assertEqual(recover_stopped_bookings(connection,OUTSIDE),0)

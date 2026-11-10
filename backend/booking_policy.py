@@ -11,6 +11,9 @@ displays when the code is requested:
 * shared matches between tickets and the 15-minute global gap no longer block.
 
 These limits always hold, whatever the policy says:
+* every leg passes prediction_integrity.require_bookable when the job is queued:
+  a current QUALIFIED decision, a clean immutable probability record, an ELIGIBLE
+  capability and positive conservative EV at the requested price,
 * no wager is placed, and a code is stored only when SportyBet displays it,
 * a match that has kicked off is never booked,
 * an access challenge or blocked page stops the run,

@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'backend'))
+from integrity_support import eligible_everywhere
 import db
 import high_odds_service as service
 from accumulator_engine import _candidate,default_config,monitor_accumulators
@@ -22,6 +23,7 @@ class HighOddsServiceTests(unittest.TestCase):
     _opportunity=fixtures.AccumulatorPersistenceTests._opportunity
 
     def setUp(self):
+        eligible_everywhere(self)
         self.temp=tempfile.TemporaryDirectory();self.previous=db.DB
         db.DB=Path(self.temp.name)/'high-odds.sqlite3';db.initialize()
         with db.connect() as _c:
@@ -136,7 +138,8 @@ class HighOddsServiceTests(unittest.TestCase):
             self.assertEqual(ticket['stake_assumption'],100)
             self.assertAlmostEqual(ticket['joint_probability'],.62**21)
             self.assertEqual(service.validate_snapshot(c,identifier,self.now),[])
-            self.assertEqual(service.queue_registration(c,self.now),1)
+            with patch('sportybet_booking._now', return_value=self.now):  # the booking gate checks kickoff against this clock
+                self.assertEqual(service.queue_registration(c,self.now),1)
             selections=ticket_selections(c,identifier)
         shown=[{'fixture_id':leg['fixture_id'],'market':leg['market'],'page_odds':leg['decimal_odds']} for leg in selections]
         with patch.object(service,'now_utc',side_effect=lambda now=None:now or self.now):
@@ -197,9 +200,10 @@ class HighOddsServiceTests(unittest.TestCase):
             self.seed(c,4)
             reports=service.generate_event(c,self.event(c),self.now)
             identifier=next(i for r in reports for i in r['created_ids'])
-            service.queue_registration(c,self.now)
-            jobs=c.execute('SELECT COUNT(*) FROM sports_ai_booking_jobs').fetchone()[0]
-            service.queue_registration(c,self.now)
+            with patch('sportybet_booking._now', return_value=self.now):  # the booking gate checks kickoff against this clock
+                service.queue_registration(c,self.now)
+                jobs=c.execute('SELECT COUNT(*) FROM sports_ai_booking_jobs').fetchone()[0]
+                service.queue_registration(c,self.now)
             self.assertEqual(c.execute('SELECT COUNT(*) FROM sports_ai_booking_jobs').fetchone()[0],jobs)
             row=c.execute('SELECT * FROM sports_ai_high_odds_tickets WHERE ticket_id=?',(identifier,)).fetchone()
             self.assertEqual(service.digest(json.loads(row['snapshot_json'])),row['snapshot_hash'])
@@ -397,7 +401,7 @@ class HighOddsServiceTests(unittest.TestCase):
 
 
 class OptimizationMathTests(unittest.TestCase):
-    def setUp(self):self.now=datetime(2026,11,3,12,tzinfo=timezone.utc)
+    def setUp(self):eligible_everywhere(self);self.now=datetime(2026,11,3,12,tzinfo=timezone.utc)
 
     def leg(self,index,odds=2.1,probability=.62,**overrides):
         raw=_row(opportunity_id=f'opp-{index}',fixture_id=f'fixture-{index}',home=f'Home {index}',away=f'Away {index}',

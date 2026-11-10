@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
+from integrity_support import eligible_everywhere
 
 from pipeline_engine import (
     build_autonomous_tickets,
@@ -22,6 +23,7 @@ NOW = datetime.now(timezone.utc).replace(microsecond=0)
 
 class PipelineTests(unittest.TestCase):
     def setUp(self):
+        eligible_everywhere(self)  # these tests cover pipeline mechanics, not capability promotion
         self.previous = db.DB
         self.temp = __import__('tempfile').TemporaryDirectory()
         db.DB = Path(self.temp.name) / 'sports.sqlite3'

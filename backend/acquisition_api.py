@@ -236,6 +236,10 @@ def build_acquisition_router(auth_dependency):
             ).fetchone()
         if not row:
             raise HTTPException(404, 'Source not found')
+        from source_diagnostics import API_ADAPTERS
+        if row['adapter'] not in API_ADAPTERS:
+            # Browser and feed sources run on their own worker passes; a test here would only record a false failure.
+            raise HTTPException(422, 'This source is collected by its own worker pass and has no API connection test')
         try:
             result = test_provider(dict(row))
         except (CollectionError, ValueError, TypeError) as error:
@@ -258,6 +262,13 @@ def build_acquisition_router(auth_dependency):
 
     @router.post('/acquisition/sources/{source_id}/collect')
     def collect_source(source_id: str, user=Depends(auth_dependency)):
+        from source_diagnostics import API_ADAPTERS
+        with connect() as connection:
+            row = connection.execute('SELECT adapter FROM sports_ai_provider_registry WHERE id=?', (source_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, 'Source not found')
+        if row['adapter'] not in API_ADAPTERS:
+            raise HTTPException(422, 'This source is collected by its own worker pass, not on demand')
         try:
             return run_collection(source_id,actor=user)
         except CollectionError as error:
@@ -282,6 +293,37 @@ def build_acquisition_router(auth_dependency):
                 (source_id,),
             )
         return {'paused':True}
+
+    @router.post('/acquisition/sources/{source_id}/resume')
+    def resume_source(source_id: str, user=Depends(auth_dependency)):
+        from source_diagnostics import API_ADAPTERS
+        with connect() as connection:
+            row = connection.execute('SELECT * FROM sports_ai_provider_registry WHERE id=?', (source_id,)).fetchone()
+            if not row:
+                raise HTTPException(404, 'Source not found')
+            if row['adapter'] not in API_ADAPTERS:
+                raise HTTPException(422, 'Only scheduled API providers can be resumed here')
+            if not row['terms_reviewed']:
+                raise HTTPException(422, 'Review source terms before resuming collection')
+            if row['credential_env'] and not os.environ.get(row['credential_env']):
+                raise HTTPException(422, f"Configure {row['credential_env']} in the backend environment first")
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            connection.execute(
+                """INSERT INTO sports_ai_acquisition_schedules(provider_id,enabled,interval_minutes,paused,updated_by,updated_at)
+                   VALUES(?,1,?,0,?,?) ON CONFLICT(provider_id) DO UPDATE SET enabled=1,paused=0,
+                   updated_by=excluded.updated_by,updated_at=excluded.updated_at""",
+                (source_id, row['interval_minutes'], str(user), now),
+            )
+            connection.execute(
+                """UPDATE sports_ai_provider_registry SET enabled=1,next_run_at=?,
+                   status=CASE WHEN status='paused' THEN 'untested' ELSE status END WHERE id=?""",
+                (now, source_id),
+            )
+            connection.execute(
+                'INSERT INTO sports_ai_audit_events(id,actor,action,metadata_json) VALUES(?,?,?,?)',
+                (str(uuid.uuid4()), str(user), 'acquisition.source.resumed', json.dumps({'provider_id': source_id})),
+            )
+        return {'resumed': True, 'next_run_at': now}
 
     @router.post('/acquisition/sources/{source_id}/disable')
     def disable_source(source_id: str, user=Depends(auth_dependency)):

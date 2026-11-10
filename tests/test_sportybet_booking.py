@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
+from integrity_support import eligible_everywhere
 
 import db
 from sportybet_booking import create_job, prepare_slip, process_booking_queue, qualified_selections, select_booking
@@ -46,6 +47,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class BookingTests(unittest.TestCase):
+    def setUp(self):
+        eligible_everywhere(self)
+
     @classmethod
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory()
@@ -65,6 +69,15 @@ class BookingTests(unittest.TestCase):
         cls.server.server_close()
         db.DB = cls.previous
         cls.temp.cleanup()
+
+    def scheduled_fixture(self, connection):
+        from datetime import datetime, timedelta, timezone
+        kickoff = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+        connection.execute(
+            """INSERT OR IGNORE INTO sports_ai_fixtures(id,external_id,source,sport,competition,home,away,starts_at,status,
+                 statistics_json,odds_json,observed_at) VALUES('pistons','pistons','test','basketball','NBA','Pistons','76ers',?,
+                 'scheduled','{}','{}',?)""", (kickoff, kickoff),
+        )
 
     def selection(self, odds=1.80):
         return {
@@ -94,6 +107,7 @@ class BookingTests(unittest.TestCase):
                           'QUALIFIED_OK','Stored qualification','{}','["booking"]',1,1,'fp',?,?)""",
                 (moment, moment),
             )
+            self.scheduled_fixture(connection)
             first = create_job(connection, [self.selection()])
             second = create_job(connection, [self.selection()])
         self.assertFalse(first['duplicate'])
@@ -114,6 +128,7 @@ class BookingTests(unittest.TestCase):
                           'QUALIFIED_OK','Stored qualification','{}','["booking"]',1,1,'fp-window',?,?)""",
                 (moment, moment),
             )
+            self.scheduled_fixture(connection)
             create_job(connection, [self.selection()])
         result = process_booking_queue(datetime(2026, 11, 4, 9, 0, tzinfo=timezone.utc))
         self.assertEqual(result['status'], 'outside_window')

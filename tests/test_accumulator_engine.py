@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
+from integrity_support import eligible_everywhere
 
 import db
 from accumulator_engine import (
@@ -79,6 +80,7 @@ def _config(**overrides):
 
 class AccumulatorMathTests(unittest.TestCase):
     def setUp(self):
+        eligible_everywhere(self)
         self.now = datetime(2026, 11, 3, 12, tzinfo=timezone.utc)
 
     def test_eight_targets_and_product_math(self):
@@ -411,6 +413,7 @@ class AccumulatorPersistenceTests(unittest.TestCase):
         cls.temp.cleanup()
 
     def setUp(self):
+        eligible_everywhere(self)
         self.now = datetime(2026, 11, 3, 12, tzinfo=timezone.utc)
         with db.connect() as _c:
             __import__('market_anchor').set_model_only(_c)  # these tests cover other behaviour than anchoring

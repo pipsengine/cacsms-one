@@ -8,6 +8,7 @@ from datetime import timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
+from integrity_support import eligible_everywhere
 
 import db
 import high_odds_service as service
@@ -38,6 +39,7 @@ def _observe(connection, fixture_id, home, away, competition, event_id='sr:match
 
 class PageIdentityTests(unittest.TestCase):
     def setUp(self):
+        eligible_everywhere(self)
         self.temp = tempfile.TemporaryDirectory()
         self.previous = db.DB
         db.DB = Path(self.temp.name) / 'identity.sqlite3'
@@ -152,6 +154,7 @@ class TicketListTests(unittest.TestCase):
     """Current tickets must not be pushed out of the 200-row list by newer expired ones."""
 
     def setUp(self):
+        eligible_everywhere(self)
         self.temp = tempfile.TemporaryDirectory()
         self.previous = db.DB
         db.DB = Path(self.temp.name) / 'tickets.sqlite3'

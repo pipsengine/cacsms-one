@@ -196,6 +196,9 @@ def create_job(connection, selections, high_odds=False):
         require_current_qualification(connection, guarded, _now())
     if not high_odds and policy['require_live_qualification']:
         require_bookable(connection, selections)
+    # Hard gate for every product; booking_policy relaxations cannot switch it off.
+    from prediction_integrity import require_bookable as require_integrity
+    integrity = require_integrity(connection, selections, _now())
     limit = 30 if high_odds else 25
     if not selections or len(selections) > limit:
         raise ValueError(f'A booking needs 1 to {limit} selections')
@@ -236,7 +239,8 @@ def create_job(connection, selections, high_odds=False):
         (
             job_id, moment, moment, 'QUEUED',
             next(iter(sports)) if len(sports) == 1 else 'mixed',
-            json.dumps(selections), signature, ticket_id,
+            json.dumps([{**item, **integrity['legs'].get((item.get('fixture_id'), str(item.get('market') or '').upper()), {})}
+                        for item in selections]), signature, ticket_id,
         ),
     )
     return {'id': job_id, 'status': 'QUEUED', 'duplicate': False, 'places_wager': False}
