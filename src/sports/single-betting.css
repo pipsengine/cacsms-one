@@ -275,3 +275,12 @@ button.sb-card{text-align:left;color:inherit;font:inherit}
 .sb-cov-bar{padding-right:46px}.sb-cov-bar small{position:absolute;right:0;font-weight:700;font-size:12.5px}
 .sb-cov-bar i{left:0}
 .sb-chip-soft{background:#f1f4f9;border-radius:999px;padding:3px 10px;font-size:12px;color:#334155;white-space:nowrap}
+
+/* engine: Controls and Rules side by side; log scrolls inside its card */
+.sb-engine{grid-template-areas:"strat strat right" "kpis kpis right" "main mid right" "rules rules right"}
+.sb-a-rules{grid-area:rules;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:stretch}
+.sb-a-rules>.sb-card{height:100%}
+.sb-log ul.sb-log-list{max-height:430px;padding-right:6px}.sb-log ul.sb-log-list.tall{max-height:820px}
+@media (max-width:1560px){.sb-engine{grid-template-areas:"strat right" "kpis right" "main right" "mid mid" "rules rules"}.sb-a-mid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:980px){.sb-engine{grid-template-areas:"strat" "kpis" "main" "mid" "rules" "right"}.sb-a-mid,.sb-a-rules{grid-template-columns:1fr}}
+.sb-engine>.sb-a-main{align-self:stretch}.sb-a-main>.sb-queue{flex:1}

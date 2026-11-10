@@ -271,9 +271,9 @@ function ExecutionsTable({orders}){if(!orders.length)return <div className="sb-e
     <td className="detail" title={o.error||''}>{o.error?o.error.slice(0,80):o.checks?Object.entries(o.checks).filter(([,v])=>!v).map(([k])=>k).join(', ')||'All checks passed':'—'}</td></tr>)}
   </tbody></table>}
 
-function ActivityLog({events,refresh}){const[all,setAll]=useState(false);const shown=all?events:events.slice(0,8);
+function ActivityLog({events,refresh}){const[all,setAll]=useState(false);const shown=events;
   return <Card className="sb-log" icon={<ListChecks size={20}/>} title="Live Activity Log" action={<button className="sb-link" onClick={()=>setAll(!all)}>{all?'Show less':'View All'}</button>}>
-    <ul className={all?'sb-scroll':''}>{shown.length?shown.map((e,i)=>{const bad=['CANCELLED','EXCEPTION','SESSION_EXPIRED'].includes(e.action);
+    <ul className={'sb-scroll sb-log-list'+(all?' tall':'')}>{shown.length?shown.map((e,i)=>{const bad=['CANCELLED','EXCEPTION','SESSION_EXPIRED'].includes(e.action);
       return <li key={i} title={e.detail}><span className={'sb-check '+(bad?'off':'ok')}>{bad?<XCircle size={17}/>:<CheckCircle size={17} fill="currentColor" stroke="#fff"/>}</span><time>{hhmm(e.created_at)}</time><span className="txt">{e.detail}</span></li>})
       :<li className="sb-muted">No engine activity recorded yet.</li>}</ul></Card>}
 
@@ -322,6 +322,9 @@ export function SingleBettingEngine(){
           <div className="sb-tabs" role="tablist">{tabs.map(([k,l,n])=><button key={k} role="tab" aria-selected={tab===k} className={tab===k?'on':''} onClick={()=>setTab(k)}>{l}<span>{n}</span></button>)}</div>
           <div className="sb-table-scroll sb-scroll">{tab==='queue'?<QueueTable queue={data.queue} auto={auto} c={c} s={s} filters={data.last_cycle?.rejected}/>:tab==='placed'?<PlacedTable rows={data.recent}/>:<ExecutionsTable orders={live?.orders||[]}/>}</div>
         </Card>
+      </div>
+      <div className="sb-a-mid">
+        <AutomationCard live={live} onManage={()=>setDrawer(true)}/>
         <Card className="sb-focus-card" icon={<Target size={22}/>} title="Current Selection Detail (In Focus)">
           {f?<div className="sb-focus"><span className="sb-focus-icon">{SPORT_ICON[f.sport]||'🎯'}</span><div className="sb-focus-match"><b>{f.fixture}</b><small className="blue">{f.competition} · {hhmm(f.starts_at)} WAT</small></div>
             <div><small>Selection</small><b>{f.selection}</b></div><div><small>Odds</small><b>{f.decimal_odds.toFixed(2)}</b></div><div><small>Stake</small><b>{naira(f.stake)}</b></div>
@@ -329,8 +332,7 @@ export function SingleBettingEngine(){
           :<div className="sb-empty slim"><Sparkles size={20}/><b>Nothing in focus</b><span>The next queued single appears here with its probability and price.</span></div>}
         </Card>
       </div>
-      <div className="sb-a-mid">
-        <AutomationCard live={live} onManage={()=>setDrawer(true)}/>
+      <div className="sb-a-rules">
         <Card icon={<Settings2 size={22}/>} title="Automation Controls"><ul className="sb-checks pills">
           {[['Auto-select (from pipeline)',a.auto_select],[`Auto-place ${data.mode==='LIVE'?'bet':'paper bet'} (₦100)`,a.auto_place_paper],['Auto-capture booking code',a.booking_code_capture],['Auto-monitor & settle',a.auto_settle],['Auto-learn & optimize',a.auto_learn],['Real-money submission',a.real_money]].map(([l,v])=><Check key={l} ok={v} value={v?'ON':'OFF'} tone={v?'on':'off'}>{l}</Check>)}
         </ul></Card>

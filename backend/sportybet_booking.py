@@ -2081,7 +2081,15 @@ def process_booking_queue(now=None, ignore_gap=False):
             selections = ticket_selections(connection, ticket_id)
             if not selections or len(selections) > 25:
                 return {'status': 'waiting', 'phase': phase, 'qualified': len(qualified), 'expired': expired, 'examined': examined, 'places_wager': False}
-            created = create_job(connection, selections)
+            try:
+                created = create_job(connection, selections)
+            except ValueError as refusal:
+                # A guard refused this ticket (e.g. a quarantined basketball leg). Raising failed
+                # the whole lane and re-picked the same ticket every 30 seconds, so nothing else
+                # could be booked. Record the refusal; the picker moves on to the next ticket.
+                _refuse_ticket(connection, ticket_id, selections, str(refusal), moment)
+                return {'status': 'NOT_BOOKABLE', 'reason_code': 'NOT_BOOKABLE', 'ticket_id': ticket_id,
+                        'error': str(refusal), 'phase': phase, 'examined': examined, 'places_wager': False}
             if created.get('duplicate'):
                 return {'status': created['status'], 'phase': phase, 'duplicate': True, 'examined': examined, 'places_wager': False}
             job_id = created['id']
@@ -2092,6 +2100,21 @@ def process_booking_queue(now=None, ignore_gap=False):
     result['expired'] = expired
     result['examined'] = examined
     return result
+
+
+def _refuse_ticket(connection, ticket_id, selections, reason, moment):
+    """A FAILED job with the guard's reason: next_ticket_id skips the ticket for
+    REFRESH_MINUTES and stops after MAX_DAILY_FAILURES. No browser is opened."""
+    stamp = moment.isoformat()
+    connection.execute(
+        """INSERT INTO sports_ai_booking_jobs
+           (id,created_at,updated_at,status,reason_code,error,sport,selections_json,signature,places_wager,ticket_id)
+           VALUES(?,?,?,'FAILED','NOT_BOOKABLE',?,?,?,?,0,?)""",
+        (str(uuid.uuid4()), stamp, stamp, reason[:500],
+         next(iter({i.get('sport') for i in selections}), 'mixed') if len({i.get('sport') for i in selections}) == 1 else 'mixed',
+         json.dumps(selections, default=str), _signature(selections), ticket_id),
+    )
+    _record_diagnostic(connection, ticket_id, 'NOT_BOOKABLE', reason, moment)
 
 
 def book_batch(max_codes=None):
@@ -2181,7 +2204,12 @@ def confirm_missed_publication(now=None):
                 'status': 'waiting', 'confirmation': True, 'examined': examined,
                 'places_wager': False, 'opens_browser': False,
             }
-        created = create_job(connection, selections)
+        try:
+            created = create_job(connection, selections)
+        except ValueError as refusal:
+            _refuse_ticket(connection, ticket_id, selections, str(refusal), moment)
+            return {'status': 'NOT_BOOKABLE', 'confirmation': True, 'error': str(refusal),
+                    'places_wager': False, 'opens_browser': False}
         if created.get('duplicate'):
             return {
                 'status': created['status'], 'confirmation': True, 'duplicate': True,
@@ -2218,7 +2246,12 @@ def book_prepared_tickets(limit=1, now=None):
             selections = ticket_selections(connection, ticket_id)
             if not selections or len(selections) > 25:
                 break
-            created = create_job(connection, selections)
+            try:
+                created = create_job(connection, selections)
+            except ValueError as refusal:
+                _refuse_ticket(connection, ticket_id, selections, str(refusal), _now())
+                results.append({'status': 'NOT_BOOKABLE', 'ticket_id': ticket_id, 'error': str(refusal)})
+                continue
             if created.get('duplicate'):
                 results.append(created)
                 continue
