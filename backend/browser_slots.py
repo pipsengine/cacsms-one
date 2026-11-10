@@ -33,8 +33,41 @@ def _owner(purpose):
     return f'{os.getpid()}:{threading.get_ident()}:{purpose}:{uuid.uuid4().hex[:8]}'
 
 
+def _pid_alive(pid):
+    """True unless the process certainly no longer exists. Unknown counts as alive."""
+    if pid == os.getpid():
+        return True
+    if os.name == 'nt':
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return kernel32.GetLastError() == 5  # access denied: it exists
+        code = ctypes.c_ulong()
+        try:
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _owner_dead(owner):
+    """A lease whose holder process has exited (restart, killed feed subprocess) is free.
+    Otherwise it would block every browser task until its TTL ran out."""
+    head = (owner or '').split(':', 1)[0]
+    return head.isdigit() and not _pid_alive(int(head))
+
+
 def try_acquire(purpose, ttl=DEFAULT_TTL, now=None):
-    """Claim a free or expired slot. Returns the owner token, or None."""
+    """Claim a free, expired or orphaned slot. Returns the owner token, or None."""
     current = now or _now()
     owner = _owner(purpose)
     with connect() as connection:
@@ -44,6 +77,10 @@ def try_acquire(purpose, ttl=DEFAULT_TTL, now=None):
                WHERE owner='' OR julianday(expires_at)<=julianday(?)
                ORDER BY slot LIMIT 1""", (current.isoformat(),),
         ).fetchone()
+        if not row:
+            row = next((held for held in connection.execute(
+                'SELECT slot, owner FROM sports_ai_browser_slots ORDER BY slot').fetchall()
+                if _owner_dead(held['owner'])), None)
         if not row:
             return None
         connection.execute(

@@ -86,6 +86,38 @@ class SlotTests(unittest.TestCase):
         self.assertEqual(asyncio.run(job()), 1)
 
 
+class OrphanedLeaseTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.previous = db.DB
+        db.DB = Path(self.temp.name) / 'slots.sqlite3'
+        db.initialize()
+
+    def tearDown(self):
+        db.DB = self.previous
+        self.temp.cleanup()
+
+    def test_lease_of_an_exited_process_is_reclaimed_before_its_ttl(self):
+        import subprocess
+        child = subprocess.Popen([sys.executable, '-c', 'pass'])
+        child.wait()
+        future = (datetime.now(timezone.utc) + timedelta(minutes=14)).isoformat()
+        with db.connect() as connection:
+            connection.execute("UPDATE sports_ai_browser_slots SET owner=?, purpose='feed', expires_at=?",
+                               (f'{child.pid}:1:feed:dead', future))
+        owner = try_acquire('account')
+        self.assertIsNotNone(owner)
+        release(owner)
+
+    def test_lease_of_a_live_process_is_respected(self):
+        future = (datetime.now(timezone.utc) + timedelta(minutes=14)).isoformat()
+        import os
+        with db.connect() as connection:
+            connection.execute("UPDATE sports_ai_browser_slots SET owner=?, purpose='feed', expires_at=?",
+                               (f'{os.getpid()}:1:feed:alive', future))
+        self.assertIsNone(try_acquire('account'))
+
+
 class ClassificationTests(unittest.TestCase):
     def test_classes(self):
         self.assertEqual(classify_browser_error('Page.goto: net::ERR_NAME_NOT_RESOLVED at https://x'), 'transient')

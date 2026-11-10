@@ -24,8 +24,11 @@ PAGE = '''<!doctype html><html><body>
   <span class="m-outcome">1.72</span><span class="m-outcome">3.70</span><span class="m-outcome">4.80</span></div>
 <div class="m-betslip-wrapper">
   <div id="count">Betslip0</div>
-  <div class="inside-btn left-side" id="sim">SIM</div><div class="inside-btn right-side inactive" id="real">REAL</div>
-  <div id="pick"></div>
+  <div class="mode-switch-button"><div class="switch-box">
+    <div class="shadow-text left-side" data-op="switch-box-left" id="real">REAL</div>
+    <div class="inside-btn right-side active" data-op="switch-box-right" id="sim">SIM</div>
+  </div></div>
+  <div id="pick"></div><i class="m-icon-delete" id="bin" style="display:inline-block;width:10px;height:10px;background:#999"></i>
   <input class="m-input" placeholder="min. 10" value="">
   <div id="totals">Total Stake NGN 0 Potential Win 0.00</div>
   <button class="af-button af-button--primary" id="place">Place Bet</button>
@@ -34,6 +37,14 @@ PAGE = '''<!doctype html><html><body>
 <script>
 const flow = "__FLOW__";
 let odds = 0;
+// SportyBet keeps the betslip between visits; "prefilled" starts with a leftover selection.
+if (flow === 'prefilled') {
+  document.getElementById('count').textContent = 'Betslip1';
+  document.getElementById('pick').textContent = 'Home Other FC v Leftover United 1X2 2.10';
+}
+document.getElementById('bin').addEventListener('click', () => {
+  odds = 0; document.getElementById('count').textContent = 'Betslip0'; document.getElementById('pick').textContent = '';
+});
 const stake = document.querySelector('.m-input');
 const update = () => {
   const s = Number(stake.value || 0);
@@ -44,9 +55,10 @@ document.querySelectorAll('.m-outcome').forEach(node => node.addEventListener('c
   document.getElementById('pick').textContent = 'Home Braga v Estrela 1X2 ' + node.innerText; update();
 }));
 stake.addEventListener('input', update); stake.addEventListener('change', update);
+// Mirrors SportyBet: the selected label carries .inside-btn, and REAL keeps "inactive" even when selected.
 document.getElementById('real').addEventListener('click', () => {
-  document.getElementById('real').className = 'inside-btn right-side';
-  document.getElementById('sim').className = 'inside-btn left-side inactive';
+  document.getElementById('real').className = 'inside-btn left-side inactive';
+  document.getElementById('sim').className = 'shadow-text right-side show-highlight';
 });
 document.getElementById('place').addEventListener('click', () => {
   const pop = document.getElementById('pop');
@@ -256,6 +268,35 @@ Total Return
             view = acct.status_view(c)
         self.assertEqual(view['balance']['status'], 'SYNCED')
         self.assertIsNotNone(view['reconciliation']['last_history_capture'])
+
+    def test_test_rehearsal_ignores_edge_and_never_counts_toward_authorization(self):
+        now = datetime.now(timezone.utc)
+        bet = {'id': 'test:fx', 'fixture_id': 'fx', 'sport': 'football', 'competition': 'Primeira Liga',
+               'home': 'Braga', 'away': 'Estrela', 'market': 'HOME', 'selection': 'Home Win (1)',
+               'decimal_odds': 1.72, 'probability': 0.40, 'stake': 100.0}  # negative EV: not qualified
+        outcome, status, detail = asyncio.run(acct.execute_async(bet, 'REHEARSAL', now, test=True))
+        self.assertEqual(status, 'REHEARSED', detail)
+        with db.connect() as c:
+            self.assertEqual(acct.rehearsals_passed(c, now), 0)
+            order = acct.status_view(c, now)['orders'][0]
+            self.assertTrue(order['test'])
+            self.assertEqual((order['home'], order['away']), ('Braga', 'Estrela'))
+            self.assertIsNone(c.execute("SELECT submitted_at FROM sports_ai_single_live_orders").fetchone()[0])
+        with self.assertRaises(ValueError):
+            asyncio.run(acct.execute_async(bet, 'SUBMISSION', now, test=True))
+
+    def test_leftover_selection_is_cleared_and_slip_is_left_empty(self):
+        now = datetime.now(timezone.utc)
+        STATE['flow'] = 'prefilled'
+        with db.connect() as c:
+            bet = self._bet(c, now)
+        outcome, status, detail = asyncio.run(acct.execute_async(bet, 'REHEARSAL', now))
+        self.assertEqual(status, 'REHEARSED', detail)
+        with db.connect() as c:
+            checks = json.loads(c.execute('SELECT checks_json FROM sports_ai_single_live_orders').fetchone()[0])
+        self.assertTrue(checks['checks']['one_selection'])
+        self.assertTrue(checks['slip_cleared'])
+        self.assertNotIn('Leftover', checks['slip']['text'])
 
     def test_history_capture_drops_header_and_account_details(self):
         page = '''NGN 4,755.89

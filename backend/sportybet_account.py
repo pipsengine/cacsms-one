@@ -176,8 +176,12 @@ SLIP_STATE = r'''() => {
   if (!root) return {present: false};
   const text = (root.innerText || '').replace(/\s+/g, ' ').trim();
   const count = text.match(/Betslip\s*(\d+)/i);
-  const toggles = [...root.querySelectorAll('[class*="inside-btn"]')].map(node => ({
-    label: (node.innerText || '').trim().toUpperCase(), active: !/inactive/.test(node.className || '')}));
+  // SportyBet's REAL/SIM switch is a sliding pill: the selected mode is the label carrying
+  // .inside-btn; the other label is .shadow-text. Its active/inactive class does not mean selected.
+  const pill = root.querySelector('.switch-box .inside-btn');
+  const selectedMode = pill ? (pill.innerText || '').trim().toUpperCase() : null;
+  const toggles = [...root.querySelectorAll('.switch-box [data-op]')].map(node => ({
+    label: (node.innerText || '').trim().toUpperCase(), active: node.classList.contains('inside-btn')}));
   const stakeInput = [...root.querySelectorAll('input')].find(node => /min/i.test(node.placeholder || '') || /m-input/.test(node.className || ''));
   const amount = label => { const m = text.match(new RegExp(label + '\\s*(?:NGN|₦)?\\s*([\\d,]+(?:\\.\\d+)?)', 'i')); return m ? Number(m[1].replace(/,/g, '')) : null; };
   const place = [...root.querySelectorAll('button, [role="button"]')].filter(node => /^place\s*bet$/i.test((node.innerText || '').trim()));
@@ -185,8 +189,9 @@ SLIP_STATE = r'''() => {
     present: true,
     text: text.slice(0, 600),
     count: count ? Number(count[1]) : null,
-    real_active: toggles.some(t => t.label === 'REAL' && t.active),
-    sim_active: toggles.some(t => t.label === 'SIM' && t.active),
+    real_active: selectedMode === 'REAL',
+    sim_active: selectedMode === 'SIM',
+    mode: selectedMode,
     toggles,
     stake: stakeInput ? Number((stakeInput.value || '').replace(/,/g, '')) : null,
     total_stake: amount('Total Stake'),
@@ -209,8 +214,9 @@ CLEAR_SLIP = r'''() => {
 }'''
 
 MARK_REAL = r'''() => {
-  const node = [...document.querySelectorAll('.m-betslip-wrapper [class*="inside-btn"]')]
-    .find(item => (item.innerText || '').trim().toUpperCase() === 'REAL');
+  // When SIM is selected, REAL is the unselected .shadow-text label; clicking it slides the pill.
+  const node = [...document.querySelectorAll('.m-betslip-wrapper .switch-box [data-op]')]
+    .find(item => (item.innerText || '').trim().toUpperCase() === 'REAL' && !item.classList.contains('inside-btn'));
   if (!node) return false;
   node.click();
   return true;
@@ -247,6 +253,27 @@ POPUP_STATE = r'''() => {
     ref: ref ? ref[1] : null,
   };
 }'''
+
+
+async def _clear_slip(page, attempts=30):
+    """Remove every selection with real clicks on SportyBet's bin icon (i.m-icon-delete), one
+    at a time, until the Betslip count reads 0. SportyBet keeps the betslip between visits,
+    so a selection left behind would be mixed into the next bet. Returns the remaining count."""
+    for _ in range(attempts):
+        slip = await page.evaluate(SLIP_STATE)
+        remaining = slip.get('count') or 0
+        if not slip.get('present') or remaining == 0:
+            return 0
+        bins = page.locator('.m-betslip-wrapper i.m-icon-delete')
+        if await bins.count() == 0:
+            return remaining
+        try:
+            await bins.first.click(timeout=5000)
+        except Exception:
+            return remaining
+        await page.wait_for_timeout(700)
+    slip = await page.evaluate(SLIP_STATE)
+    return slip.get('count') or 0
 
 
 async def _login_state(page):
@@ -520,7 +547,8 @@ def active_authorization(connection, now=None):
 def rehearsals_passed(connection, now=None):
     since = (_now(now) - timedelta(days=7)).isoformat()
     return connection.execute(
-        "SELECT COUNT(*) FROM sports_ai_single_live_orders WHERE kind='REHEARSAL' AND status='REHEARSED' AND created_at>=?",
+        """SELECT COUNT(*) FROM sports_ai_single_live_orders
+           WHERE kind='REHEARSAL' AND status='REHEARSED' AND created_at>=? AND bet_id NOT LIKE 'test:%'""",
         (since,),
     ).fetchone()[0]
 
@@ -626,9 +654,11 @@ def _order(connection, bet, kind, grant_id, now):
     order_id = str(uuid.uuid4())
     connection.execute(
         """INSERT INTO sports_ai_single_live_orders
-           (id,bet_id,kind,status,local_date,stake,expected_odds,authorization_id,created_at,updated_at)
-           VALUES(?,?,?,'PENDING',?,?,?,?,?,?)""",
-        (order_id, bet['id'], kind, local_date(now), STAKE, bet['decimal_odds'], grant_id, now.isoformat(), now.isoformat()),
+           (id,bet_id,kind,status,local_date,stake,expected_odds,authorization_id,checks_json,created_at,updated_at)
+           VALUES(?,?,?,'PENDING',?,?,?,?,?,?,?)""",
+        (order_id, bet['id'], kind, local_date(now), STAKE, bet['decimal_odds'], grant_id,
+         # The match name is kept even if the attempt fails before the page opens.
+         json.dumps({'fixture': f"{bet.get('home')} vs {bet.get('away')}"}), now.isoformat(), now.isoformat()),
     )
     return order_id
 
@@ -645,7 +675,7 @@ def _finish_order(order_id, status, now=None, **fields):
         )
 
 
-async def _prepare_in_account(page, bet):
+async def _prepare_in_account(page, bet, test=False):
     """Open the sport page in the signed-in context, add exactly this one selection, set ₦100."""
     from sportybet_booking import _open_sport, prepare_slip
     local = BASE_URL.startswith(('http://127.0.0.1', 'http://localhost'))
@@ -655,10 +685,8 @@ async def _prepare_in_account(page, bet):
         raise SessionExpired('SportyBet shows the login form. The saved session has expired.')
     slip = await page.evaluate(SLIP_STATE)
     if slip.get('present') and (slip.get('count') or 0) > 0:
-        await page.evaluate(CLEAR_SLIP)
-        await page.wait_for_timeout(1200)
-        slip = await page.evaluate(SLIP_STATE)
-        if (slip.get('count') or 0) > 0:
+        if await _clear_slip(page) > 0:
+            slip = await page.evaluate(SLIP_STATE)
             return {'ok': False, 'code': 'SLIP_NOT_EMPTY', 'error': 'The account betslip already held selections that could not be cleared.', 'slip': slip}
     item = {'fixture_id': bet['fixture_id'], 'sport': bet['sport'], 'competition': bet['competition'],
             'home': bet['home'], 'away': bet['away'], 'market': bet['market'], 'selection': '',
@@ -669,7 +697,7 @@ async def _prepare_in_account(page, bet):
     page_odds = float(picked['seen'][0].get('page_odds') or 0)
     from single_betting import MIN_EV
     ev = page_odds * float(bet['probability']) - 1
-    if ev < MIN_EV:
+    if ev < MIN_EV and not test:
         return {'ok': False, 'code': 'EDGE_GONE', 'error': f'At the displayed {page_odds:.2f} the expected value is {ev:+.3f}.', 'page_odds': page_odds}
     slip = await page.evaluate(SLIP_STATE)
     if not slip.get('real_active') and slip.get('sim_active'):
@@ -695,12 +723,14 @@ async def _prepare_in_account(page, bet):
             'checks': checks, 'slip': slip, 'page_odds': page_odds, 'ev': ev, 'balance': state.get('balance')}
 
 
-async def execute_async(bet, kind, now=None):
+async def execute_async(bet, kind, now=None, test=False):
     """Rehearse or submit one queued single. Returns (bet_outcome, order_status, detail)."""
     from playwright.async_api import async_playwright
     from browser_slots import async_browser_slot
     current = _now(now)
     grant_id = None
+    if test and kind != 'REHEARSAL':
+        raise ValueError('A test can only rehearse')
     with connect() as connection:
         if kind == 'SUBMISSION':
             reasons, grant = submission_gate(connection, current)
@@ -717,15 +747,23 @@ async def execute_async(bet, kind, now=None):
             browser, context = await _launch(playwright)
             try:
                 page = await context.new_page()
-                ready = await _prepare_in_account(page, bet)
+                ready = await _prepare_in_account(page, bet, test=test)
+                if test:
+                    ready['test'] = True
+                    ready['fixture'] = f"{bet['home']} vs {bet['away']}"
                 await page.screenshot(path=str(shot), full_page=False)
                 if not ready['ok']:
+                    if ready['code'] != 'SLIP_NOT_EMPTY':
+                        # Never leave this selection behind for the next bet.
+                        await _clear_slip(page)
+                        save_session(await context.storage_state())
                     _finish_order(order_id, 'REJECTED' if ready['code'] in ('PRICE_OR_MARKET', 'EDGE_GONE') else 'FAILED',
                                   checks_json=ready, page_odds=ready.get('page_odds'), error=ready.get('error') or ready['code'],
                                   evidence_path=str(shot))
                     return 'CANCEL', ready['code'], ready.get('error') or f"Betslip checks failed: {[k for k, v in ready.get('checks', {}).items() if not v]}"
                 if kind == 'REHEARSAL':
-                    await page.evaluate(CLEAR_SLIP)
+                    left = await _clear_slip(page)
+                    ready['slip_cleared'] = left == 0
                     save_session(await context.storage_state())
                     _finish_order(order_id, 'REHEARSED', checks_json=ready, page_odds=ready['page_odds'], evidence_path=str(shot))
                     return 'PAPER_PLACED', 'REHEARSED', f"Rehearsed in account at {ready['page_odds']:.2f}; Place Bet not clicked"
@@ -843,6 +881,51 @@ def run_once(now=None):
     return {'status': outcome.lower(), 'kind': kind, 'detail': detail}
 
 
+# ---------------------------------------------------------------- test rehearsal
+
+def pick_test_selection(connection, now=None):
+    """A football home-win line SportyBet is pricing now. Qualification is not required:
+    a test rehearsal never clicks Place Bet and never counts toward authorization."""
+    current = _now(now)
+    row = connection.execute(
+        """SELECT f.id AS fixture_id, f.sport, f.competition, f.home, f.away, f.starts_at,
+                  p.probability, q.decimal_odds, q.observed_at
+           FROM sports_ai_value_opportunities o
+           JOIN sports_ai_engine_predictions p ON p.id=o.prediction_id
+           JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
+           JOIN sports_ai_fixtures f ON f.id=p.fixture_id
+           WHERE o.evaluated_at>=? AND f.sport='football' AND f.status='scheduled' AND f.starts_at>?
+             AND upper(p.market)='HOME' AND q.bookmaker='SportyBet' AND q.observed_at>=?
+             AND q.decimal_odds BETWEEN 1.2 AND 5
+           ORDER BY f.starts_at LIMIT 1""",
+        ((current - timedelta(hours=2)).isoformat(), (current + timedelta(minutes=45)).isoformat(),
+         (current - timedelta(minutes=30)).isoformat()),
+    ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    item.update({'id': f"test:{item['fixture_id']}", 'market': 'HOME', 'selection': 'Home Win (1)',
+                 'stake': STAKE, 'expected_value': item['decimal_odds'] * item['probability'] - 1})
+    return item
+
+
+def run_test_rehearsal(now=None):
+    current = _now(now)
+    with connect() as connection:
+        row = account(connection)
+        if row['status'] != 'CONNECTED':
+            raise ValueError('Connect the SportyBet account first')
+        bet = pick_test_selection(connection, current)
+    if not bet:
+        raise ValueError('No football match has a fresh SportyBet price right now. Try again in a few minutes.')
+    outcome, status, detail = asyncio.run(execute_async(bet, 'REHEARSAL', current, test=True))
+    with connect() as connection:
+        _event(connection, None, 'TEST_REHEARSAL',
+               f"Test rehearsal {bet['home']} vs {bet['away']}: {status or outcome} – {detail}", current)
+    return {'status': status or outcome, 'detail': detail, 'fixture': f"{bet['home']} vs {bet['away']}",
+            'counts_toward_authorization': False}
+
+
 # ---------------------------------------------------------------- read model
 
 def status_view(connection, now=None):
@@ -853,10 +936,14 @@ def status_view(connection, now=None):
     count, staked = live_usage(connection, local_date(current))
     orders = [dict(r) for r in connection.execute(
         """SELECT o.*, b.home, b.away, b.selection, b.sport FROM sports_ai_single_live_orders o
-           LEFT JOIN sports_ai_single_bets b ON b.id=o.bet_id ORDER BY o.created_at DESC LIMIT 20""",
+           LEFT JOIN sports_ai_single_bets b ON b.id=o.bet_id ORDER BY o.created_at DESC LIMIT 50""",
     ).fetchall()]
     for order in orders:
-        order['checks'] = json.loads(order.pop('checks_json') or '{}').get('checks')
+        detail = json.loads(order.pop('checks_json') or '{}')
+        order['checks'] = detail.get('checks')
+        order['test'] = str(order['bet_id']).startswith('test:')
+        if order['test'] and not order.get('home') and detail.get('fixture'):
+            order['home'], _, order['away'] = detail['fixture'].partition(' vs ')
         order['evidence'] = bool(order.pop('evidence_path', None))
     exceptions = connection.execute(
         "SELECT COUNT(*) FROM sports_ai_single_live_orders WHERE status IN ('UNKNOWN','SUBMITTING','FAILED') AND local_date=?",
@@ -936,6 +1023,31 @@ def build_account_router(auth, require_admin_key):
     @router.post('/check')
     def post_check(actor: str = Depends(auth)):
         return check_session(capture_history=True)
+
+    @router.get('/evidence/latest')
+    def latest_evidence(actor: str = Depends(auth)):
+        """Newest betslip screenshot taken in the account, for the Automation card thumbnail."""
+        from fastapi.responses import FileResponse
+        root = evidence_dir().resolve()
+        with connect() as connection:
+            rows = connection.execute(
+                """SELECT evidence_path, status, created_at FROM sports_ai_single_live_orders
+                   WHERE evidence_path IS NOT NULL ORDER BY created_at DESC LIMIT 10""",
+            ).fetchall()
+        for row in rows:
+            path = Path(row['evidence_path']).resolve()
+            if path.parent == root and path.suffix == '.png' and path.exists():
+                return FileResponse(path, media_type='image/png', headers={
+                    'Cache-Control': 'no-store', 'X-Evidence-Status': row['status'], 'X-Evidence-Time': row['created_at']})
+        raise HTTPException(404, 'No betslip screenshot has been taken yet')
+
+    @router.post('/test-rehearsal')
+    def post_test_rehearsal(actor: str = Depends(auth), x_sports_admin_key: str | None = Header(default=None)):
+        admin(x_sports_admin_key)
+        try:
+            return run_test_rehearsal()
+        except ValueError as error:
+            raise HTTPException(409, str(error))
 
     @router.post('/mode')
     def post_mode(body: ModeIn, actor: str = Depends(auth), x_sports_admin_key: str | None = Header(default=None)):

@@ -179,6 +179,7 @@ def _run_cycle():
     _release_stopped_jobs()
     _monitor_accumulators()
     _basketball_loss_tick()
+    _result_corrections_tick()
     # Closing prices are captured before settled snapshots can be cleaned up.
     _integrity_tick()
     _settled_snapshot_cleanup()
@@ -216,6 +217,18 @@ def _run_cycle():
     _single_betting_tick()
     _publication_tick()
     _pipeline_snapshot_tick()
+
+
+def _result_corrections_tick():
+    """Apply a provider's correction of its own final score when nothing is graded on it."""
+    try:
+        from result_corrections import apply_self_corrections
+        with connect() as connection:
+            result = apply_self_corrections(connection)
+        if result['applied'] or result['held']:
+            print('result corrections applied', len(result['applied']), 'held', len(result['held']))
+    except Exception as error:
+        _report('result corrections failed', error)
 
 
 def _integrity_tick():

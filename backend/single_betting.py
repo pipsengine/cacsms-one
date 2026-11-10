@@ -558,7 +558,7 @@ def engine_view(connection, now=None):
         (day,),
     ).fetchall()]
     events = [dict(r) for r in connection.execute(
-        'SELECT action, detail, created_at FROM sports_ai_single_events ORDER BY created_at DESC LIMIT 20',
+        'SELECT action, detail, created_at FROM sports_ai_single_events ORDER BY created_at DESC LIMIT 50',
     ).fetchall()]
     eligible = int(status.get('eligible') or 0)
     focus = queue[0] if queue else (recent[0] if recent else None)

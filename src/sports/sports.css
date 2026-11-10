@@ -10,3 +10,40 @@
 @media(max-width:1100px){.sp-kpi-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:700px){.sp-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .sp-intel-overlay{position:fixed;inset:0;background:#0b1d3866;display:grid;place-items:center;padding:18px;z-index:40}.sp-intel-overlay .sp-panel{max-width:640px;width:100%;max-height:86vh;overflow:auto}
 @media(max-width:650px){.sp-topbar{min-width:0;gap:8px;padding:0 10px}.sp-top-left{min-width:0;flex:1;gap:8px}.sp-breadcrumb{min-width:0;overflow:hidden;white-space:nowrap;font-size:0;gap:0}.sp-breadcrumb svg{display:none}.sp-breadcrumb strong{display:block;max-width:110px;overflow:hidden;text-overflow:ellipsis;font-size:11px}.sp-top-right{min-width:0;flex-shrink:0;gap:8px}.sp-user{padding-left:0}.sp-top-right .sp-auto{display:none}}
+/* Sidebar as in the Cacsms Sport AI design: icon + bold group headers, only the active group open. */
+.sp-brand-icon{background:#fff;color:#0f2a63;border:2px solid #0f2a63;border-radius:50%}
+.sp-brand-text strong{font-size:19px;font-weight:800;letter-spacing:-.4px;color:#0d1b3e}.sp-brand-text em{color:#2563eb}
+.sp-brand-text small{font-size:10.5px;color:#334155;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sp-nav-group{margin-bottom:2px;border-radius:10px}
+.sp-nav-group-label{display:flex!important;justify-content:flex-start!important;gap:12px;color:#1e293b!important;font-size:12px!important;font-weight:800!important;letter-spacing:0!important;padding:12px 13px!important;border-radius:10px;position:relative}
+.sp-nav-group-label .sp-group-name{flex:1;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sp-nav-group-label:hover{background:#f3f6fb}
+.sp-nav-group-label svg{flex-shrink:0;color:#334155}
+.sp-nav-group.current>.sp-nav-group-label{background:#f1ebff;color:#5b21b6!important}
+.sp-nav-group.current>.sp-nav-group-label::before{content:'';position:absolute;left:-10px;top:6px;bottom:6px;width:4px;border-radius:0 4px 4px 0;background:#7c3aed}
+.sp-nav-group.current>.sp-nav-group-label svg{color:#7c3aed}
+.sp-group-letter{width:21px;height:21px;border-radius:6px;background:#475569;color:#fff;display:grid;place-items:center;font-size:12px;font-weight:900;flex-shrink:0}
+.sp-nav-group .sp-side-link{padding:9px 13px 9px 40px;font-size:13px!important;color:#1e293b}
+.sp-nav-group.current .sp-side-link.active{background:#efe9ff;color:#5b21b6}.sp-nav-group.current .sp-side-link.active svg{color:#7c3aed}
+.sp-nav-group .sp-side-link.active .sp-active-dot{display:none}
+.sp-side-foot{border-top:1px solid var(--sp-line);padding:10px 12px;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.sp-version{display:flex;align-items:center;gap:8px;font-size:12.5px;color:#334155;white-space:nowrap}.sp-version i{width:10px;height:10px;border-radius:50%;background:#22c55e;flex-shrink:0}.sp-version b{color:#0d1b3e}
+.sp-side-foot .sp-back{margin:0;min-height:32px;width:34px;padding:0;flex-shrink:0}
+.sp-collapsed .sp-nav-group-label{height:auto;padding:12px!important;justify-content:center!important}.sp-collapsed .sp-nav-group .sp-side-link{padding:10px}
+.sp-collapsed .sp-side-foot{flex-direction:column}
+/* Single Betting pages carry their own header (status, clock, alerts, account). */
+@media (min-width:981px){.sp-own-header>.sp-topbar{display:none}}
+
+/* ---- sidebar fidelity pass ---- */
+.sp-brand-icon{border:0;background:transparent;width:42px;height:42px;border-radius:50%}
+.sp-brand-text strong{font-size:18px}
+.sp-brand-text small{font-size:9.6px;white-space:nowrap;overflow:visible;text-overflow:clip;letter-spacing:-.1px}
+.sp-sidebar-head{gap:8px;padding:12px 10px 12px 14px}
+.sp-collapse{opacity:.45;padding:4px}
+.sp-search{margin:0 4px 10px;padding:8px 11px}
+.sp-side-scroll{flex:0 1 auto;padding:10px 10px 4px}
+.sp-nav-group-label{padding:8px 12px!important}
+.sp-nav-group .sp-side-link{padding:7px 12px 7px 40px;margin:1px 0}
+.sp-side-foot{border-top:0;padding:8px 14px 14px}
+.sp-side-foot .sp-back{opacity:.6}
+.sp-nav-group-label{gap:10px!important;font-size:11.8px!important}

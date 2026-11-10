@@ -1,16 +1,16 @@
-import{LayoutDashboard,Activity,CalendarDays,ChartNoAxesCombined,BrainCircuit,Goal,Dribbble,BarChart3,TrendingUp,ScanSearch,Ticket,Layers3,SlidersHorizontal,Hash,Bell,Mail,Clock3,History,ShieldCheck,Database,Settings2,Workflow,Target,BookOpen,ClipboardList,ChartColumnIncreasing,Users,FileClock,MonitorCheck,Code2,Search,Globe,Bot,Gauge}from'lucide-react';
+import{LayoutDashboard,Activity,CalendarDays,ChartNoAxesCombined,BrainCircuit,Goal,Dribbble,BarChart3,TrendingUp,ScanSearch,Ticket,Layers3,SlidersHorizontal,Hash,Bell,Mail,Clock3,History,ShieldCheck,Database,Settings2,Workflow,Target,BookOpen,ClipboardList,ChartColumnIncreasing,Users,FileClock,MonitorCheck,Code2,Search,Globe,Bot,Gauge,Trophy}from'lucide-react';
 export const groups=[
-{label:'COMMAND CENTRE',items:[['dashboard','Overview',LayoutDashboard],['activity','Activity & Audit',Activity],['monitor','System Monitoring',MonitorCheck],['autonomous','Autonomous Engine',Bot],['autonomy-health','Autonomy Health',ShieldCheck]]},
-{label:'SINGLE BETTING AI',items:[['single-dashboard','Dashboard',LayoutDashboard],['single-engine','AI Betting Engine',Gauge]]},
-{label:'ALL SPORTS INTELLIGENCE',items:[['universal','Universal Opportunities',Target],['all-sports-predictions','All Sports Predictions',Globe]]},
-{label:'FOOTBALL INTELLIGENCE',items:[['football-fixtures','Fixtures & Statistics',CalendarDays],['football-analysis','Match Analysis',BrainCircuit],['football-predictions','Predictions',Goal]]},
-{label:'BASKETBALL INTELLIGENCE',items:[['basketball-fixtures','Fixtures & Statistics',Dribbble],['basketball-analysis','Match Analysis',BrainCircuit],['basketball-predictions','Predictions',Target],['basketball-losses','Performance & Loss Analysis',BarChart3]]},
-{label:'VALUE INTELLIGENCE',items:[['market-scanner','Market Scanner',ScanSearch],['odds','Odds Intelligence',TrendingUp],['value','Value Opportunities',ChartNoAxesCombined],['qualification','AI Qualification Centre',ShieldCheck],['sportybet-browser','SportyBet Browser Operator',Globe]]},
-{label:'ACCUMULATOR CENTRE',items:[['tickets','Ticket Builder',Ticket],['high-odds','High Odds Tickets',TrendingUp],['weekly-draw','Weekly Draw Centre',CalendarDays],['daily-rollover','Daily Rollover Centre',Clock3],['tiers','Odds Tiers',Layers3],['optimizer','Ticket Optimizer',SlidersHorizontal]]},
-{label:'SPORTYBET CENTRE',items:[['betslip','Betslip Preparation',ClipboardList],['codes','Booking Codes',Hash],['code-history','Code History',History]]},
-{label:'PERFORMANCE',items:[['results','Match Results',ChartColumnIncreasing],['backtesting','Backtesting',BarChart3],['models','Model Accuracy',BrainCircuit]]},
-{label:'DATA ACQUISITION',items:[['diagnostics','Connection & Diagnostics',MonitorCheck],['sources','Source Management Centre',Database],['match-research','Match Research Centre',Search]]},
-{label:'OPERATIONS',items:[['scheduler','Automation Scheduler',Clock3],['alerts','Alert Centre',Bell],['settings','Model Settings',Settings2],['users','Access & Roles',Users],['documentation','Documentation',BookOpen]]}
+{label:'COMMAND CENTRE',icon:LayoutDashboard,items:[['dashboard','Overview',LayoutDashboard],['activity','Activity & Audit',Activity],['monitor','System Monitoring',MonitorCheck],['autonomous','Autonomous Engine',Bot],['autonomy-health','Autonomy Health',ShieldCheck]]},
+{label:'SINGLE BETTING AI',icon:Target,items:[['single-dashboard','Dashboard',LayoutDashboard],['single-engine','AI Betting Engine',Gauge]]},
+{label:'ALL SPORTS INTELLIGENCE',icon:Trophy,items:[['universal','Universal Opportunities',Target],['all-sports-predictions','All Sports Predictions',Globe]]},
+{label:'FOOTBALL INTELLIGENCE',icon:Goal,items:[['football-fixtures','Fixtures & Statistics',CalendarDays],['football-analysis','Match Analysis',BrainCircuit],['football-predictions','Predictions',Goal]]},
+{label:'BASKETBALL INTELLIGENCE',icon:Dribbble,items:[['basketball-fixtures','Fixtures & Statistics',Dribbble],['basketball-analysis','Match Analysis',BrainCircuit],['basketball-predictions','Predictions',Target],['basketball-losses','Performance & Loss Analysis',BarChart3]]},
+{label:'VALUE INTELLIGENCE',icon:BarChart3,items:[['market-scanner','Market Scanner',ScanSearch],['odds','Odds Intelligence',TrendingUp],['value','Value Opportunities',ChartNoAxesCombined],['qualification','AI Qualification Centre',ShieldCheck],['sportybet-browser','SportyBet Browser Operator',Globe]]},
+{label:'ACCUMULATOR CENTRE',icon:Layers3,items:[['tickets','Ticket Builder',Ticket],['high-odds','High Odds Tickets',TrendingUp],['weekly-draw','Weekly Draw Centre',CalendarDays],['daily-rollover','Daily Rollover Centre',Clock3],['tiers','Odds Tiers',Layers3],['optimizer','Ticket Optimizer',SlidersHorizontal]]},
+{label:'SPORTYBET CENTRE',icon:'S',items:[['betslip','Betslip Preparation',ClipboardList],['codes','Booking Codes',Hash],['code-history','Code History',History]]},
+{label:'PERFORMANCE',icon:TrendingUp,items:[['results','Match Results',ChartColumnIncreasing],['backtesting','Backtesting',BarChart3],['models','Model Accuracy',BrainCircuit]]},
+{label:'DATA ACQUISITION',icon:Database,items:[['diagnostics','Connection & Diagnostics',MonitorCheck],['sources','Source Management Centre',Database],['match-research','Match Research Centre',Search]]},
+{label:'OPERATIONS',icon:Settings2,items:[['scheduler','Automation Scheduler',Clock3],['alerts','Alert Centre',Bell],['settings','Model Settings',Settings2],['users','Access & Roles',Users],['documentation','Documentation',BookOpen]]}
 ];export const items=groups.flatMap(g=>g.items);export const titleOf=id=>items.find(i=>i[0]===id)?.[1]||'Sports Intelligence';
 export const sections={
 'football-fixtures':['Upcoming Fixtures','Historical Results','Team Statistics','Import Data'],
