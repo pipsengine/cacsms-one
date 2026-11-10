@@ -208,6 +208,7 @@ def _run_cycle():
     _learning_loop_tick()
     _govern_cycle()
     _coverage_tick()
+    _league_coverage_tick()
     _match_report_tick()
     _draw_tick()
     _weekly_draw_tick()
@@ -495,6 +496,18 @@ def _history_tick():
         )
     except Exception as error:
         _report('match history failed', error)
+
+
+def _league_coverage_tick():
+    """Store the per-sport league coverage KPI (target: 90% of leagues with upcoming matches)."""
+    try:
+        from league_coverage import refresh
+        with connect() as connection:
+            report = refresh(connection)
+        print('league coverage', f"{report['predicted']}/{report['leagues']}",
+              ' '.join(f"{s['sport']}={s['predicted']}/{s['leagues']}" for s in report['sports']))
+    except Exception as error:
+        _report('league coverage failed', error)
 
 
 def _coverage_tick():

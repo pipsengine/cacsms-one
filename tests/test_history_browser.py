@@ -147,8 +147,10 @@ class HistoryPlanTests(unittest.TestCase):
         waiting = plan_visits(_blank_state(), {'premier-league'}, NOW)
         sports = [visit['sport'] for visit in waiting if visit['kind'] == 'betexplorer']
         self.assertEqual(sports[:3], ['football', 'basketball', 'football'])
-        self.assertNotIn('tennis', sports)
-        self.assertEqual(len(sports), 8)
+        # The modelled-sport walk never covers tennis; tennis comes only from the bootstrap walk.
+        self.assertNotIn('tennis', [v['sport'] for v in waiting if v.get('cursor') == 'priority'])
+        self.assertEqual({v['sport'] for v in waiting if v.get('cursor') == 'bootstrap'}, {'tennis', 'volleyball'})
+        self.assertEqual(len(sports), 12)
         self.assertEqual(sum(visit['kind'] == 'soccerway' for visit in waiting), 3)
         state = _blank_state()
         for visit in waiting:
@@ -157,9 +159,10 @@ class HistoryPlanTests(unittest.TestCase):
         self.assertEqual(state['priority_sport'], 0)
         self.assertEqual(state['priority_day'], 3)
 
+        # With no league waiting, history still deepens until each walk reaches its depth.
         idle = plan_visits(_blank_state(), set(), NOW)
-        idle_sports = [visit['sport'] for visit in idle if visit['kind'] == 'betexplorer']
-        self.assertEqual(idle_sports, ['football', 'basketball'])
+        self.assertEqual([v['sport'] for v in idle if v.get('cursor') == 'general'], ['football', 'basketball'])
+        self.assertEqual(len([v for v in idle if v.get('cursor') == 'priority']), 6)
         self.assertEqual(sum(visit['kind'] == 'soccerway' for visit in idle), 1)
 
 
@@ -370,6 +373,32 @@ class HistoryCollectTests(unittest.TestCase):
         self.assertEqual(basketball['2026-10-20T18:00:00+00:00'], '2026-10-21T02:00:00+00:00')
         self.assertEqual(basketball['2026-10-05T18:00:00+00:00'], '2026-11-01T12:00:00+00:00')
         self.assertTrue(all(row['settled_at'] in (OBSERVED, '2026-11-01T12:00:00+00:00') for row in football))
+
+
+class BootstrapHistoryTests(unittest.TestCase):
+    """Tennis and volleyball need months of results before a model can validate (2026-11-10)."""
+
+    def test_bootstrap_walk_reads_tennis_and_volleyball_days_and_advances(self):
+        from history_browser import _advance, _blank_state, plan_visits, BOOTSTRAP_DEPTH_DAYS
+        now = datetime(2026, 11, 10, 12, tzinfo=timezone.utc)
+        state = _blank_state()
+        visits = [v for v in plan_visits(state, set(), now) if v.get('cursor') == 'bootstrap']
+        self.assertEqual({v['sport'] for v in visits}, {'tennis', 'volleyball'})
+        self.assertTrue(all('betexplorer.com/' in v['url'] and '/results/?year=' in v['url'] for v in visits))
+        for v in visits:
+            _advance(state, v, now)
+        self.assertEqual(state['bootstrap_day'], 3)
+        state['bootstrap_day'] = BOOTSTRAP_DEPTH_DAYS + 1
+        self.assertFalse([v for v in plan_visits(state, set(), now) if v.get('cursor') == 'bootstrap'])
+
+    def test_modelled_walk_deepens_even_when_no_league_is_waiting(self):
+        from history_browser import _blank_state, plan_visits, PRIORITY_DEPTH_DAYS
+        now = datetime(2026, 11, 10, 12, tzinfo=timezone.utc)
+        state = _blank_state()
+        state['priority_day'] = 65
+        self.assertTrue([v for v in plan_visits(state, set(), now) if v.get('cursor') == 'priority'])
+        state['priority_day'] = PRIORITY_DEPTH_DAYS + 1
+        self.assertFalse([v for v in plan_visits(state, set(), now) if v.get('cursor') == 'priority'])
 
 
 if __name__ == '__main__':

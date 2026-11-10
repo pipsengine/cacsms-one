@@ -110,6 +110,23 @@ function WinLossBars({days}){const W=430,H=190,L=30,R=6,B=26,T=10;
       <text x={cx} y={H-8} textAnchor="middle" className="sb-axis">{shortDate(d.date)}</text></g>})}
   </svg>}
 
+/* ---------------------------------------------------------------- League coverage */
+
+const BLOCKER_LABEL={insufficient_history:'Team history < 3 games',awaiting_analysis:'Awaiting analysis',no_validated_model:'Model not validated (history depth)',not_priced:'Not priced by SportyBet'};
+function LeagueCoverage(){
+  const {data}=useLiveResource('/coverage/leagues',60000);
+  if(!data||!data.sports?.length)return null;
+  const target=data.target||0.9;
+  return <Card className="sb-coverage" icon={<Gauge size={20}/>} title="League Coverage (Next 7 Days)" sub={`Leagues with upcoming matches predicted by the active model · target ${Math.round(target*100)}% · updated ${hhmm(data.computed_at)}`}
+    action={<span className={'sb-cov-total '+(data.coverage>=target?'ok':'')}>{data.predicted} / {data.leagues} leagues · {pct(data.coverage,0)}</span>}>
+    <div className="sb-table-scroll"><table className="sb-table sb-cov-table"><thead><tr><th>Sport</th><th>Model</th><th>Leagues</th><th>Priced</th><th>Predicted</th><th className="w">Coverage vs {Math.round(target*100)}%</th><th>Qualified</th><th>History</th><th>Main blocker</th></tr></thead>
+    <tbody>{data.sports.map(r=>{const top=Object.entries(r.blockers||{}).sort((a,b)=>b[1]-a[1])[0];const cov=r.coverage||0;
+      return <tr key={r.sport}><td><b>{r.label}</b></td><td>{r.model?`v${r.model.version}`:<span className="muted">none</span>}</td><td className="num">{r.leagues}</td><td className="num">{r.priced}</td><td className="num"><b>{r.predicted}</b></td>
+        <td className="w"><div className="sb-cov-bar"><Bar value={cov} tone={cov>=target?'green':'violet'}/><i style={{left:`${target*100}%`}}/><small>{pct(r.coverage,0)}</small></div></td>
+        <td className="num">{r.qualified}</td><td className="num">{r.history_days==null?'—':`${r.history_days}d`}</td>
+        <td>{top&&top[1]?<span className="sb-chip-soft">{BLOCKER_LABEL[top[0]]||top[0]} · {top[1]}</span>:<span className="pos">On track</span>}</td></tr>})}</tbody></table></div>
+  </Card>}
+
 /* ---------------------------------------------------------------- Dashboard */
 
 export function SingleBettingDashboard(){
@@ -142,6 +159,7 @@ export function SingleBettingDashboard(){
       <div className="sb-insight"><span className="sb-ins-icon red"><Zap size={20}/></span><div><b>System Health</b><small>{data.insights.system_healthy?'Running optimally':'Needs attention'}</small></div></div>
       <button className="sb-icon-btn" onClick={refresh} title="Refresh" aria-label="Refresh"><RefreshCcw size={16}/></button>
     </section>
+    <LeagueCoverage/>
     <p className="sb-footnote">{data.mode==='LIVE'?'Profit and win rate are computed from settled singles; real-money submissions are reconciled separately against SportyBet Bet History.':'Paper records: figures come from stored singles settled against verified final results. The balance is read from your signed-in SportyBet account and is never simulated.'}</p>
     </>}
   </div>}

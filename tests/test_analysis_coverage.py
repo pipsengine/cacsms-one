@@ -102,6 +102,59 @@ class AnalysisCoverageTests(unittest.TestCase):
             chosen = quoted_coverage_fixtures(c, self.now, limit=3)
             self.assertEqual({row['sport'] for row in chosen}, {'football', 'tennis', 'volleyball'})
 
+    def test_fixture_predicted_only_by_a_retired_model_is_predicted_again(self):
+        """2026-11-10: after a model switch the new model covered 31 of 1,190 fixtures,
+        because predictions from retired versions counted as coverage."""
+        from prediction_engine import PIPELINE_VERSION
+        with db.connect() as c:
+            c.execute('PRAGMA foreign_keys=OFF')
+            target = self.fixture(c, sport='football', league='Liga Portugal')
+            params = json.dumps({'pipeline_version': PIPELINE_VERSION})
+            for model_id, active in (('old', 0), ('new', 1)):
+                c.execute("""INSERT INTO sports_ai_model_registry
+                    (id,training_run_id,sport,model_name,version,status,active,parameters_json,metrics_json,lifecycle)
+                    VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (model_id, 'run', 'football', 'ens', model_id, 'active' if active else 'inactive', active, params, '{}',
+                     'active' if active else 'suspended'))
+            c.execute("INSERT INTO sports_ai_feature_snapshots(id,fixture_id,sport,cutoff_at,features_json,source_refs_json,generated_at) VALUES('feat',?,?,?,?,?,?)",
+                      (target['id'], 'football', self.now.isoformat(), json.dumps({'pipeline_version': PIPELINE_VERSION}), '[]', self.now.isoformat()))
+            c.execute("""INSERT INTO sports_ai_engine_predictions(id,run_id,fixture_id,model_id,feature_id,market,outcome,probability,settlement_json,explanation_json)
+                         VALUES('p-old','r',?,'old','feat','HOME','HOME',0.5,'{}','{}')""", (target['id'],))
+            self.assertIn(target['id'], [r['id'] for r in quoted_coverage_fixtures(c, self.now, limit=50)])
+            c.execute("""INSERT INTO sports_ai_engine_predictions(id,run_id,fixture_id,model_id,feature_id,market,outcome,probability,settlement_json,explanation_json)
+                         VALUES('p-new','r2',?,'new','feat','HOME','HOME',0.5,'{}','{}')""", (target['id'],))
+            self.assertNotIn(target['id'], [r['id'] for r in quoted_coverage_fixtures(c, self.now, limit=50)])
+
+    def test_history_follows_the_club_across_spellings_but_not_across_countries(self):
+        """Bookmaker league names differ from the results source; the club's own results are used,
+        but only within the fixture's country so a same-named foreign club is never borrowed."""
+        import prediction_engine
+        prediction_engine._TEAM_INDEX.clear()
+        from prediction_engine import history_competitions
+        with db.connect() as c:
+            for i in range(4):
+                self.fixture(c, sport='football', league='Brazil: Serie B', home='America MG', away=f'Opp {i}',
+                             when=self.now - timedelta(days=10 + i), score=(1, 0))
+                self.fixture(c, sport='football', league='Mexico: Liga MX', home='America', away=f'Rival {i}',
+                             when=self.now - timedelta(days=10 + i), score=(2, 0))
+            chosen = history_competitions(c, 'football', 'Brazil Brasileiro Serie B', ('America FC MG', 'Unknown FC'))
+        self.assertIn('Brazil: Serie B', chosen)
+        self.assertNotIn('Mexico: Liga MX', chosen)
+
+    def test_tennis_players_match_across_bookmaker_and_result_spellings(self):
+        from winner_model import build_winner_features
+        with db.connect() as c:
+            for i in range(4):
+                self.fixture(c, sport='tennis', league='ITF Men', home='Verdes E. D.', away=f'Rival {i}',
+                             when=self.now - timedelta(days=5 + i), score=(2, 0))
+                self.fixture(c, sport='tennis', league='ITF Men', home='Bothma John', away=f'Other {i}',
+                             when=self.now - timedelta(days=5 + i), score=(2, 1))
+            upcoming = self.fixture(c, sport='tennis', league='ITF Men Sharm El Sheikh',
+                                    home='Eric David Verdes', away='John Bothma')
+            built = build_winner_features(c, upcoming)
+        self.assertIsNotNone(built)
+        self.assertEqual((built['features']['home_games'], built['features']['away_games']), (4, 4))
+
     def test_first_attempt_is_not_starved_by_a_retry_in_an_earlier_league(self):
         with db.connect() as c:
             retry = self.fixture(c, sport='football', league='AAA League')

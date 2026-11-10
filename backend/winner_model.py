@@ -13,10 +13,10 @@ import unicodedata
 
 def build_winner_features(connection, fixture):
     from sport_support import PIPELINE_VERSION
-    from prediction_engine import competitions_for_league, parse_time
+    from prediction_engine import history_competitions, parse_time
     cutoff = parse_time(fixture['starts_at'])
     individual = fixture['sport'] in ('tennis', 'table_tennis', 'badminton', 'boxing', 'mma', 'darts', 'snooker', 'etennis')
-    names = competitions_for_league(connection, fixture['sport'], fixture['competition'])
+    names = history_competitions(connection, fixture['sport'], fixture['competition'], (fixture['home'], fixture['away']))
     marks = ','.join('?' for _ in names)
     rows = connection.execute(
         f"""SELECT f.id,f.home,f.away,f.starts_at,f.statistics_json,
@@ -66,6 +66,20 @@ def build_winner_features(connection, fixture):
             return key
         # Full participant tokens may appear surname-first in result sources.
         matches = [known for known in counts if sorted(known.split()) == sorted(key.split())]
+        if len(matches) == 1:
+            return matches[0]
+        # Result sources often abbreviate given names: "Verdes E. D." is "Eric David Verdes".
+        # Accepted only when exactly one known participant fits surname and initials.
+        tokens = key.split()
+        def abbreviated(known):
+            parts = known.split()
+            initials = [t for t in parts if len(t) == 1]
+            surname = [t for t in parts if len(t) > 1]
+            if not initials or not surname or not all(t in tokens for t in surname):
+                return False
+            given = [t[0] for t in tokens if t not in surname]
+            return given[:len(initials)] == initials
+        matches = [known for known in counts if abbreviated(known)]
         return matches[0] if len(matches) == 1 else key
     home, away = resolve(fixture['home']), resolve(fixture['away'])
     if counts.get(home, 0) < 3 or counts.get(away, 0) < 3:

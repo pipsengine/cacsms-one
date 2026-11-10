@@ -226,6 +226,71 @@ def _aligned_team(team, history):
     return max(tied)[3]
 
 
+_GENERIC_REGIONS = frozenset({'international', 'world', 'europe', 'africa', 'asia', 'americas', 'america', 'north',
+                              'south', 'club', 'clubs', 'friendly', 'friendlies', 'int', 'uefa', 'fifa', 'caf', 'concacaf',
+                              'conmebol', 'afc', 'oceania', 'euroleague', 'eurocup', 'fiba'})
+_TEAM_INDEX = {}
+
+
+def _region(competition):
+    """First word of a competition name: its country, or a generic region for cups and international play."""
+    tokens = re.sub(r'[^a-z0-9]+', ' ', league_key(competition).split(':')[0]).split()
+    return tokens[0] if tokens else ''
+
+
+def _team_competition_index(connection, sport):
+    """Per sport and hour: for each club identity, the competitions where it has final results."""
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%d%H')
+    cached = _TEAM_INDEX.get(sport)
+    if cached and cached[0] == stamp:
+        return cached[1]
+    index = {}
+    for row in connection.execute(
+        """SELECT f.home,f.away,f.competition FROM sports_ai_fixtures f
+           JOIN sports_ai_results r ON r.fixture_id=f.id WHERE f.sport=? AND r.status='final'""", (sport,),
+    ):
+        for name in (row[0], row[1]):
+            key = tuple(sorted(_team_tokens(name)))
+            if key:
+                by_comp = index.setdefault(key, {})
+                by_comp[row[2]] = by_comp.get(row[2], 0) + 1
+    _TEAM_INDEX[sport] = (stamp, index)
+    return index
+
+
+def history_competitions(connection, sport, competition, teams):
+    """Competitions whose results may describe these teams.
+
+    The league mapping comes first. When it holds fewer than MIN_TEAM_GAMES results for a
+    team (a bookmaker league name the results source spells differently, or a cup and
+    international fixture), the competitions where that same club has results are added.
+    A club spelling is trusted only within the fixture's country, or, for generic regions,
+    when every competition holding that spelling belongs to one country.
+    """
+    names = competitions_for_league(connection, sport, competition)
+    index = _team_competition_index(connection, sport)
+    region = _region(competition)
+    chosen = list(names)
+    for team in teams:
+        held = index.get(tuple(sorted(_team_tokens(team)))) or {}
+        if sum(count for comp, count in held.items() if comp in names) >= MIN_TEAM_GAMES:
+            continue
+        countries = {_region(comp) for comp in held} - _GENERIC_REGIONS
+        added = 0
+        # At most the 3 competitions where this club has the most results: enough for
+        # MIN_TEAM_GAMES and recent form without loading a large slice of the sport.
+        for comp in sorted(held, key=lambda name: -held[name]):
+            if added >= 3:
+                break
+            comp_region = _region(comp)
+            same_country = region and region not in _GENERIC_REGIONS and comp_region == region
+            unambiguous = (not region or region in _GENERIC_REGIONS) and len(countries) <= 1
+            if (same_country or unambiguous) and comp not in chosen:
+                chosen.append(comp)
+                added += 1
+    return chosen
+
+
 def competitions_for_league(connection, sport, competition):
     key = league_key(competition)
     names = [
@@ -464,7 +529,7 @@ def build_features(connection, fixture):
         return build_winner_features(connection, fixture)
     cutoff = parse_time(fixture['starts_at'])
     half_life = _half_life_days(connection)
-    league_names = competitions_for_league(connection, fixture['sport'], fixture['competition'])
+    league_names = history_competitions(connection, fixture['sport'], fixture['competition'], (fixture['home'], fixture['away']))
     league_marks = ','.join('?' * len(league_names))
     rows = connection.execute(
         f"""SELECT f.id,f.competition,f.home,f.away,f.starts_at,f.statistics_json,f.observed_at,
@@ -1869,8 +1934,11 @@ def quoted_coverage_fixtures(connection, now=None, limit=8):
     stays unqualified.
     """
     current = now or datetime.now(timezone.utc)
+    # Only the ACTIVE model counts as coverage. Retired versions share the pipeline
+    # version, so counting them left every fixture "covered" after a model switch and the
+    # new model never predicted the board (2026-11-10: v5 covered 31 of 1,190 fixtures).
     current_ids = [row['id'] for row in connection.execute(
-        "SELECT id FROM sports_ai_model_registry WHERE json_extract(parameters_json,'$.pipeline_version')=?",
+        "SELECT id FROM sports_ai_model_registry WHERE active=1 AND json_extract(parameters_json,'$.pipeline_version')=?",
         (PIPELINE_VERSION,),
     )]
     model_marks = ','.join('?' for _ in current_ids) or 'NULL'
@@ -1957,7 +2025,9 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None, cover
         fixtures = [dict(row) for row in connection.execute(
             f"""SELECT * FROM sports_ai_fixtures f
                 WHERE {upcoming_fixture_sql('f')}
-                  AND NOT EXISTS (SELECT 1 FROM sports_ai_engine_predictions p WHERE p.fixture_id=f.id)
+                  AND NOT EXISTS (SELECT 1 FROM sports_ai_engine_predictions p
+                    JOIN sports_ai_model_registry m ON m.id=p.model_id AND m.active=1
+                    WHERE p.fixture_id=f.id)
                   AND {_not_recently_skipped_sql('f')}
                 ORDER BY {upcoming_order_sql('f')}
                 LIMIT 40"""

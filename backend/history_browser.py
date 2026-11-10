@@ -24,6 +24,12 @@ COOLDOWN = timedelta(hours=6)
 MAX_DAY_OFFSET = 400
 BETEXPLORER_PER_PASS = 2
 PRIORITY_PAGES = 6
+# Sports SportyBet prices that need months of results before their model can validate.
+# They had only the slow general walk, so they could never reach MIN_TEAM_GAMES per player.
+BOOTSTRAP_HISTORY = (('tennis', 'tennis'), ('volleyball', 'volleyball'))
+BOOTSTRAP_PAGES = 4
+BOOTSTRAP_DEPTH_DAYS = 150
+PRIORITY_DEPTH_DAYS = 180
 SOCCERWAY_WAITING = 3
 
 BETEXPLORER_SPORTS = (
@@ -378,6 +384,8 @@ def _blank_state():
         'day_offset': 1,
         'priority_sport': 0,
         'priority_day': 1,
+        'bootstrap_sport': 0,
+        'bootstrap_day': 1,
         'read_at': {},
         'discovered': [],
         'last_run_at': '',
@@ -497,7 +505,7 @@ def _history_days(state, sports, day_key, sport_key, pages, now):
                 f'https://www.betexplorer.com/{path}/results/'
                 f'?year={day.year}&month={day.month:02d}&day={day.day:02d}'
             ),
-            'cursor': 'priority' if sport_key == 'priority_sport' else 'general',
+            'cursor': {'priority_sport': 'priority', 'bootstrap_sport': 'bootstrap'}.get(sport_key, 'general'),
             **nxt,
         })
     return visits
@@ -507,13 +515,17 @@ def plan_visits(state, wanted, now):
     """Result pages for leagues that still have no finished score, then the general walk."""
     # Reserve general capacity even while priority leagues have missing results.
     visits = _history_days(state, BETEXPLORER_SPORTS, 'day_offset', 'sport_index', BETEXPLORER_PER_PASS, now)
-    if wanted:
+    # The modelled-sport walk keeps deepening history until PRIORITY_DEPTH_DAYS, not only
+    # while a league is waiting for a result: league coverage needs each team's past games.
+    if wanted or int(state.get('priority_day') or 1) <= PRIORITY_DEPTH_DAYS:
         visits += _history_days(
             state, MODELLED_HISTORY, 'priority_day', 'priority_sport', PRIORITY_PAGES, now,
         )
-        soccerway_limit = SOCCERWAY_WAITING
-    else:
-        soccerway_limit = 1
+    if int(state.get('bootstrap_day') or 1) <= BOOTSTRAP_DEPTH_DAYS:
+        visits += _history_days(
+            state, BOOTSTRAP_HISTORY, 'bootstrap_day', 'bootstrap_sport', BOOTSTRAP_PAGES, now,
+        )
+    soccerway_limit = SOCCERWAY_WAITING if wanted else 1
     from prediction_engine import league_key
     catalog = _soccerway_catalog(state)
     due = [item for item in catalog if _soccerway_due(item, state, wanted, now)]
@@ -567,6 +579,9 @@ def _advance(state, visit, now):
         if visit.get('cursor') == 'priority':
             state['priority_sport'] = int(visit['next_priority_sport'])
             state['priority_day'] = int(visit['next_priority_day'])
+        elif visit.get('cursor') == 'bootstrap':
+            state['bootstrap_sport'] = int(visit['next_bootstrap_sport'])
+            state['bootstrap_day'] = int(visit['next_bootstrap_day'])
         else:
             state['sport_index'] = int(visit.get('next_sport_index', state.get('sport_index') or 0))
             state['day_offset'] = int(visit.get('next_day_offset', state.get('day_offset') or 1))
