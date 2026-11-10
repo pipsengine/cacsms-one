@@ -77,7 +77,38 @@ def repair_identities(connection):
     return {'fixtures_repaired': len(changed)}
 
 
-def refresh_models(connection, limit=1):
+# Retraining cadence. Retraining on every new result replaced models several times a day:
+# each new active version voided the board's predictions (MODEL_INACTIVE) and cleared the
+# analysis coverage, so qualification never caught up (2026-11-09/10: football v3 -> v4 -> v5,
+# each training run holding the worker for 20+ minutes).
+VALIDATED_RETRAIN_HOURS = 24
+VALIDATED_RETRAIN_GROWTH = 0.10
+BOOTSTRAP_RETRAIN_HOURS = 6
+BOOTSTRAP_RETRAIN_GROWTH = 0.20
+
+
+def retrain_due(latest, finals, now=None):
+    """Whether a sport's newest model is old enough and its results have grown enough."""
+    if not latest:
+        return True  # first (research) model for a newly seen sport
+    current = now or datetime.now(timezone.utc)
+    try:
+        created = datetime.fromisoformat(str(latest['created_at']).replace('Z', '+00:00'))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return True
+    metrics = json.loads(latest['metrics_json'] or '{}')
+    trained_on = int(metrics.get('available_finals') or 0)
+    validated = latest['calibration_status'] == 'validated'
+    hours, growth = ((VALIDATED_RETRAIN_HOURS, VALIDATED_RETRAIN_GROWTH) if validated
+                     else (BOOTSTRAP_RETRAIN_HOURS, BOOTSTRAP_RETRAIN_GROWTH))
+    if current - created < timedelta(hours=hours):
+        return False
+    return finals > trained_on * (1 + growth) if trained_on else finals > 0
+
+
+def refresh_models(connection, limit=1, now=None):
     from prediction_engine import train_model
     pending = []
     for sport in ANALYSED_SPORTS:
@@ -86,14 +117,17 @@ def refresh_models(connection, limit=1):
         latest = connection.execute(
             'SELECT * FROM sports_ai_model_registry WHERE sport=? ORDER BY julianday(created_at) DESC LIMIT 1', (sport,),
         ).fetchone()
-        signature = dataset_signature(connection, sport)
-        params = json.loads(latest['parameters_json'] or '{}') if latest else {}
-        if params.get('dataset_signature') == signature:
-            continue
         finals = connection.execute(
             """SELECT COUNT(*) FROM sports_ai_fixtures f JOIN sports_ai_results r ON r.fixture_id=f.id
                WHERE f.sport=? AND r.status='final'""", (sport,),
         ).fetchone()[0]
+        # Cheap cadence check first; the full dataset fingerprint scans every final.
+        if not retrain_due(latest, finals, now):
+            continue
+        signature = dataset_signature(connection, sport)
+        params = json.loads(latest['parameters_json'] or '{}') if latest else {}
+        if params.get('dataset_signature') == signature:
+            continue
         pending.append((0 if finals else 1, latest['created_at'] if latest else '', sport))
     trained = []
     for _priority, _created, sport in sorted(pending)[:max(1, limit)]:

@@ -155,6 +155,22 @@ class AnalysisCoverageTests(unittest.TestCase):
         self.assertIsNotNone(built)
         self.assertEqual((built['features']['home_games'], built['features']['away_games']), (4, 4))
 
+    def test_models_are_not_retrained_on_every_new_result(self):
+        """2026-11-10: retraining on each new final replaced the football model three times
+        in a day and voided the board each time. Retraining now follows a cadence."""
+        from analysis_coverage import retrain_due
+        now = datetime(2026, 11, 10, 16, tzinfo=timezone.utc)
+        def model(hours_ago, finals, validated=True):
+            return {'created_at': (now - timedelta(hours=hours_ago)).isoformat(),
+                    'metrics_json': json.dumps({'available_finals': finals}),
+                    'calibration_status': 'validated' if validated else 'uncalibrated'}
+        self.assertFalse(retrain_due(model(8, 28000), 29000, now))          # too soon
+        self.assertFalse(retrain_due(model(30, 28000), 29000, now))         # < 10% more results
+        self.assertTrue(retrain_due(model(30, 28000), 31000, now))          # a day later, +10%
+        self.assertFalse(retrain_due(model(3, 500, False), 900, now))       # bootstrap: too soon
+        self.assertTrue(retrain_due(model(7, 500, False), 900, now))        # bootstrap: 6h, +20%
+        self.assertTrue(retrain_due(None, 0, now))                          # no model yet
+
     def test_first_attempt_is_not_starved_by_a_retry_in_an_earlier_league(self):
         with db.connect() as c:
             retry = self.fixture(c, sport='football', league='AAA League')
@@ -234,7 +250,10 @@ class AnalysisCoverageTests(unittest.TestCase):
             original = dataset_signature(c, 'tennis')
             self.history(c, count=6)
             self.assertNotEqual(dataset_signature(c, 'tennis'), original)
-            second = refresh_models(c, limit=10)
+            # New results alone do not retrain inside the cadence window...
+            self.assertEqual(refresh_models(c, limit=10), [])
+            # ...but do once the window has passed and the results have grown.
+            second = refresh_models(c, limit=10, now=datetime.now(timezone.utc) + timedelta(hours=7))
             self.assertEqual(len(second), 1)
             self.assertNotEqual(first[0]['model_id'], second[0]['model_id'])
 
