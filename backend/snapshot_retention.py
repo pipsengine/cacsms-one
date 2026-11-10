@@ -9,7 +9,19 @@ from collections import Counter
 from datetime import datetime, timezone
 
 
+REQUIRED_INDEXES = ('sports_ai_value_opportunities_odds', 'sports_ai_sportybet_observations_odds')
+
+
 def cleanup_settled_odds(connection, now=None, batch_size=5000):
+    # Without the odds_id indexes (migration 052) each delete scans millions of rows
+    # while holding the write lock, which stalls the whole worker. Never run that way.
+    present = {row[0] for row in connection.execute(
+        f"SELECT name FROM sqlite_master WHERE type='index' AND name IN ({','.join('?' * len(REQUIRED_INDEXES))})",
+        REQUIRED_INDEXES,
+    )}
+    if present != set(REQUIRED_INDEXES):
+        return {'deleted_odds_snapshots': 0, 'status': 'skipped',
+                'reason': 'odds_id indexes missing; apply migration 052'}
     # Verification and deletion see the same database snapshot. A concurrent
     # result correction must cause a retry, never a partially committed cleanup.
     if not connection.in_transaction:

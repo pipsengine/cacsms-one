@@ -26,6 +26,8 @@ class SnapshotRetentionTests(unittest.TestCase):
             CREATE TABLE sports_ai_value_opportunities(id TEXT,odds_id TEXT
                 REFERENCES sports_ai_odds_snapshots(id) ON DELETE SET NULL);
             CREATE TABLE sports_ai_sportybet_observations(odds_id TEXT);
+            CREATE INDEX sports_ai_value_opportunities_odds ON sports_ai_value_opportunities(odds_id);
+            CREATE INDEX sports_ai_sportybet_observations_odds ON sports_ai_sportybet_observations(odds_id);
             CREATE TABLE sports_ai_ticket_legs(ticket_id TEXT,fixture_id TEXT);
             CREATE TABLE sports_ai_audit_events(id TEXT,actor TEXT,action TEXT,
                 metadata_json TEXT,created_at TEXT);
@@ -106,6 +108,13 @@ class SnapshotRetentionTests(unittest.TestCase):
     def test_result_conflict_blocks_cleanup(self):
         self.c.execute("INSERT INTO sports_ai_data_quality_issues VALUES('f',NULL,'high')")
         self.assertEqual(self.cleanup()['ticket_blocker_counts'], {'unresolved_data_issue': 1})
+
+    def test_never_runs_without_odds_reference_indexes(self):
+        # Unindexed, each delete scans millions of rows under the write lock (2026-11-10 stall).
+        self.c.execute('DROP INDEX sports_ai_sportybet_observations_odds')
+        result = cleanup_settled_odds(self.c, self.now)
+        self.assertEqual(result['status'], 'skipped')
+        self.assertFalse(self.c.in_transaction)
 
 
 if __name__ == '__main__':

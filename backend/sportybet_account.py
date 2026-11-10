@@ -362,7 +362,7 @@ async def check_session_async(capture_history=False):
                 if capture_history:
                     await page.goto(BASE_URL + HISTORY_PATH, wait_until='domcontentloaded', timeout=45000)
                     await page.wait_for_timeout(4000)
-                    history = (await page.locator('body').inner_text(timeout=10000))[:60000]
+                    history = bet_list_text(await page.locator('body').inner_text(timeout=10000))
                 save_session(await context.storage_state())
             finally:
                 await browser.close()
@@ -386,45 +386,122 @@ async def check_session_async(capture_history=False):
                           balance_observed_at=now.isoformat())
         detail = 'Signed in.' + (' Balance is hidden on SportyBet (eye icon); it was not read.' if state.get('masked') else '')
         _set_account(connection, 'CONNECTED', detail, now, **fields)
-        if history:
+        if history is not None:
             connection.execute('INSERT INTO sports_ai_sportybet_history(id,captured_at,page,text) VALUES(?,?,?,?)',
                                (str(uuid.uuid4()), now.isoformat(), HISTORY_PATH, history))
             reconcile(connection, history, now)
-    return {'status': 'CONNECTED', 'balance': state.get('balance'), 'history_captured': bool(history)}
+    return {'status': 'CONNECTED', 'balance': state.get('balance'), 'history_captured': history is not None,
+            'history_rows': len(parse_history(history)) if history else 0}
 
 
 def check_session(capture_history=False):
     return asyncio.run(check_session_async(capture_history))
 
 
+ROW_START = re.compile(r'^(\d{2})/(\d{2})/(\d{4}) (\d{2}):(\d{2})$')
+HISTORY_STATES = {'won': 'SETTLED_WON', 'lost': 'SETTLED_LOST', 'void': 'SETTLED_VOID', 'cancelled': 'SETTLED_VOID',
+                  'refunded': 'SETTLED_VOID', 'running': 'PLACED', 'unsettled': 'PLACED', 'pending': 'PLACED'}
+
+
+def bet_list_text(page_text):
+    """Keep only the bet list. The page header and account sidebar (name, phone) are dropped."""
+    lines = [line.strip() for line in (page_text or '').splitlines()]
+    for index, line in enumerate(lines):
+        if ROW_START.match(line):
+            return '\n'.join(item for item in lines[index:] if item)[:60000]
+    return ''
+
+
+def parse_history(text):
+    """Rows of SportyBet's Bet History list: placed time (WAT), type, status, events, stake, return."""
+    rows, current = [], None
+    lines = [line.strip() for line in (text or '').splitlines() if line.strip()]
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        match = ROW_START.match(line)
+        if match:
+            day, month, year, hour, minute = map(int, match.groups())
+            current = {'placed_at': datetime(year, month, day, hour, minute, tzinfo=WAT), 'type': None,
+                       'status': None, 'events': [], 'stake': None, 'return': None}
+            rows.append(current)
+        elif current is not None:
+            lowered = line.casefold()
+            if current['type'] is None and lowered in ('singles', 'single', 'multiple', 'system'):
+                current['type'] = lowered.rstrip('s') if lowered != 'system' else 'system'
+            elif current['status'] is None and lowered in HISTORY_STATES:
+                current['status'] = lowered
+            elif lowered == 'total stake' and index + 1 < len(lines):
+                current['stake'] = _amount(lines[index + 1])
+                index += 1
+            elif lowered == 'total return' and index + 1 < len(lines):
+                current['return'] = _amount(lines[index + 1])
+                index += 1
+            elif ' v ' in line:
+                current['events'].append(line)
+        index += 1
+    return rows
+
+
+def _amount(value):
+    try:
+        return float(str(value).replace(',', ''))
+    except ValueError:
+        return None
+
+
+def _same_event(event, home, away):
+    fold = lambda value: re.sub(r'[^a-z0-9 ]+', ' ', (value or '').casefold()).split()
+    sides = [fold(part) for part in event.split(' v ', 1)]
+    if len(sides) != 2:
+        return False
+    first = lambda tokens: next((t for t in tokens if len(t) > 2), tokens[0] if tokens else '')
+    return first(fold(home)) in sides[0] and first(fold(away)) in sides[1]
+
+
 def reconcile(connection, history_text, now=None):
-    """Match placed or unclear submissions to Bet History by the SportyBet ticket reference."""
+    """Match engine submissions to Bet History rows. A row is claimed only when it is a single,
+    ₦100, the same match, and placed within 10 minutes after the submission. A manual slip of
+    the operator is never claimed, and each history row is used at most once."""
     current = _now(now)
-    text = re.sub(r'\s+', ' ', history_text or '')
+    rows = parse_history(history_text)
+    claimed = set()
     updated = 0
-    for order in connection.execute(
-        "SELECT * FROM sports_ai_single_live_orders WHERE kind='SUBMISSION' AND status IN ('PLACED','UNKNOWN','SUBMITTING')",
-    ).fetchall():
-        ref = order['bookmaker_ref']
-        if not ref or ref not in text:
+    orders = connection.execute(
+        """SELECT o.*, b.home, b.away FROM sports_ai_single_live_orders o
+           JOIN sports_ai_single_bets b ON b.id=o.bet_id
+           WHERE o.kind='SUBMISSION' AND o.status IN ('PLACED','UNKNOWN','SUBMITTING')
+           ORDER BY o.submitted_at""",
+    ).fetchall()
+    for order in orders:
+        sent = _parse(order['submitted_at'] or order['created_at'])
+        match = None
+        for index, row in enumerate(rows):
+            if index in claimed or row['type'] != 'single' or row['stake'] != STAKE or len(row['events']) != 1:
+                continue
+            if not _same_event(row['events'][0], order['home'], order['away']):
+                continue
+            # The list shows minutes only, in WAT.
+            if sent and not (sent - timedelta(minutes=1) <= row['placed_at'] <= sent + timedelta(minutes=10)):
+                continue
+            match = index
+            break
+        if match is None:
             continue
-        window = text[text.index(ref):text.index(ref) + 400]
-        status = None
-        if re.search(r'\bwon\b', window, re.I):
-            status = 'SETTLED_WON'
-        elif re.search(r'\blost\b', window, re.I):
-            status = 'SETTLED_LOST'
-        elif re.search(r'\b(void|cancel+ed|refund)', window, re.I):
-            status = 'SETTLED_VOID'
-        elif order['status'] != 'PLACED':
-            status = 'PLACED'
-        if status:
-            connection.execute(
-                'UPDATE sports_ai_single_live_orders SET status=?, reconciled_at=?, updated_at=? WHERE id=?',
-                (status, current.isoformat(), current.isoformat(), order['id']),
-            )
-            _event(connection, order['bet_id'], 'RECONCILED', f'SportyBet ticket {ref} shown in Bet History as {status.replace("SETTLED_", "").lower()}', current)
-            updated += 1
+        claimed.add(match)
+        row = rows[match]
+        status = HISTORY_STATES.get(row['status'] or 'running', 'PLACED')
+        if status == order['status']:
+            continue
+        payout = row['return'] if status.startswith('SETTLED_') else None
+        connection.execute(
+            'UPDATE sports_ai_single_live_orders SET status=?, payout=?, reconciled_at=?, updated_at=? WHERE id=?',
+            (status, payout, current.isoformat(), current.isoformat(), order['id']),
+        )
+        label = status.replace('SETTLED_', '').lower()
+        _event(connection, order['bet_id'], 'RECONCILED',
+               f"SportyBet Bet History shows {order['home']} v {order['away']} (₦100 single, placed {row['placed_at']:%H:%M} WAT) as {label}", current)
+        updated += 1
     return updated
 
 

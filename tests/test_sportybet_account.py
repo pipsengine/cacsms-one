@@ -187,9 +187,37 @@ class AccountTests(unittest.TestCase):
             # The same bet can never be submitted twice.
             with self.assertRaises(Exception):
                 acct._order(c, bet, 'SUBMISSION', None, now)
-            updated = acct.reconcile(c, 'Ticket ID TK12345678 Braga v Estrela Won 172.00', now)
+            placed = acct._now(now).astimezone(acct.WAT).strftime('%d/%m/%Y %H:%M')
+            # The operator's own manual slip on another match, and a multiple on this match, are never claimed.
+            history = f'''{placed}
+Singles
+Running
+Sitra v Al Najma
+Total Stake
+100.00
+Total Return
+--
+{placed}
+Multiple
+Won
+Braga v Estrela
+Porto v Benfica
+Total Stake
+100.00
+Total Return
+400.00
+{placed}
+Singles
+Won
+SC Braga v Estrela da Amadora
+Total Stake
+100.00
+Total Return
+172.00'''
+            updated = acct.reconcile(c, history, now)
             self.assertEqual(updated, 1)
-            self.assertEqual(c.execute("SELECT status FROM sports_ai_single_live_orders WHERE kind='SUBMISSION'").fetchone()[0], 'SETTLED_WON')
+            order = c.execute("SELECT status, payout FROM sports_ai_single_live_orders WHERE kind='SUBMISSION'").fetchone()
+            self.assertEqual((order['status'], order['payout']), ('SETTLED_WON', 172.0))
 
     def test_unclear_result_pauses_engine_and_blocks_further_submissions(self):
         now = datetime.now(timezone.utc)
@@ -228,6 +256,28 @@ class AccountTests(unittest.TestCase):
             view = acct.status_view(c)
         self.assertEqual(view['balance']['status'], 'SYNCED')
         self.assertIsNotNone(view['reconciliation']['last_history_capture'])
+
+    def test_history_capture_drops_header_and_account_details(self):
+        page = '''NGN 4,755.89
+My Account
+JANE DOE
+08000000000
+Balance
+Sport Bets
+10/11/2026 05:24
+Singles
+Running
+A v B
+Total Stake
+100.00
+Total Return
+--'''
+        kept = acct.bet_list_text(page)
+        self.assertTrue(kept.startswith('10/11/2026 05:24'))
+        self.assertNotIn('JANE DOE', kept)
+        self.assertNotIn('08000000000', kept)
+        rows = acct.parse_history(kept)
+        self.assertEqual((rows[0]['type'], rows[0]['status'], rows[0]['stake'], rows[0]['events']), ('single', 'running', 100.0, ['A v B']))
 
 
 if __name__ == '__main__':

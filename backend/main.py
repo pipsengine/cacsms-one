@@ -41,6 +41,24 @@ def _assert_production_configuration():
     if not os.environ.get('SPORTS_ADMIN_API_KEY') or not os.environ.get('SPORTS_DEV_API_KEY'):
         raise RuntimeError('Production requires SPORTS_ADMIN_API_KEY and SPORTS_DEV_API_KEY')
 
+def _load_local_admin_key():
+    """Local development: read the admin key from backend/.secrets/admin.key (git-ignored)
+    when the process environment does not carry it. Editors such as VS Code keep the
+    environment they started with, so a newly set Windows variable often never arrives.
+    An explicitly set environment variable always wins; production sets it explicitly."""
+    if os.environ.get('SPORTS_ADMIN_API_KEY') or os.environ.get('SPORTS_PRODUCTION') == '1':
+        return
+    from pathlib import Path
+    key_file = Path(os.environ.get('SPORTS_SECRETS_DIR') or Path(__file__).resolve().parent / '.secrets') / 'admin.key'
+    try:
+        key = key_file.read_text(encoding='utf-8').strip()
+    except OSError:
+        return
+    if len(key) >= 20:
+        os.environ['SPORTS_ADMIN_API_KEY'] = key
+
+
+_load_local_admin_key()
 _assert_production_configuration()
 _RATE_BUCKETS={}
 _RATE_LIMIT=240
