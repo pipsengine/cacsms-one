@@ -178,6 +178,20 @@ class AnalysisCoverageTests(unittest.TestCase):
             record_attempt(c, retry, 'insufficient_history', 'test', now=self.now-timedelta(hours=2))
             self.assertEqual(quoted_coverage_fixtures(c, self.now, limit=1)[0]['id'], first['id'])
 
+    def test_this_weeks_fixtures_are_predicted_before_distant_ones(self):
+        """2026-11-10: after a model switch, December and May fixtures shared each batch
+        with the current week, so qualification and the jackpot had nothing to use."""
+        with db.connect() as c:
+            distant = [self.fixture(c, sport='football', league=f'AAA League {i}', when=self.now + timedelta(days=30 + i))
+                       for i in range(3)]
+            near = [self.fixture(c, sport='football', league=f'ZZZ League {i}', when=self.now + timedelta(days=3))
+                    for i in range(3)]
+            chosen = [r['id'] for r in quoted_coverage_fixtures(c, self.now, limit=3)]
+            self.assertEqual(set(chosen), {row['id'] for row in near})
+            # Distant fixtures still follow once the week is covered.
+            later = [r['id'] for r in quoted_coverage_fixtures(c, self.now, limit=6)]
+            self.assertEqual(set(later[3:]), {row['id'] for row in distant})
+
     def test_each_winner_sport_has_own_features_and_never_generates_totals(self):
         from prediction_engine import settle_market
         with db.connect() as c:

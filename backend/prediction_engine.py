@@ -1926,6 +1926,9 @@ def _not_recently_skipped_sql(alias='f'):
     )
 
 
+COVERAGE_PRIORITY_DAYS = 7
+
+
 def quoted_coverage_fixtures(connection, now=None, limit=8):
     """Fair first attempts and bounded retries across upcoming sports and leagues.
 
@@ -1959,20 +1962,25 @@ def quoted_coverage_fixtures(connection, now=None, limit=8):
     covered = rows
     lagos = timezone(timedelta(hours=1))
     today = current.astimezone(lagos).date()
-    current_day = []
-    later = []
+    # Tickets and qualification only use the coming week. Fixtures weeks or months
+    # away must not share a batch with them: after a model switch (2026-11-10) the
+    # rotation spent slots on December and May fixtures while 414 football fixtures
+    # of the current week waited for current-model inference.
+    horizon = current + timedelta(days=COVERAGE_PRIORITY_DAYS)
+    tiers = ([], [], [])
     for row in covered:
         kickoff = parse_time(row['starts_at'])
         if kickoff and kickoff.astimezone(lagos).date() == today:
-            current_day.append(row)
+            tiers[0].append(row)
+        elif kickoff and kickoff <= horizon:
+            tiers[1].append(row)
         else:
-            later.append(row)
+            tiers[2].append(row)
     chosen = []
     # Complete a first pass across every league before retrying older gaps.
-    for pool in ([row for row in current_day if not row.get('last_analysis_attempt')],
-                 [row for row in later if not row.get('last_analysis_attempt')],
-                 [row for row in current_day if row.get('last_analysis_attempt')],
-                 [row for row in later if row.get('last_analysis_attempt')]):
+    pools = [[row for row in tier if not row.get('last_analysis_attempt')] for tier in tiers]
+    pools += [[row for row in tier if row.get('last_analysis_attempt')] for tier in tiers]
+    for pool in pools:
         if len(chosen) < max(1, limit):
             chosen.extend(rotate_by_league(pool, max(1, limit) - len(chosen)))
     return chosen
