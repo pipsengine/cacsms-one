@@ -698,6 +698,7 @@ def build_features(connection, fixture):
         league_strength = (sum(competition_totals) / len(competition_totals)) / (sum(sport_totals) / len(sport_totals))
 
     features.update({
+        'competition': fixture['competition'],
         'pipeline_version': PIPELINE_VERSION,
         'home_rest_days': rest(home_all), 'away_rest_days': rest(away_all),
         'home_games': len(home_all), 'away_games': len(away_all),
@@ -1292,10 +1293,11 @@ def _outcome_probabilities(sport, features, home_score, away_score, rho, family,
         ]
         actual = 0 if home_score > away_score else 2 if home_score < away_score else 1
     elif family == 'monte_carlo':
-        settlement = basketball_monte_carlo_market(adjusted, 'MONEYLINE_HOME', draws=800)
+        settlement = basketball_monte_carlo_market(adjusted, 'MONEYLINE_HOME', draws=2000)
         if not settlement:
             return None, None
-        probabilities = [settlement['p_win'], max(0.0, 1 - settlement['p_win'] - settlement['p_push'])]
+        decisive=max(1e-12,1-settlement['p_push'])
+        probabilities = [settlement['p_win']/decisive, max(0.0, 1 - settlement['p_win'] - settlement['p_push'])/decisive]
         actual = 0 if home_score > away_score else 1
     else:
         home = market_probability('basketball', 'MONEYLINE_HOME', adjusted)
@@ -1451,8 +1453,9 @@ def train_model(connection, sport):
         for family in family_losses
     }
     temperature_rows = calibration_rows or train_rows
+    calibration_family = selected_family if sport == 'basketball' else 'baseline'
     temperature_samples = [
-        _outcome_probabilities(sport, row['features'], row['home_score'], row['away_score'], rho, 'baseline', None, None)
+        _outcome_probabilities(sport, row['features'], row['home_score'], row['away_score'], rho, calibration_family, ridge, booster)
         for row in temperature_rows
     ]
     temperature, best_temperature_loss = 1.0, float('inf')
@@ -1471,7 +1474,7 @@ def train_model(connection, sport):
     binary_pairs = []
     for row in temperature_rows:
         probabilities, actual = _outcome_probabilities(
-            sport, row['features'], row['home_score'], row['away_score'], rho, 'baseline', None, None,
+            sport, row['features'], row['home_score'], row['away_score'], rho, calibration_family, ridge, booster,
         )
         if not probabilities:
             continue
@@ -1483,7 +1486,7 @@ def train_model(connection, sport):
     for row in holdout:
         probabilities, actual = _outcome_probabilities(
             sport, row['features'], row['home_score'], row['away_score'], rho,
-            'baseline' if selected_family == 'monte_carlo' else selected_family, ridge, booster,
+            selected_family, ridge, booster,
         )
         if not probabilities:
             continue
@@ -1687,6 +1690,11 @@ def _blend(left, right, weight):
 
 
 def settle_market(sport, market, features, parameters):
+    if sport == 'basketball' and parameters.get('basketball_loss_candidate'):
+        from basketball_validation import probability
+        artifact=(parameters.get('basketball_loss_artifacts') or {}).get(features.get('competition'))
+        p=probability(artifact,features,market) if artifact else None
+        return dict(features), (None if p is None else {'p_win':p,'p_half_win':0,'p_push':0,'p_half_loss':0,'p_loss':1-p})
     if sport in WINNER_SPORTS:
         return dict(features), market_probability(sport, market, features, temperature=float(parameters.get('temperature') or 1.0))
     weights = parameters.get('ensemble_weights') or {'baseline': 1.0}
@@ -2096,13 +2104,17 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None, cover
                     probability=calibrated[('HOME','DRAW','AWAY').index(market)]
                     settlement={'p_win':probability,'p_half_win':0.0,'p_push':0.0,
                                 'p_half_loss':0.0,'p_loss':1-probability}
-                elif model['active'] and fixture['sport']=='basketball' and market in ('MONEYLINE_HOME','MONEYLINE_AWAY'):
-                    raw=market_probability('basketball','MONEYLINE_HOME',adjusted)['p_win']
+                elif model['active'] and fixture['sport']=='basketball' and not parameters.get('basketball_loss_candidate') and market in ('MONEYLINE_HOME','MONEYLINE_AWAY'):
+                    side_probability=settlement['p_win']/max(1e-12,1-settlement['p_push'])
+                    raw=side_probability if market=='MONEYLINE_HOME' else 1-side_probability
                     calibrated=_temperature([raw,1-raw],temperature)
                     probability=calibrated[0 if market=='MONEYLINE_HOME' else 1]
                     settlement={'p_win':probability,'p_half_win':0.0,'p_push':0.0,
                                 'p_half_loss':0.0,'p_loss':1-probability}
                 registry_active = (fixture['sport'], market) in active_markets
+                if fixture['sport']=='basketball' and parameters.get('basketball_loss_candidate'):
+                    from basketball_losses import eligibility_reason
+                    registry_active=eligibility_reason(connection,model['id'],fixture['competition'],market) is None
                 market_calibrated=(
                     model['active'] and
                     ((fixture['sport'] in GOAL_SPORTS and market in ('HOME','DRAW','AWAY'))
@@ -2489,6 +2501,8 @@ def _governance_state(connection):
 
 def _decision_reasons(model):
     reasons = []
+    if model['sport']=='basketball' and not json.loads(model['parameters_json'] or '{}').get('basketball_loss_candidate'):
+        reasons.append('Basketball release requires a loss-audited candidate and exact league/market holdout approvals.')
     metrics = json.loads(model['metrics_json'] or '{}')
     families = metrics.get('family_log_loss') or {}
     selected = metrics.get('selected_family')
@@ -2728,8 +2742,9 @@ def price_quoted_board(connection, now=None, limit=40):
                     base = [market_probability(fixture['sport'], name, adjusted, rho)['p_win'] for name in names]
                     probability = min(1 - 1e-6, max(1e-6, _temperature(base, temperature)[names.index(market)]))
                     settlement = {'p_win': probability, 'p_half_win': 0.0, 'p_push': 0.0, 'p_half_loss': 0.0, 'p_loss': 1 - probability}
-                elif fixture['sport'] == 'basketball' and market in ('MONEYLINE_HOME', 'MONEYLINE_AWAY'):
-                    raw = market_probability('basketball', 'MONEYLINE_HOME', adjusted)['p_win']
+                elif fixture['sport'] == 'basketball' and not parameters.get('basketball_loss_candidate') and market in ('MONEYLINE_HOME', 'MONEYLINE_AWAY'):
+                    side_probability=settlement['p_win']/max(1e-12,1-settlement['p_push'])
+                    raw=side_probability if market=='MONEYLINE_HOME' else 1-side_probability
                     calibrated = _temperature([raw, 1 - raw], temperature)
                     probability = calibrated[0 if market == 'MONEYLINE_HOME' else 1]
                     settlement = {'p_win': probability, 'p_half_win': 0.0, 'p_push': 0.0, 'p_half_loss': 0.0, 'p_loss': 1 - probability}
@@ -2865,8 +2880,9 @@ def reprice_active_batch(connection, actor, audit, limit=20, now=None):
                 calibrated = _temperature(base, temperature)
                 probability = min(1 - 1e-6, max(1e-6, calibrated[markets.index(market)]))
                 settlement = {'p_win': probability, 'p_half_win': 0.0, 'p_push': 0.0, 'p_half_loss': 0.0, 'p_loss': 1 - probability}
-            elif fixture['sport'] == 'basketball' and market in ('MONEYLINE_HOME', 'MONEYLINE_AWAY'):
-                raw = market_probability('basketball', 'MONEYLINE_HOME', adjusted)['p_win']
+            elif fixture['sport'] == 'basketball' and not parameters.get('basketball_loss_candidate') and market in ('MONEYLINE_HOME', 'MONEYLINE_AWAY'):
+                side_probability=settlement['p_win']/max(1e-12,1-settlement['p_push'])
+                raw=side_probability if market=='MONEYLINE_HOME' else 1-side_probability
                 calibrated = _temperature([raw, 1 - raw], temperature)
                 probability = calibrated[0 if market == 'MONEYLINE_HOME' else 1]
                 settlement = {'p_win': probability, 'p_half_win': 0.0, 'p_push': 0.0, 'p_half_loss': 0.0, 'p_loss': 1 - probability}

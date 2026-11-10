@@ -178,6 +178,7 @@ def _run_cycle():
         reconcile(connection)
     _release_stopped_jobs()
     _monitor_accumulators()
+    _basketball_loss_tick()
     _settled_snapshot_cleanup()
     _high_odds_booking_tick()
     _qualify_priced_board()
@@ -212,6 +213,20 @@ def _run_cycle():
     _rollover_tick()
     _publication_tick()
     _pipeline_snapshot_tick()
+
+
+def _basketball_loss_tick():
+    try:
+        from basketball_losses import investigate
+        from basketball_validation import validate, promote
+        with connect() as connection:
+            report=investigate(connection)
+            candidate=validate(connection)
+            if candidate['status']=='validated':
+                promote(connection,candidate['candidate_id'])
+        _observed('basketball_loss_investigation',{'status':candidate['status'],'counts':{'breaches':len(report['breaches'])}})
+    except Exception as error:
+        _report('basketball loss investigation failed',error)
 
 
 def _settled_snapshot_cleanup():

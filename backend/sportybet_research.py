@@ -554,6 +554,10 @@ def import_observation(connection, observation_id, actor, now=None):
             f"{row['market_label']} / {row['selection_label']}", json.dumps(evidence),
         ),
     )
+    if row['sport']=='basketball':
+        from basketball_losses import period_from_label
+        connection.execute('UPDATE sports_ai_odds_snapshots SET settlement_period=? WHERE id=?',
+                           (period_from_label(row['market_label']),odds_id))
     connection.execute(
         """INSERT INTO sports_ai_odds_history(id,fixture_id,market,decimal_odds,source,observed_at)
            VALUES(?,?,?,?,?,?)""",

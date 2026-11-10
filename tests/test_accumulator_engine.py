@@ -43,6 +43,7 @@ def _row(**overrides):
     row = {
         'opportunity_id': 'opp-1',
         'opportunity_status': 'qualified',
+        'basketball_loss_approved': True,  # this fixture represents an already approved candidate
         'fixture_id': 'fixture-1',
         'sport': 'football',
         'competition': 'League A',
@@ -498,6 +499,16 @@ class AccumulatorPersistenceTests(unittest.TestCase):
                VALUES(?,?,?,?,?,?,?,?,0.8)""",
             (opportunity, prediction_id, quote_id, 1 / odds, edge, status, status, self.now.isoformat()),
         )
+        if sport=='basketball':
+            # Persistence tests start from an approved, explicitly scoped
+            # synthetic candidate. Release failures have dedicated tests.
+            connection.execute("INSERT OR IGNORE INTO sports_ai_basketball_candidates VALUES('fixture-approved','fixture-data','fixture-recipe','{}','{}','validated',?)",(self.now.isoformat(),))
+            connection.execute("INSERT OR IGNORE INTO sports_ai_basketball_market_approvals VALUES('fixture-approved','League A','moneyline','including_overtime','validated','{}',?)",(self.now.isoformat(),))
+            connection.execute('UPDATE sports_ai_model_registry SET parameters_json=?,calibration_status=\'validated\' WHERE id=?',
+                               (json.dumps({'basketball_loss_candidate':'fixture-approved'}),self.basketball_model))
+            connection.execute("UPDATE sports_ai_odds_snapshots SET settlement_period='including_overtime' WHERE id=?",(quote_id,))
+            connection.execute('UPDATE sports_ai_feature_snapshots SET features_json=? WHERE id=?',
+                               (json.dumps({'home_games':20,'away_games':20}),feature_id))
         return {'fixture_id': fixture_id, 'opportunity_id': opportunity, 'kickoff': kickoff}
 
     def test_qualified_records_persist_and_unqualified_do_not(self):

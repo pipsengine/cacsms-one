@@ -300,6 +300,8 @@ def _reject_reason(row, config, current, blocked, markets, competitions, bookmak
     sport = row.get('sport')
     if mode == 'football' and sport != 'football':
         return 'Selection sport is outside the football-only request'
+    if sport == 'basketball' and not row.get('basketball_loss_approved'):
+        return 'Basketball has no passing loss-audit approval for this league and market'
     if mode == 'basketball' and sport != 'basketball':
         return 'Selection sport is outside the basketball-only request'
     if mode not in ('mixed', 'football', 'basketball', '', None) and sport != mode:
@@ -1624,9 +1626,10 @@ def load_opportunity_rows(connection, now=None, keep_markets=False):
     rows = connection.execute(
         """SELECT o.id AS opportunity_id, o.status AS opportunity_status, o.expected_edge,
                   COALESCE(o.data_completeness, s.completeness) AS data_completeness,
+                  s.features_json AS frozen_features_json,
                   p.market, p.outcome, p.probability, p.settlement_json, p.model_id,
                   f.id AS fixture_id, f.sport, f.competition, f.home, f.away, f.starts_at, f.status AS fixture_status,
-                  q.decimal_odds, q.bookmaker, q.observed_at, q.source_url, q.market AS quote_market, q.outcome AS quote_outcome, q.line AS quote_line,
+                  q.decimal_odds, q.bookmaker, q.observed_at, q.source_url, q.market AS quote_market, q.outcome AS quote_outcome, q.line AS quote_line, q.settlement_period,
                   m.version AS model_version, m.model_name, m.sport AS model_sport, m.lifecycle AS model_lifecycle,
                   m.status AS model_status, m.active AS model_active,
                   m.metrics_json, m.calibration_status,
@@ -1644,10 +1647,16 @@ def load_opportunity_rows(connection, now=None, keep_markets=False):
     from market_registry import choose_best
     material=[dict(row) for row in rows]
     for item in material:
+        if item.get('sport') == 'basketball':
+            from basketball_losses import eligibility_reason
+            from basketball_losses import POLICY as basketball_policy
+            frozen=json.loads(item.get('frozen_features_json') or '{}')
+            item['basketball_loss_approved'] = eligibility_reason(connection, item.get('model_id'), item.get('competition'), item.get('market')) is None and item.get('settlement_period')=='including_overtime' and min(frozen.get('home_games') or 0,frozen.get('away_games') or 0)>=basketball_policy['minimum_team_games']
         # Joint probabilities and value use the market-anchored figure the decision was made on.
         if item.get('anchored_probability') is not None:
             item['model_probability'] = item['probability']
             item['probability'] = float(item['anchored_probability'])
+    material = [item for item in material if item.get('sport')!='basketball' or item.get('basketball_loss_approved')]
     return material if keep_markets else choose_best(material)
 
 

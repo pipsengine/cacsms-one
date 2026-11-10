@@ -1085,6 +1085,10 @@ def model_activate(
                WHERE m.id=?""",(model_id,),
         ).fetchone()
         if not model:raise HTTPException(404,'Model not found')
+        if model['sport']=='basketball':
+            candidate=json.loads(model['parameters_json'] or '{}').get('basketball_loss_candidate')
+            if not candidate or not c.execute("SELECT 1 FROM sports_ai_basketball_market_approvals WHERE candidate_id=? AND status='validated'",(candidate,)).fetchone():
+                raise HTTPException(409,'Basketball activation requires passing loss-audit league and market holdouts')
         metrics=json.loads(model['metrics_json'])
         if (model['status']!='validated' or model['training_status']!='validated'
                 or int(model['calibration_sample_size'] or 0)<10
@@ -1984,5 +1988,7 @@ app.include_router(build_draw_router(auth))
 app.include_router(build_weekly_draw_router(auth, require_admin_key))
 app.include_router(build_rollover_router(auth))
 app.include_router(build_learning_router(auth, audit))
+from basketball_loss_api import build_basketball_loss_router
+app.include_router(build_basketball_loss_router(auth, require_admin_key))
 from autonomy_api import build_autonomy_router
 app.include_router(build_autonomy_router(auth, require_admin_key))

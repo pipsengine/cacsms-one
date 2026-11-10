@@ -41,9 +41,9 @@ def evaluate(event):
         if not {"home_xg","away_xg"}<=stats.keys(): return []
         probs=football_probabilities(float(stats["home_xg"]),float(stats["away_xg"]))
     elif event["sport"]=="basketball":
-        stats=event.get("stats",{})
-        if not {"home_points","away_points"}<=stats.keys(): return []
-        probs=basketball_probabilities(float(stats["home_points"]),float(stats["away_points"]))
+        # This illustrative legacy path has no auditable calibrated model or
+        # league/market approval. Basketball tickets use the validated pipeline.
+        return []
     else: return []
     picks=[]
     for market,odds in event["odds"].items():

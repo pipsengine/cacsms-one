@@ -190,6 +190,10 @@ def decide(row, policy, now=None):
     }
     market = str(row.get('market') or '').upper()
     sport = row.get('sport')
+    if sport == 'basketball' and row.get('basketball_release_reason'):
+        return {'state': 'SUSPENDED', 'reason_code': 'BASKETBALL_QUARANTINE',
+                'reason': row['basketball_release_reason'], 'evidence': evidence,
+                'products': [], 'rank_score': None, 'expires_at': None}
     kickoff = _parse(row.get('starts_at'))
     threshold = (policy.get('markets') or {}).get(f'{sport}:{market}') or {}
 
@@ -367,6 +371,13 @@ def _fingerprint(row, policy_version):
 
 
 def _apply_limits(decisions, policy):
+    from basketball_losses import conflicting_groups
+    for conflict in conflicting_groups([item for item in decisions if item['result']['state']=='QUALIFIED']):
+        for item in conflict:
+            item['result'].setdefault('evidence',{})['conflicting_selections'] = [
+                {'prediction_id':peer['row'].get('prediction_id'),'model_id':peer['row'].get('model_id'),'market':peer['row'].get('market')} for peer in conflict]
+            _demote(item, 'CONTRADICTORY_SELECTION', 'Opposing basketball selections qualified in the same decision snapshot; both are held.')
+            item['result']['state'] = 'SUSPENDED'
     qualified = [item for item in decisions if item['result']['state'] == 'QUALIFIED']
     qualified.sort(key=lambda item: (-(item['result']['rank_score'] or 0), item['row'].get('starts_at') or ''))
     kept = []
@@ -402,7 +413,7 @@ def qualified_decision_rows(connection, now):
     """Every current QUALIFIED selection, including those outside the kickoff batch."""
     moment = now.isoformat()
     return connection.execute(
-        """SELECT p.id AS prediction_id, p.market, p.probability, p.explanation_json,
+        """SELECT p.id AS prediction_id, p.market, p.probability, p.explanation_json,s.features_json AS frozen_features_json,
                   f.id AS fixture_id, f.sport, f.competition, f.home, f.away, f.starts_at, f.status AS fixture_status,
                   m.id AS model_id, m.lifecycle, m.active AS model_active, m.version AS model_version,
                   m.metrics_json, m.calibration_status,
@@ -444,7 +455,7 @@ def candidate_rows(connection, now, limit=100):
     per_sport = max(1, min(int(limit), 100))
     return connection.execute(
         """SELECT * FROM (
-           SELECT p.id AS prediction_id, p.market, p.probability, p.explanation_json,
+           SELECT p.id AS prediction_id, p.market, p.probability, p.explanation_json,s.features_json AS frozen_features_json,
                   f.id AS fixture_id, f.sport, f.competition, f.home, f.away, f.starts_at, f.status AS fixture_status,
                   m.id AS model_id, m.lifecycle, m.active AS model_active, m.version AS model_version,
                   m.metrics_json, m.calibration_status,
@@ -489,6 +500,7 @@ def candidate_rows(connection, now, limit=100):
              AND (
                (f.sport IN ('football','frauenfussball','ice_hockey') AND p.market IN ('HOME','DRAW','AWAY'))
                OR (f.sport='basketball' AND p.market IN ('MONEYLINE_HOME','MONEYLINE_AWAY'))
+               OR (f.sport='basketball' AND json_extract(m.parameters_json,'$.basketball_loss_candidate') IS NOT NULL)
                OR (p.market IN ('MONEYLINE_HOME','MONEYLINE_AWAY') AND m.active=1 AND m.lifecycle='active')
                OR EXISTS (
                  SELECT 1 FROM sports_ai_market_registry r
@@ -509,7 +521,7 @@ def candidate_rows(connection, now, limit=100):
 def _row_from_sql(row):
     item = dict(row)
     explanation = _loads(item.get('explanation_json'), {})
-    item['features'] = explanation.get('raw_features') or explanation.get('features') or {}
+    item['features'] = explanation.get('raw_features') or explanation.get('features') or _loads(item.get('frozen_features_json'), {})
     item['metrics'] = _loads(item.get('metrics_json'), {})
     item['quality_hold'] = bool(item.get('quality_hold'))
     item['risk_review_approved'] = bool(item.get('risk_review_approved'))
@@ -620,7 +632,7 @@ def rows_for_fixtures(connection, now, fixture_ids):
     moment = now.isoformat()
     marks = ','.join('?' for _ in fixture_ids)
     return connection.execute(
-        f"""SELECT p.id AS prediction_id, p.market, p.probability, p.explanation_json,
+        f"""SELECT p.id AS prediction_id, p.market, p.probability, p.explanation_json,s.features_json AS frozen_features_json,
                    f.id AS fixture_id, f.sport, f.competition, f.home, f.away, f.starts_at, f.status AS fixture_status,
                    m.id AS model_id, m.lifecycle, m.active AS model_active, m.version AS model_version,
                    m.metrics_json, m.calibration_status,
@@ -679,6 +691,21 @@ def revalidate(connection, actor='sports-ai-worker', now=None, limit=400, fixtur
             continue
         seen.add(key)
         row = _row_from_sql(raw)
+        if row.get('sport') == 'basketball':
+            from basketball_losses import eligibility_reason
+            linked=connection.execute("SELECT canonical_fixture_id FROM sports_ai_fixture_identity_links WHERE source_fixture_id=? AND status='confirmed'",(row.get('fixture_id'),)).fetchone()
+            row['canonical_fixture_id']=linked['canonical_fixture_id'] if linked else row.get('fixture_id')
+            row['basketball_release_reason'] = eligibility_reason(connection, row.get('model_id'), row.get('competition'), row.get('market'))
+            quote = connection.execute("""SELECT q.settlement_period FROM sports_ai_value_opportunities o
+                                        JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id WHERE o.id=?""",
+                                      (row.get('opportunity_id'),)).fetchone()
+            if not row['basketball_release_reason'] and (not quote or quote['settlement_period']!='including_overtime'):
+                row['basketball_release_reason'] = 'The current quote does not establish an including-overtime basketball market.'
+            from basketball_losses import POLICY as basketball_policy
+            if not row['basketball_release_reason'] and min(row['features'].get('home_games') or 0,row['features'].get('away_games') or 0)<basketball_policy['minimum_team_games']:
+                row['basketball_release_reason'] = 'Basketball qualification requires at least 10 prior completed matches for each team.'
+            if not row['basketball_release_reason']:
+                row['market_registry_active'] = True
         prepared.append({
             'row': row,
             'result': decide(row, policy, current),
@@ -724,6 +751,48 @@ def require_bookable(connection, selections):
     for item in selections:
         if not selection_is_qualified(connection, item.get('fixture_id'), item.get('market')):
             raise ValueError('Booking requires a current QUALIFIED decision for every selection')
+
+
+def require_current_qualification(connection, selections, now=None):
+    """Check the exact price and active model, even for previously coded slips."""
+    moment = (now or utc_now()).isoformat()
+    if not selections:
+        raise ValueError('Booking requires qualified selections')
+    from basketball_losses import conflicting_groups
+    if conflicting_groups(selections):
+        raise ValueError('Opposing basketball selections cannot share a booking decision snapshot')
+    for item in selections:
+        fixture = connection.execute('SELECT sport,competition FROM sports_ai_fixtures WHERE id=?', (item.get('fixture_id'),)).fetchone()
+        if fixture and fixture['sport']=='basketball':
+            from basketball_losses import eligibility_reason
+            decision = connection.execute("""SELECT p.model_id FROM sports_ai_qualification_decisions d
+                                            JOIN sports_ai_engine_predictions p ON p.id=d.prediction_id
+                                            WHERE d.fixture_id=? AND d.market=? AND d.state='QUALIFIED' LIMIT 1""",
+                                          (item.get('fixture_id'),item.get('market'))).fetchone()
+            reason = eligibility_reason(connection, decision['model_id'] if decision else None, fixture['competition'], item.get('market'))
+            if reason: raise ValueError(reason)
+        valid = connection.execute(
+            """SELECT 1 FROM sports_ai_qualification_decisions d
+               JOIN sports_ai_engine_predictions p ON p.id=d.prediction_id
+               JOIN sports_ai_model_registry m ON m.id=p.model_id
+               JOIN sports_ai_feature_snapshots fs ON fs.id=p.feature_id
+               JOIN sports_ai_fixtures f ON f.id=d.fixture_id
+               JOIN sports_ai_value_opportunities o ON o.id=d.opportunity_id
+               JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
+               WHERE d.fixture_id=? AND upper(d.market)=upper(?) AND d.state='QUALIFIED'
+                 AND julianday(d.expires_at)>julianday(?)
+                 AND julianday(f.starts_at)>julianday(?)
+                 AND f.status IN ('scheduled','not_started')
+                 AND m.active=1 AND m.lifecycle='active' AND m.calibration_status='validated'
+                 AND o.prediction_id=p.id AND q.fixture_id=f.id AND q.decimal_odds=?
+                 AND (f.sport!='basketball' OR (q.settlement_period='including_overtime'
+                      AND json_extract(fs.features_json,'$.home_games')>=10 AND json_extract(fs.features_json,'$.away_games')>=10))
+                 AND EXISTS (SELECT 1 FROM json_each(d.products_json) WHERE value='booking')
+               LIMIT 1""",
+            (item.get('fixture_id'), item.get('market'), moment, moment, item.get('decimal_odds')),
+        ).fetchone()
+        if not valid:
+            raise ValueError('Every selection requires a current QUALIFIED decision at this price from an active validated model')
 
 
 def ticket_is_bookable(connection, ticket_id, table='sports_ai_accumulator_legs'):

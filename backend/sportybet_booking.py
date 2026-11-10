@@ -190,6 +190,10 @@ def create_job(connection, selections, high_odds=False):
     from booking_policy import load
     from qualification_engine import require_bookable
     policy = load(connection)
+    from qualification_engine import require_current_qualification
+    guarded = selections if high_odds else [item for item in selections if item.get('sport') == 'basketball']
+    if guarded:
+        require_current_qualification(connection, guarded, _now())
     if not high_odds and policy['require_live_qualification']:
         require_bookable(connection, selections)
     limit = 30 if high_odds else 25
@@ -641,7 +645,7 @@ def _sure_odds_ticket(connection, ticket_id):
 
 
 def create_high_odds_job(connection, ticket_id):
-    """Queue one high-odds ticket. The qualified-slip rule does not apply. No wager is placed."""
+    """Queue a qualified high-odds ticket. No wager is placed."""
     if not _high_odds_ticket(connection, ticket_id):
         raise ValueError('A high-odds booking needs selections at least 80% in one price band')
     selections = ticket_selections(connection, ticket_id)
@@ -674,6 +678,13 @@ def _ticket_product(connection, ticket_id):
 
 
 def _store_displayed_code(connection, ticket_id, code, evidence):
+    from qualification_engine import require_current_qualification
+    selections = ticket_selections(connection, ticket_id)
+    guarded = selections if _ticket_product(connection, ticket_id) in ('high_odds', 'sure_odds') else [
+        item for item in selections if item.get('sport') == 'basketball'
+    ]
+    if guarded:
+        require_current_qualification(connection, guarded, _now())
     existing = connection.execute(
         "SELECT accumulator_ticket_id FROM sports_ai_booking_codes WHERE code=? AND bookmaker='SportyBet'",
         (code,),
@@ -1474,6 +1485,15 @@ async def _execute_job(job_id, page_url=None):
             _set_job(connection,job_id,'FAILED',error='Retry limit reached',reason_code='RETRY_EXHAUSTED')
             return {'id': job_id, 'status': 'FAILED', 'error': 'Retry limit reached', 'places_wager': False}
         selections = json.loads(job['selections_json'])
+        from qualification_engine import require_current_qualification
+        guarded = [item for item in selections if item.get('sport') == 'basketball'
+                   or _ticket_product(connection, item.get('ticket_id')) in ('high_odds', 'sure_odds')]
+        try:
+            if guarded:
+                require_current_qualification(connection, guarded, _now())
+        except ValueError as error:
+            _set_job(connection, job_id, 'FAILED', error=str(error), reason_code='QUALIFICATION_LAPSED')
+            return {'id': job_id, 'status': 'FAILED', 'error': str(error), 'places_wager': False}
         from booking_policy import load as load_policy
         policy = load_policy(connection)
         from high_odds_service import validate_snapshot
@@ -1615,6 +1635,16 @@ async def _execute_job(job_id, page_url=None):
                 await browser.close()
         with connect() as connection:
             ticket_id = next((item.get('ticket_id') for item in selections if item.get('ticket_id')), None)
+            if result['status'] == 'CODE_GENERATED' and guarded:
+                shown = {(item.get('fixture_id'), item.get('market')): item.get('page_odds')
+                         for item in result.get('seen') or []}
+                displayed = [{**item, 'decimal_odds': shown.get((item.get('fixture_id'), item.get('market')))}
+                             for item in guarded]
+                try:
+                    require_current_qualification(connection, displayed, _now())
+                except ValueError as error:
+                    result = {**result, 'status': 'FAILED', 'error': str(error),
+                              'reason_code': 'QUALIFICATION_LAPSED'}
             if result['status'] == 'CODE_GENERATED':
                 dropped = (result.get('skipped') or []) + started_legs
                 if ticket_id and dropped:

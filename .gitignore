@@ -3,3 +3,4 @@ __pycache__/
 .venv/
 backend/*.sqlite3*
 backend/catalog_evidence/
+reports/private/

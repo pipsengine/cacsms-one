@@ -3,6 +3,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -80,7 +81,8 @@ class BookingTests(unittest.TestCase):
         self.assertEqual(result['qualified'], 0)
         self.assertFalse(result['places_wager'])
 
-    def test_duplicate_qualified_set_is_not_queued_twice(self):
+    @patch('qualification_engine.require_current_qualification')
+    def test_duplicate_qualified_set_is_not_queued_twice(self, qualification):
         with db.connect() as connection:
             connection.execute('DELETE FROM sports_ai_booking_jobs')
             moment = '2026-11-04T09:00:00+00:00'
@@ -98,7 +100,8 @@ class BookingTests(unittest.TestCase):
         self.assertTrue(second['duplicate'])
         self.assertEqual(first['id'], second['id'])
 
-    def test_closed_window_does_not_open_a_browser(self):
+    @patch('qualification_engine.require_current_qualification')
+    def test_closed_window_does_not_open_a_browser(self, qualification):
         from datetime import datetime, timezone
         with db.connect() as connection:
             connection.execute('DELETE FROM sports_ai_booking_jobs')
@@ -425,8 +428,8 @@ class BookingTests(unittest.TestCase):
         self.assertEqual(result['seen'][0]['page_odds'], 1.58)
         self.assertEqual(home, 'yes')
 
-    def test_sure_odds_displayed_code_survives_page_price_drift(self):
-        """Page odds outside 2.00–2.95 must not discard a sure-odds displayed code."""
+    def test_sure_odds_displayed_code_requires_qualification_after_price_drift(self):
+        """A displayed code does not establish model validation or qualify a new price."""
         from datetime import datetime, timezone
         from sportybet_booking import _apply_displayed_prices, _store_displayed_code, _sure_odds_ticket
         moment = datetime(2026, 11, 8, 7, 53, tzinfo=timezone.utc).isoformat()
@@ -483,7 +486,8 @@ class BookingTests(unittest.TestCase):
                 ],
             )
             self.assertFalse(_sure_odds_ticket(connection, 'sure-ticket'))
-            _store_displayed_code(connection, 'sure-ticket', 'Q3XTSR', 'isolated sure-odds evidence')
+            with self.assertRaisesRegex(ValueError, 'active validated model'):
+                _store_displayed_code(connection, 'sure-ticket', 'Q3XTSR', 'isolated sure-odds evidence')
             stored = connection.execute(
                 "SELECT code, accumulator_ticket_id FROM sports_ai_booking_codes WHERE code='Q3XTSR'",
             ).fetchone()
@@ -492,8 +496,7 @@ class BookingTests(unittest.TestCase):
             connection.execute("DELETE FROM sports_ai_accumulator_tickets WHERE id='sure-ticket'")
             connection.execute("DELETE FROM sports_ai_accumulator_runs WHERE id='sure-run'")
             connection.execute("DELETE FROM sports_ai_market_registry WHERE sport='basketball' AND market_key='MONEYLINE_HOME'")
-        self.assertEqual(stored['code'], 'Q3XTSR')
-        self.assertEqual(stored['accumulator_ticket_id'], 'sure-ticket')
+        self.assertIsNone(stored)
 
     def test_a_failed_job_does_not_take_the_current_ticket_slot(self):
         from datetime import datetime, timezone

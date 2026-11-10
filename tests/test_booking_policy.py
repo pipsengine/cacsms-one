@@ -5,6 +5,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -65,6 +66,10 @@ class BookingPolicyTests(unittest.TestCase):
         db.DB = Path(self.temp.name) / 'policy.sqlite3'
         db.initialize()
         self.now = datetime.now(timezone.utc)
+        # These fixtures test booking mechanics after qualification. The real
+        # basketball evidence gate is exercised against SQLite in test_basketball_losses.
+        qualification=patch('qualification_engine.require_current_qualification')
+        qualification.start();self.addCleanup(qualification.stop)
 
     def tearDown(self):
         db.DB = self.previous
@@ -148,7 +153,8 @@ class BookingPolicyTests(unittest.TestCase):
             status, legs = c.execute('SELECT status,leg_count FROM sports_ai_accumulator_tickets').fetchone()
         self.assertEqual((status, legs), ('qualified', 3))
 
-    def test_books_at_displayed_prices_and_drops_the_missing_leg(self):
+    @patch('qualification_engine.require_current_qualification')
+    def test_books_at_displayed_prices_and_drops_the_missing_leg(self, qualification):
         with db.connect() as c:
             self._ticket(c, status='qualified')
             job = create_job(c, ticket_selections(c, 't1'))['id']
@@ -217,7 +223,8 @@ class BookingPolicyTests(unittest.TestCase):
             self.assertIsNone(c.execute('SELECT code FROM sports_ai_booking_codes').fetchone())
 
 
-    def test_batch_books_every_ready_ticket_without_waiting_for_the_gap(self):
+    @patch('qualification_engine.require_current_qualification')
+    def test_batch_books_every_ready_ticket_without_waiting_for_the_gap(self, qualification):
         from unittest.mock import patch
         import sportybet_booking
         booked = []

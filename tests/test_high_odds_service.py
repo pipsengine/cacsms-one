@@ -44,6 +44,13 @@ class HighOddsServiceTests(unittest.TestCase):
                 sport=sport,market='HOME' if sport=='football' else 'MONEYLINE_HOME',
                 odds=odds,probability=probability,edge=probability*odds-1)
             c.execute('UPDATE sports_ai_fixtures SET competition=? WHERE id=?',(f'{sport} league {index}',item['fixture_id']))
+            if sport=='basketball':
+                c.execute("""INSERT OR IGNORE INTO sports_ai_basketball_candidates VALUES('test-audited','fixture-dataset','fixture-recipe','{}','{}','validated',?)""",(self.now.isoformat(),))
+                c.execute("UPDATE sports_ai_model_registry SET parameters_json=? WHERE id=?",
+                          (json.dumps({'basketball_loss_candidate':'test-audited'}),self.basketball_model))
+                c.execute("""INSERT OR IGNORE INTO sports_ai_basketball_market_approvals VALUES('test-audited',?,'moneyline','including_overtime','validated','{}',?)""",
+                          (f'{sport} league {index}',self.now.isoformat()))
+                c.execute("UPDATE sports_ai_odds_snapshots SET settlement_period='including_overtime' WHERE fixture_id=?",(item['fixture_id'],))
             values.append(item)
         c.execute("UPDATE sports_ai_odds_snapshots SET source_url='https://www.sportybet.com/ng/sport/football'")
         revalidate(c,'test',self.now,limit=1000)
@@ -51,6 +58,42 @@ class HighOddsServiceTests(unittest.TestCase):
 
     def event(self,c):
         return service.enqueue(c,'test.opportunities',{},'test-event',self.now)
+
+    def test_board_excludes_research_models_even_with_a_qualified_decision(self):
+        from high_odds_board import _rows
+        with db.connect() as c:
+            self.seed(c, 1, odds=1.3, probability=.94, sport='basketball')
+            with patch('market_registry.holdout_ready', return_value=True):
+                self.assertEqual(len(_rows(c, self.now, self.now+timedelta(days=3), self.now)), 1)
+                c.execute("UPDATE sports_ai_model_registry SET active=0,lifecycle='research' WHERE sport='basketball'")
+                self.assertEqual(_rows(c, self.now, self.now+timedelta(days=3), self.now), [])
+
+    def test_board_excludes_expired_or_suspended_decisions(self):
+        from high_odds_board import _rows
+        with db.connect() as c:
+            self.seed(c, 1, odds=1.3, probability=.94, sport='basketball')
+            with patch('market_registry.holdout_ready', return_value=True):
+                c.execute("UPDATE sports_ai_qualification_decisions SET state='SUSPENDED'")
+                self.assertEqual(_rows(c, self.now, self.now+timedelta(days=3), self.now), [])
+                c.execute("UPDATE sports_ai_qualification_decisions SET state='QUALIFIED',expires_at=?",
+                          ((self.now-timedelta(minutes=1)).isoformat(),))
+                self.assertEqual(_rows(c, self.now, self.now+timedelta(days=3), self.now), [])
+
+    def test_basketball_booking_checks_model_and_price_even_with_relaxed_policy(self):
+        from qualification_engine import require_current_qualification
+        from sportybet_booking import create_job
+        with db.connect() as c:
+            self.seed(c, 1, odds=1.3, probability=.94, sport='basketball')
+            d = c.execute("SELECT fixture_id,market FROM sports_ai_qualification_decisions WHERE state='QUALIFIED'").fetchone()
+            selection = {**dict(d), 'sport':'basketball', 'decimal_odds':1.3}
+            require_current_qualification(c, [selection], self.now)
+            with self.assertRaises(ValueError):
+                require_current_qualification(c, [{**selection, 'decimal_odds':1.2}], self.now)
+            c.execute("UPDATE sports_ai_model_registry SET active=0,lifecycle='research' WHERE sport='basketball'")
+            with patch('sportybet_booking._now', return_value=self.now):
+                for high_odds in (False, True):
+                    with self.assertRaisesRegex(ValueError, 'active validated model'):
+                        create_job(c, [selection], high_odds=high_odds)
 
     def test_all_eight_categories_end_to_end_and_no_shared_matches(self):
         with db.connect() as c:

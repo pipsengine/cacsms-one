@@ -486,7 +486,8 @@ def _chunked(connection, sql, ids, extra=()):
     return rows
 
 
-def _rows(connection, start, end):
+def _rows(connection, start, end, now=None):
+    moment = (now or datetime.now(timezone.utc)).isoformat()
     fixtures = {
         row['id']: row
         for row in connection.execute(
@@ -530,10 +531,22 @@ def _rows(connection, start, end):
         return []
     opportunities = _chunked(
         connection,
-        """SELECT id, prediction_id, odds_id, evaluated_at
-           FROM sports_ai_value_opportunities
-           WHERE odds_id IS NOT NULL AND prediction_id IN ({marks})""",
+        """SELECT o.id, o.prediction_id, o.odds_id, o.evaluated_at
+           FROM sports_ai_value_opportunities o
+           JOIN sports_ai_qualification_decisions d
+             ON d.prediction_id=o.prediction_id AND d.opportunity_id=o.id
+           JOIN sports_ai_engine_predictions p ON p.id=o.prediction_id
+           JOIN sports_ai_model_registry m ON m.id=p.model_id
+           WHERE julianday(d.expires_at)>julianday(?)
+             AND o.odds_id IS NOT NULL AND o.prediction_id IN ({marks})
+             AND d.state='QUALIFIED'
+             AND m.active=1 AND m.lifecycle='active' AND m.calibration_status='validated'
+             AND (m.sport!='basketball' OR EXISTS(SELECT 1 FROM sports_ai_feature_snapshots fs
+                  WHERE fs.id=p.feature_id AND json_extract(fs.features_json,'$.home_games')>=10
+                    AND json_extract(fs.features_json,'$.away_games')>=10))
+             AND EXISTS (SELECT 1 FROM json_each(d.products_json) WHERE value='booking')""",
         [row['id'] for row in latest_prediction.values()],
+        (moment,),
     )
     linked = {}
     for row in opportunities:
@@ -576,6 +589,10 @@ def _rows(connection, start, end):
         fixture = fixtures[item['fixture_id']]
         if fixture['sport'] not in BOOKABLE_SPORTS or not fixture['starts_at']:
             continue
+        if fixture['sport'] == 'basketball':
+            from basketball_losses import eligibility_reason
+            if eligibility_reason(connection, item['model_id'], fixture['competition'], item['market']):
+                continue
         # Market-anchored probability: the 80% floor applies to the blend, and large
         # disagreements with SportyBet are held back (market_anchor.py).
         anchored = anchor(anchors, fixture['sport'], fixture['competition'], item['probability'], odds)
@@ -617,7 +634,7 @@ def _candidates(connection, day, now):
     if day['end'] <= now.astimezone(WAT):
         return []
     cutoff = now.astimezone(timezone.utc).isoformat()
-    return [row for row in _rows(connection, day['start'], day['end']) if str(row['starts_at']) > cutoff]
+    return [row for row in _rows(connection, day['start'], day['end'], now) if str(row['starts_at']) > cutoff]
 
 
 def _booking_index(connection):
@@ -702,6 +719,8 @@ def _coded_payload(connection, day, band_id):
     ).fetchall()
     if not legs or not code:
         return None
+    if not _qualified_slip(connection, legs):
+        return None
     band = next(item for item in ODDS_BANDS if item['id'] == band_id)
     chosen = []
     product = 1.0
@@ -757,6 +776,8 @@ def _stored_slips(connection, day, product):
         legs = [dict(item) for item in connection.execute('SELECT * FROM sports_ai_accumulator_legs WHERE ticket_id=?', (row['id'],))]
         if not legs:
             continue
+        if not _qualified_slip(connection, legs):
+            continue
         odds = joint = 1.0
         for leg in legs:
             leg.update({'confidence': leg.get('reliability'), 'preferred': False})
@@ -766,6 +787,15 @@ def _stored_slips(connection, day, product):
         payload.update({'id': row['id'], 'signature': row['signature']})
         payloads.append(payload)
     return payloads
+
+
+def _qualified_slip(connection, legs):
+    from qualification_engine import require_current_qualification
+    try:
+        require_current_qualification(connection, [dict(leg) for leg in legs])
+    except ValueError:
+        return False
+    return True
 
 
 def sure_odds_board(connection, now):
