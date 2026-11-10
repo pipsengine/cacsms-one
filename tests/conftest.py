@@ -16,6 +16,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 _EVIDENCE = Path(tempfile.mkdtemp(prefix='sports-test-evidence-'))
 # Set before any test module imports sportybet_booking, so the module default is safe too.
 os.environ['SPORTS_BOOKING_EVIDENCE_DIR'] = str(_EVIDENCE)
+# Account session files and screenshots never touch the real .secrets or account_evidence.
+os.environ['SPORTS_SECRETS_DIR'] = str(_EVIDENCE / 'secrets')
+os.environ['SPORTS_ACCOUNT_EVIDENCE_DIR'] = str(_EVIDENCE / 'account')
 
 
 @pytest.fixture(autouse=True)

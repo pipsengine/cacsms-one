@@ -1998,3 +1998,5 @@ from prediction_integrity import build_integrity_router
 app.include_router(build_integrity_router(auth, require_admin_key))
 from single_betting import build_single_betting_router
 app.include_router(build_single_betting_router(auth, require_admin_key))
+from sportybet_account import build_account_router
+app.include_router(build_account_router(auth, require_admin_key))

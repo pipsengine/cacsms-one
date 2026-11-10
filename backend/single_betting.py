@@ -292,7 +292,9 @@ def run_cycle(connection, now=None, candidates=None):
         _save_setting(connection, STATUS_KEY, {**result, 'last_run': current.isoformat(), 'eligible': 0, 'rejected': {}}, current)
         return result
 
-    # Re-validate the queue and place the next PLACE_PER_TICK entries.
+    # Re-validate the queue and place the next PLACE_PER_TICK entries. In a live mode the
+    # account lane (sportybet_account.run_once) places the head of the queue instead.
+    live_mode = (state.get('execution_mode') or 'PAPER') != 'PAPER'
     queued = connection.execute(
         "SELECT * FROM sports_ai_single_bets WHERE status='QUEUED' ORDER BY created_at, id",
     ).fetchall()
@@ -306,7 +308,7 @@ def run_cycle(connection, now=None, candidates=None):
             _event(connection, bet['id'], 'CANCELLED', f'Removed from queue – {_fixture(bet)}: {reason}', current)
             result['cancelled'] += 1
             continue
-        if result['placed'] >= PLACE_PER_TICK:
+        if live_mode or result['placed'] >= PLACE_PER_TICK:
             continue
         count, staked = _day_usage(connection, day)
         if bet['local_date'] != day and capacity(count, staked) <= 0:
@@ -348,6 +350,80 @@ def run_cycle(connection, now=None, candidates=None):
         'freshest_price': max((i.get('odds_observed_at') or '' for i in pool['eligible']), default=None) or None,
     }, current)
     return result
+
+
+# ---------------------------------------------------------------- live execution hand-off
+
+def next_for_execution(connection, now=None):
+    """Head of the queue after re-validation, within today's caps. Failing entries are cancelled."""
+    current = _now(now)
+    max_age = _max_odds_age(connection)
+    for bet in connection.execute(
+        "SELECT * FROM sports_ai_single_bets WHERE status='QUEUED' ORDER BY created_at, id",
+    ).fetchall():
+        fresh, reason = _recheck(connection, bet, current, max_age)
+        if fresh is None:
+            connection.execute(
+                "UPDATE sports_ai_single_bets SET status='CANCELLED', reason=? WHERE id=? AND status='QUEUED'",
+                (reason, bet['id']),
+            )
+            _event(connection, bet['id'], 'CANCELLED', f'Removed from queue – {_fixture(bet)}: {reason}', current)
+            continue
+        day = local_date(current)
+        count, staked = _day_usage(connection, day)
+        if bet['local_date'] != day and capacity(count, staked) <= 0:
+            return None
+        item = dict(bet)
+        item.update(decimal_odds=fresh['decimal_odds'], odds_observed_at=fresh['observed_at'], expected_value=fresh['ev'])
+        return item
+    return None
+
+
+def apply_execution(connection, bet, outcome, order_status, detail, kind, now=None):
+    """Record what the account lane did. A live result never rewrites the paper mode column."""
+    current = _now(now)
+    day = local_date(current)
+    if outcome in ('PAPER_PLACED', 'LIVE_PLACED', 'UNKNOWN'):
+        # An unclear submission counts as placed: money may have left the account.
+        connection.execute(
+            """UPDATE sports_ai_single_bets
+               SET status='PLACED', decimal_odds=?, odds_observed_at=?, expected_value=?, placed_at=?, local_date=?, reason=?
+               WHERE id=? AND status='QUEUED'""",
+            (bet['decimal_odds'], bet.get('odds_observed_at'), bet['expected_value'], current.isoformat(), day,
+             detail[:300], bet['id']),
+        )
+        action = {'PAPER_PLACED': 'REHEARSED', 'LIVE_PLACED': 'LIVE_PLACED', 'UNKNOWN': 'EXCEPTION'}[outcome]
+        _event(connection, bet['id'], action, f"{_fixture(bet)} {bet['selection']} – {detail}", current)
+        if outcome == 'UNKNOWN':
+            set_paused(connection, True, 'live-execution', current)
+    elif outcome == 'CANCEL':
+        connection.execute(
+            "UPDATE sports_ai_single_bets SET status='CANCELLED', reason=? WHERE id=? AND status='QUEUED'",
+            (f'{kind.title()} stopped: {detail}'[:300], bet['id']),
+        )
+        _event(connection, bet['id'], 'CANCELLED', f"{_fixture(bet)} – {kind.lower()} stopped: {detail}", current)
+    else:  # WAIT: session or gate not ready; the bet stays queued
+        last = connection.execute(
+            'SELECT action, detail FROM sports_ai_single_events WHERE bet_id=? ORDER BY created_at DESC LIMIT 1', (bet['id'],),
+        ).fetchone()
+        message = f"{_fixture(bet)} waiting – {detail}"
+        if not last or last['action'] != 'WAITING' or last['detail'] != message[:500]:
+            _event(connection, bet['id'], 'WAITING', message, current)
+
+
+def _account_balance(connection, current):
+    """The balance exactly as last read from the signed-in SportyBet header, with its time."""
+    from sportybet_account import status_view
+    try:
+        view = status_view(connection, current)
+    except Exception:
+        return {'value': None, 'status': 'NOT_CONNECTED', 'observed_at': None,
+                'note': 'No SportyBet account is connected. A balance is never simulated.'}
+    balance = view['balance']
+    note = {'SYNCED': 'Read from your signed-in SportyBet account.',
+            'STALE': 'Last value read from SportyBet; the session has not been checked recently.',
+            'NOT_CONNECTED': 'No SportyBet account is connected. A balance is never simulated.'}[balance['status']]
+    return {**balance, 'account_status': view['account']['status'], 'note': note}
 
 
 # ---------------------------------------------------------------- read models
@@ -413,12 +489,11 @@ def dashboard(connection, now=None):
     state = runtime(connection)
     risk = staked_today / DAILY_STAKE_LIMIT
     return {
-        'mode': 'PAPER', 'places_wager': False, 'real_money_enabled': False,
+        'mode': state.get('execution_mode') or 'PAPER', 'places_wager': False, 'real_money_enabled': False,
         'generated_at': current.isoformat(), 'local_date': day, 'timezone': 'Africa/Lagos',
         'autonomous': {'running': beat['fresh'] and not state.get('paused'), 'paused': bool(state.get('paused')),
                        'worker_fresh': beat['fresh'], 'last_cycle': status.get('last_run')},
-        'balance': {'value': None, 'status': 'NOT_CONNECTED',
-                    'note': 'No permitted SportyBet account interface is connected. A balance is never simulated.'},
+        'balance': _account_balance(connection, current),
         'rules': {'stake': STAKE, 'daily_target': list(DAILY_TARGET), 'daily_limit': DAILY_LIMIT,
                   'daily_stake_limit': DAILY_STAKE_LIMIT, 'min_ev': MIN_EV},
         'today': {
@@ -487,8 +562,15 @@ def engine_view(connection, now=None):
     ).fetchall()]
     eligible = int(status.get('eligible') or 0)
     focus = queue[0] if queue else (recent[0] if recent else None)
+    try:
+        from sportybet_account import status_view
+        live = status_view(connection, current)
+    except Exception:
+        live = None
     return {
-        'mode': 'PAPER', 'places_wager': False, 'real_money_enabled': False,
+        'mode': 'PAPER' if not live else live['execution']['mode'],
+        'places_wager': bool(live and live['execution']['submission_allowed']),
+        'real_money_enabled': bool(live and live['execution']['submission_allowed']),
         'generated_at': current.isoformat(),
         'strategy': {'stake': STAKE, 'daily_target': list(DAILY_TARGET), 'daily_limit': DAILY_LIMIT,
                      'daily_stake_limit': DAILY_STAKE_LIMIT, 'min_ev': MIN_EV, 'place_per_tick': PLACE_PER_TICK,
@@ -507,14 +589,16 @@ def engine_view(connection, now=None):
             'intelligence_feed': 'Active' if stages else 'Unavailable',
             'selection_engine': 'Paused' if state.get('paused') else ('Running' if last else 'Waiting for first cycle'),
             'execution_worker': 'Running' if beat['fresh'] else 'Heartbeat stale',
-            'browser_session': 'Not used (paper mode)',
+            'browser_session': (live or {}).get('account', {}).get('status', 'NOT_CONNECTED'),
             'data_sync': status.get('freshest_price'),
             'last_update': status.get('last_run'),
         },
         'automation': {
             'auto_select': True, 'auto_place_paper': not state.get('paused'), 'auto_settle': True,
-            'auto_learn': True, 'booking_code_capture': False, 'real_money': False,
+            'auto_learn': True, 'booking_code_capture': False,
+            'real_money': bool(live and live['execution']['submission_allowed']),
         },
+        'live': live,
     }
 
 

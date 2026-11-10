@@ -115,3 +115,13 @@
 @media (max-width:1200px){.sb-row.three{grid-template-columns:1fr 1fr}.sb-row.three>:first-child{grid-column:1/-1}.sb-kpis.five{grid-template-columns:repeat(3,minmax(0,1fr))}.sb-pipeline-panel{flex-direction:column;align-items:stretch}.sb-pipe-intro{flex-basis:auto}}
 @media (max-width:980px){.sb-engine{grid-template-columns:minmax(0,1fr);grid-template-areas:"strat" "side" "kpis" "queue" "mid" "log"}.sb-a-mid{grid-template-columns:1fr}.sb-row.three{grid-template-columns:1fr}.sb-insight{border-left:0;min-width:45%}}
 @media (max-width:650px){.sb-kpis.six,.sb-kpis.five{grid-template-columns:repeat(2,minmax(0,1fr))}.sb-heading h1{font-size:20px}.sb-header-right{width:100%}.sb-insight{min-width:100%}.sb-kpi-body>strong{font-size:20px}}
+.sb-pill.live{background:#fee2e2;color:#b91c1c}.sb-pill.live i{display:none}
+.sb-switch.on{background:#dc2626;justify-content:flex-start;padding-left:7px;color:#fff}.sb-switch.on::before{left:auto;right:3px}
+.sb-account .sb-note,.sb-auth .sb-note{font-size:12px;color:var(--sb-muted);margin:8px 0 0;line-height:1.45}
+.sb-account code{background:#f1f5f9;padding:1px 5px;border-radius:4px;font-size:11px;word-break:break-word}
+.sb-acct-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:10px}
+.sb-acct-actions input{border:1px solid var(--sb-line);border-radius:8px;padding:7px 9px;min-width:0;flex:1 1 120px}
+.sb-mode{margin-top:12px}.sb-mode small{color:var(--sb-muted)}
+.sb-seg{display:flex;gap:4px;flex-wrap:wrap;margin-top:5px}.sb-seg button{flex:1 1 auto;border:1px solid var(--sb-line);background:#fff;border-radius:8px;padding:7px 8px;font-size:12px;font-weight:700;cursor:pointer;color:#334155}
+.sb-seg button.on{background:#0f1f45;color:#fff;border-color:#0f1f45}.sb-seg button.on.live{background:#dc2626;border-color:#dc2626}.sb-seg button:disabled{cursor:default}.sb-seg button:disabled:not(.on){opacity:.55}
+.sb-auth{margin-top:12px;border-top:1px solid var(--sb-line);padding-top:10px}.sb-auth p{display:flex;gap:6px;align-items:center;flex-wrap:wrap}

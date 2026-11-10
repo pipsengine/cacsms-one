@@ -1,0 +1,234 @@
+"""Authenticated SportyBet account: gates, rehearsal, submission and reconciliation.
+
+Runs a real Chromium against a local page that mimics the signed-in SportyBet
+header, match list and betslip. Nothing here contacts SportyBet.
+"""
+import asyncio
+import json
+import tempfile
+import threading
+import unittest
+from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+import db
+import single_betting as sb
+import sportybet_account as acct
+
+STATE = {'flow': 'success'}
+
+PAGE = '''<!doctype html><html><body>
+<div class="s-header">NGN 4,755.89 Deposit Bet History My Account</div>
+<div class="match-row"><span>Braga</span><span>Estrela</span>
+  <span class="m-outcome">1.72</span><span class="m-outcome">3.70</span><span class="m-outcome">4.80</span></div>
+<div class="m-betslip-wrapper">
+  <div id="count">Betslip0</div>
+  <div class="inside-btn left-side" id="sim">SIM</div><div class="inside-btn right-side inactive" id="real">REAL</div>
+  <div id="pick"></div>
+  <input class="m-input" placeholder="min. 10" value="">
+  <div id="totals">Total Stake NGN 0 Potential Win 0.00</div>
+  <button class="af-button af-button--primary" id="place">Place Bet</button>
+</div>
+<div id="pop"></div>
+<script>
+const flow = "__FLOW__";
+let odds = 0;
+const stake = document.querySelector('.m-input');
+const update = () => {
+  const s = Number(stake.value || 0);
+  document.getElementById('totals').textContent = `Total Stake NGN ${s} Potential Win ${(s*odds).toFixed(2)}`;
+};
+document.querySelectorAll('.m-outcome').forEach(node => node.addEventListener('click', () => {
+  odds = Number(node.innerText); document.getElementById('count').textContent = 'Betslip1';
+  document.getElementById('pick').textContent = 'Home Braga v Estrela 1X2 ' + node.innerText; update();
+}));
+stake.addEventListener('input', update); stake.addEventListener('change', update);
+document.getElementById('real').addEventListener('click', () => {
+  document.getElementById('real').className = 'inside-btn right-side';
+  document.getElementById('sim').className = 'inside-btn left-side inactive';
+});
+document.getElementById('place').addEventListener('click', () => {
+  const pop = document.getElementById('pop');
+  if (flow === 'silent') return;
+  if (flow === 'odds') { pop.innerHTML = '<div class="m-pop-main">Odds have changed. Accept changes?<button>Accept</button></div>'; return; }
+  pop.innerHTML = '<div class="m-pop-main">Confirm bet. Total Stake NGN 100.00 <button id="ok">Confirm</button></div>';
+  document.getElementById('ok').addEventListener('click', () => {
+    pop.innerHTML = '<div class="m-pop-main">Submission Successful! Ticket ID: TK12345678</div>';
+  });
+});
+</script></body></html>'''
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = PAGE.replace('__FLOW__', STATE['flow']).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+class AccountTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls.previous_base = acct.BASE_URL
+        acct.BASE_URL = f'http://127.0.0.1:{cls.server.server_address[1]}'
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        acct.BASE_URL = cls.previous_base
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.previous = db.DB
+        db.DB = Path(self.temp.name) / 'sports.sqlite3'
+        db.initialize()
+        acct.save_session({'cookies': [], 'origins': []})
+        STATE['flow'] = 'success'
+
+    def tearDown(self):
+        acct.forget_session()
+        db.DB = self.previous
+        self.temp.cleanup()
+
+    def _bet(self, connection, now):
+        kickoff = (now + timedelta(hours=3)).isoformat()
+        bet = {'id': 'bet-1', 'fixture_id': 'fx', 'sport': 'football', 'competition': 'Primeira Liga', 'home': 'Braga',
+               'away': 'Estrela', 'market': 'HOME', 'selection': 'Home Win (1)', 'decimal_odds': 1.72,
+               'probability': 0.645, 'expected_value': 0.1094, 'stake': 100.0, 'starts_at': kickoff,
+               'odds_observed_at': now.isoformat(), 'local_date': sb.local_date(now)}
+        connection.execute(
+            """INSERT INTO sports_ai_single_bets(id,fixture_id,sport,competition,home,away,market,selection,decimal_odds,
+               probability,expected_value,stake,mode,status,local_date,starts_at,odds_observed_at,created_at)
+               VALUES(:id,:fixture_id,:sport,:competition,:home,:away,:market,:selection,:decimal_odds,:probability,
+               :expected_value,:stake,'PAPER','QUEUED',:local_date,:starts_at,:odds_observed_at,:odds_observed_at)""", bet)
+        return bet
+
+    def _connected(self, connection, now):
+        acct._set_account(connection, 'CONNECTED', 'test', now, last_ok_at=now.isoformat(), balance=4755.89)
+
+    def _rehearsals(self, connection, now, n=3):
+        for i in range(n):
+            connection.execute(
+                """INSERT INTO sports_ai_single_live_orders(id,bet_id,kind,status,local_date,stake,created_at,updated_at)
+                   VALUES(?,?,'REHEARSAL','REHEARSED',?,100,?,?)""",
+                (f'r{i}', f'old{i}', sb.local_date(now), now.isoformat(), now.isoformat()))
+
+    def test_authorization_needs_phrase_session_and_rehearsals_never_a_balance(self):
+        now = datetime.now(timezone.utc)
+        with db.connect() as c:
+            with self.assertRaises(ValueError):  # balance alone is not authorization
+                c.execute("UPDATE sports_ai_sportybet_account SET balance=99999 WHERE id='primary'")
+                acct.grant_authorization(c, 'admin', acct.ACKNOWLEDGEMENT, 24, now)
+            self._connected(c, now)
+            with self.assertRaisesRegex(ValueError, 'rehearsals'):
+                acct.grant_authorization(c, 'admin', acct.ACKNOWLEDGEMENT, 24, now)
+            self._rehearsals(c, now)
+            with self.assertRaisesRegex(ValueError, 'acknowledgement'):
+                acct.grant_authorization(c, 'admin', 'yes', 24, now)
+            with self.assertRaisesRegex(ValueError, 'authorization'):
+                acct.set_execution_mode(c, 'LIVE', 'admin', now)
+            grant = acct.grant_authorization(c, 'admin', acct.ACKNOWLEDGEMENT, 24, now)
+            acct.set_execution_mode(c, 'LIVE', 'admin', now)
+            reasons, active = acct.submission_gate(c, now)
+            self.assertEqual(reasons, [])
+            self.assertEqual(active['id'], grant['id'])
+            acct.revoke_authorization(c, 'admin', now)
+            self.assertIn('No active real-money authorization', acct.submission_gate(c, now)[0])
+
+    def test_daily_live_limits_are_enforced(self):
+        now = datetime.now(timezone.utc)
+        with db.connect() as c:
+            self._connected(c, now)
+            self._rehearsals(c, now)
+            acct.grant_authorization(c, 'admin', acct.ACKNOWLEDGEMENT, 24, now)
+            acct.set_execution_mode(c, 'LIVE', 'admin', now)
+            for i in range(25):
+                c.execute("""INSERT INTO sports_ai_single_live_orders(id,bet_id,kind,status,local_date,stake,created_at,updated_at)
+                             VALUES(?,?,'SUBMISSION','PLACED',?,100,?,?)""", (f's{i}', f'b{i}', sb.local_date(now), now.isoformat(), now.isoformat()))
+            reasons, _ = acct.submission_gate(c, now)
+        self.assertTrue(any('Daily live limit' in r for r in reasons))
+
+    def test_rehearsal_prepares_slip_without_clicking_place_bet(self):
+        now = datetime.now(timezone.utc)
+        with db.connect() as c:
+            bet = self._bet(c, now)
+        outcome, status, detail = asyncio.run(acct.execute_async(bet, 'REHEARSAL', now))
+        self.assertEqual((outcome, status), ('PAPER_PLACED', 'REHEARSED'), detail)
+        with db.connect() as c:
+            order = c.execute('SELECT * FROM sports_ai_single_live_orders').fetchone()
+        checks = json.loads(order['checks_json'])['checks']
+        self.assertTrue(all(checks.values()), checks)
+        self.assertIsNone(order['submitted_at'])
+
+    def test_submission_confirms_once_and_records_ticket(self):
+        now = datetime.now(timezone.utc)
+        with db.connect() as c:
+            self._connected(c, now)
+            self._rehearsals(c, now)
+            acct.grant_authorization(c, 'admin', acct.ACKNOWLEDGEMENT, 24, now)
+            acct.set_execution_mode(c, 'LIVE', 'admin', now)
+            bet = self._bet(c, now)
+        outcome, status, detail = asyncio.run(acct.execute_async(bet, 'SUBMISSION', now))
+        self.assertEqual((outcome, status), ('LIVE_PLACED', 'PLACED'), detail)
+        with db.connect() as c:
+            sb.apply_execution(c, bet, outcome, status, detail, 'SUBMISSION', now)
+            order = c.execute("SELECT * FROM sports_ai_single_live_orders WHERE kind='SUBMISSION'").fetchone()
+            row = c.execute("SELECT status, mode FROM sports_ai_single_bets WHERE id='bet-1'").fetchone()
+            self.assertEqual(order['bookmaker_ref'], 'TK12345678')
+            self.assertEqual((row['status'], row['mode']), ('PLACED', 'PAPER'))
+            # The same bet can never be submitted twice.
+            with self.assertRaises(Exception):
+                acct._order(c, bet, 'SUBMISSION', None, now)
+            updated = acct.reconcile(c, 'Ticket ID TK12345678 Braga v Estrela Won 172.00', now)
+            self.assertEqual(updated, 1)
+            self.assertEqual(c.execute("SELECT status FROM sports_ai_single_live_orders WHERE kind='SUBMISSION'").fetchone()[0], 'SETTLED_WON')
+
+    def test_unclear_result_pauses_engine_and_blocks_further_submissions(self):
+        now = datetime.now(timezone.utc)
+        STATE['flow'] = 'silent'
+        with db.connect() as c:
+            self._connected(c, now)
+            self._rehearsals(c, now)
+            acct.grant_authorization(c, 'admin', acct.ACKNOWLEDGEMENT, 24, now)
+            acct.set_execution_mode(c, 'LIVE', 'admin', now)
+            bet = self._bet(c, now)
+        outcome, status, detail = asyncio.run(acct.execute_async(bet, 'SUBMISSION', now))
+        self.assertEqual((outcome, status), ('UNKNOWN', 'UNKNOWN'))
+        with db.connect() as c:
+            sb.apply_execution(c, bet, outcome, status, detail, 'SUBMISSION', now)
+            self.assertTrue(sb.runtime(c)['paused'])
+            reasons, _ = acct.submission_gate(c, now)
+        self.assertTrue(any('unclear' in r for r in reasons))
+
+    def test_changed_odds_are_never_accepted(self):
+        now = datetime.now(timezone.utc)
+        STATE['flow'] = 'odds'
+        with db.connect() as c:
+            self._connected(c, now)
+            self._rehearsals(c, now)
+            acct.grant_authorization(c, 'admin', acct.ACKNOWLEDGEMENT, 24, now)
+            acct.set_execution_mode(c, 'LIVE', 'admin', now)
+            bet = self._bet(c, now)
+        outcome, status, _detail = asyncio.run(acct.execute_async(bet, 'SUBMISSION', now))
+        self.assertEqual((outcome, status), ('CANCEL', 'REJECTED'))
+
+    def test_session_check_reads_balance_from_signed_in_header(self):
+        result = acct.check_session(capture_history=True)
+        self.assertEqual(result['status'], 'CONNECTED')
+        self.assertAlmostEqual(result['balance'], 4755.89)
+        with db.connect() as c:
+            view = acct.status_view(c)
+        self.assertEqual(view['balance']['status'], 'SYNCED')
+        self.assertIsNotNone(view['reconciliation']['last_history_capture'])
+
+
+if __name__ == '__main__':
+    unittest.main()

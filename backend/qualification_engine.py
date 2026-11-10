@@ -680,7 +680,7 @@ def rows_for_fixtures(connection, now, fixture_ids):
     ).fetchall()
 
 
-def revalidate(connection, actor='sports-ai-worker', now=None, limit=400, fixture_ids=None):
+def revalidate(connection, actor='sports-ai-worker', now=None, limit=400, fixture_ids=None, release_lock=False):
     current = now or utc_now()
     from suitability import sync_lifecycles
     sync_lifecycles(connection)
@@ -690,6 +690,13 @@ def revalidate(connection, actor='sports-ai-worker', now=None, limit=400, fixtur
     import prediction_integrity
     integrity = prediction_integrity.prepare(connection)
     expired = expire_started(connection, actor, current)
+    if release_lock and connection.in_transaction:
+        # sync_lifecycles/expire_started took SQLite's single write lock. The candidate
+        # query below takes 20-90 s on the live database; holding the lock through it
+        # starved the worker heartbeat and every other writer ("database is locked").
+        # Commit these small writes now; selections are persisted in a short write at the end.
+        # Callers inside an explicit atomic transaction leave release_lock False.
+        connection.commit()
     prepared = []
     seen = set()
     sources = list(qualified_decision_rows(connection, current))

@@ -149,7 +149,7 @@ def _qualify_priced_board():
         from qualification_engine import revalidate
         with connect() as connection:
             linked = link_stored_quotes(connection, limit=600)
-            result = revalidate(connection, 'sports-ai-worker', limit=600)
+            result = revalidate(connection, 'sports-ai-worker', limit=600, release_lock=True)
         print(
             'priced qualification', result.get('counts', {}).get('QUALIFIED', 0),
             'linked', linked.get('qualified'),
@@ -269,7 +269,7 @@ def _qualification_tick():
         with connect() as connection:
             linked = link_stored_quotes(connection)
         with connect() as connection:
-            result = revalidate(connection, 'sports-ai-worker')
+            result = revalidate(connection, 'sports-ai-worker', release_lock=True)
         with connect() as connection:
             recommended = store_recommendations(connection)
         print(
@@ -412,7 +412,7 @@ def _odds_refresh_tick():
             queued = enqueue_odds_refresh(connection)
             refreshed = process_odds_refresh(connection)
             if refreshed.get('fixture_ids'):
-                qualification = revalidate(connection, 'sports-ai-worker', fixture_ids=refreshed['fixture_ids'])
+                qualification = revalidate(connection, 'sports-ai-worker', fixture_ids=refreshed['fixture_ids'], release_lock=True)
             else:
                 qualification = None
         print(
@@ -590,6 +590,37 @@ def _booking_lane(stop):
                 continue
             _observed('booking_lane', {'status': 'failed'}, failed=True, error=error)
             _report('booking lane failed', error)
+
+
+def _account_lane(stop):
+    """Single Betting live lane: session health, balance, Bet History, then one rehearsal or submission.
+
+    It runs only when the execution mode is LIVE_REHEARSAL or LIVE. Real money is submitted
+    only under an active authorization; see sportybet_account.submission_gate.
+    """
+    from sportybet_account import run_once
+    while not stop.wait(30):
+        try:
+            result = run_once()
+            if result.get('status') not in ('paper', 'idle', 'waiting_for_login'):
+                print('account lane', result.get('status'), result.get('kind', ''), result.get('detail', ''))
+                _observed('single_live', {'status': result.get('status')})
+        except Exception as error:
+            if 'database is locked' in str(error):
+                continue
+            _observed('single_live', {'status': 'failed'}, failed=True, error=error)
+            _report('account lane failed', error)
+
+
+_ACCOUNT_LANE = None
+
+
+def start_account_lane():
+    global _ACCOUNT_LANE
+    if _ACCOUNT_LANE and _ACCOUNT_LANE.is_alive():
+        return
+    _ACCOUNT_LANE = threading.Thread(target=_account_lane, args=(threading.Event(),), name='account-lane', daemon=True)
+    _ACCOUNT_LANE.start()
 
 
 def start_booking_lane():
@@ -800,7 +831,7 @@ def _govern_cycle():
             governed = govern_models(connection, 'sports-ai-worker', _audit)
             priced = reprice_active_batch(connection, 'sports-ai-worker', _audit, limit=40)
             from qualification_engine import revalidate
-            qualification = revalidate(connection, 'sports-ai-worker')
+            qualification = revalidate(connection, 'sports-ai-worker', release_lock=True)
         print(
             'governance',
             'activated', len(governed.get('activated') or []),
@@ -841,6 +872,7 @@ if __name__=='__main__':
         from high_odds_service import start_background
         start_background(_leader_name())
         start_booking_lane()
+        start_account_lane()
     if args.once:
         tick()
     else:

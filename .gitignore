@@ -4,3 +4,6 @@ __pycache__/
 backend/*.sqlite3*
 backend/catalog_evidence/
 reports/private/
+
+backend/.secrets/
+backend/account_evidence/

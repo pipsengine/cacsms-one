@@ -2126,7 +2126,7 @@ def confirm_ticket(ticket_id, now=None):
     from qualification_engine import revalidate
     with connect() as connection:
         link_stored_quotes(connection, moment, limit=8000)
-        revalidate(connection, 'sports-ai-worker', moment, limit=2000)
+        revalidate(connection, 'sports-ai-worker', moment, limit=2000, release_lock=True)
         ticket = connection.execute(
             'SELECT id, status FROM sports_ai_accumulator_tickets WHERE id=?',
             (ticket_id,),
