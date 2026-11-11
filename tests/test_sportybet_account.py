@@ -72,9 +72,68 @@ document.getElementById('place').addEventListener('click', () => {
 </script></body></html>'''
 
 
+# Two matches and a slip with Singles / Multiple tabs. On the Singles tab each selection
+# gets its own stake input; on Multiple there is one stake over the product of the prices.
+# "multi_singles" ignores the Multiple tab, so the slip stays unsafe for a combined bet.
+MULTI_PAGE = '''<!doctype html><html><body>
+<div class="s-header">NGN 4,755.89 Deposit Bet History My Account</div>
+<div class="match-row"><span>Braga</span><span>Estrela</span>
+  <span class="m-outcome">1.12</span><span class="m-outcome">7.50</span><span class="m-outcome">15.00</span></div>
+<div class="match-row"><span>Porto</span><span>Benfica</span>
+  <span class="m-outcome">1.14</span><span class="m-outcome">7.00</span><span class="m-outcome">13.00</span></div>
+<div class="m-betslip-wrapper">
+  <div id="count">Betslip0</div>
+  <ul><li id="tab-single">Singles</li><li id="tab-multi">Multiple</li></ul>
+  <div class="mode-switch-button"><div class="switch-box">
+    <div class="shadow-text left-side" data-op="switch-box-left" id="real">REAL</div>
+    <div class="inside-btn right-side active" data-op="switch-box-right" id="sim">SIM</div>
+  </div></div>
+  <div id="pick"></div><i class="m-icon-delete" id="bin" style="display:inline-block;width:10px;height:10px;background:#999"></i>
+  <input class="m-input" id="s1" placeholder="min. 10" value="">
+  <input class="m-input" id="s2" placeholder="min. 10" value="" style="display:none">
+  <div id="totals">Total Stake NGN 0 Potential Win 0.00</div>
+  <button class="af-button af-button--primary" id="place">Place Bet</button>
+</div>
+<div id="pop"></div>
+<script>
+const flow = "__FLOW__";
+let picks = []; let tab = 'singles';
+const s1 = document.getElementById('s1'), s2 = document.getElementById('s2');
+const render = () => {
+  document.getElementById('count').textContent = 'Betslip' + picks.length;
+  document.getElementById('pick').textContent = picks.map(p => 'Home ' + p.name + ' 1X2 ' + p.odds).join(' | ');
+  s2.style.display = (tab === 'singles' && picks.length > 1) ? '' : 'none';
+  const a = Number(s1.value || 0), b = Number(s2.value || 0);
+  let total, win;
+  if (tab === 'multi') { total = a; win = a * picks.reduce((x, p) => x * p.odds, 1); }
+  else { total = a + (picks.length > 1 ? b : 0); win = a * (picks[0] ? picks[0].odds : 0) + (picks[1] ? b * picks[1].odds : 0); }
+  document.getElementById('totals').textContent = `Total Stake NGN ${total} Potential Win ${win.toFixed(2)}`;
+};
+document.querySelectorAll('.match-row').forEach(row => row.querySelectorAll('.m-outcome').forEach(node => node.addEventListener('click', () => {
+  const name = [...row.querySelectorAll('span')].slice(0, 2).map(s => s.innerText).join(' v ');
+  picks = picks.filter(p => p.name !== name).concat([{name, odds: Number(node.innerText)}]); render();
+})));
+document.getElementById('bin').addEventListener('click', () => { picks = []; render(); });
+document.getElementById('tab-multi').addEventListener('click', () => { if (flow !== 'multi_singles') { tab = 'multi'; render(); } });
+s1.addEventListener('input', render); s1.addEventListener('change', render);
+document.getElementById('real').addEventListener('click', () => {
+  document.getElementById('real').className = 'inside-btn left-side inactive';
+  document.getElementById('sim').className = 'shadow-text right-side show-highlight';
+});
+document.getElementById('place').addEventListener('click', () => {
+  const pop = document.getElementById('pop');
+  pop.innerHTML = '<div class="m-pop-main">Confirm bet. Total Stake NGN 100.00 <button id="ok">Confirm</button></div>';
+  document.getElementById('ok').addEventListener('click', () => {
+    pop.innerHTML = '<div class="m-pop-main">Submission Successful! Ticket ID: TK87654321</div>';
+  });
+});
+</script></body></html>'''
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        body = PAGE.replace('__FLOW__', STATE['flow']).encode()
+        page = MULTI_PAGE if STATE['flow'].startswith('multi') else PAGE
+        body = page.replace('__FLOW__', STATE['flow']).encode()
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.end_headers()
@@ -121,6 +180,35 @@ class AccountTests(unittest.TestCase):
                probability,expected_value,stake,mode,status,local_date,starts_at,odds_observed_at,created_at)
                VALUES(:id,:fixture_id,:sport,:competition,:home,:away,:market,:selection,:decimal_odds,:probability,
                :expected_value,:stake,'PAPER','QUEUED',:local_date,:starts_at,:odds_observed_at,:odds_observed_at)""", bet)
+        return bet
+
+    def _combo(self, connection, now):
+        kickoff = (now + timedelta(hours=3)).isoformat()
+        legs = [
+            {'leg_no': 1, 'fixture_id': 'fa', 'sport': 'football', 'competition': 'Primeira Liga', 'home': 'Braga',
+             'away': 'Estrela', 'market': 'HOME', 'selection': 'Home Win (1)', 'decimal_odds': 1.12, 'probability': 0.95,
+             'starts_at': kickoff, 'odds_observed_at': now.isoformat()},
+            {'leg_no': 2, 'fixture_id': 'fb', 'sport': 'football', 'competition': 'Primeira Liga', 'home': 'Porto',
+             'away': 'Benfica', 'market': 'HOME', 'selection': 'Home Win (1)', 'decimal_odds': 1.14, 'probability': 0.93,
+             'starts_at': kickoff, 'odds_observed_at': now.isoformat()},
+        ]
+        bet = {'id': 'combo-1', 'kind': 'COMBO', 'legs': legs, 'fixture_id': 'fa', 'sport': 'football',
+               'competition': 'Primeira Liga', 'home': 'Braga', 'away': 'Estrela', 'market': 'COMBO',
+               'selection': 'Home Win (1) + Home Win (1)', 'decimal_odds': 1.2768, 'probability': 0.95 * 0.93,
+               'expected_value': 1.2768 * 0.95 * 0.93 - 1, 'stake': 100.0, 'starts_at': kickoff,
+               'odds_observed_at': now.isoformat(), 'local_date': sb.local_date(now)}
+        connection.execute(
+            """INSERT INTO sports_ai_single_bets(id,fixture_id,sport,competition,home,away,market,selection,decimal_odds,
+               probability,expected_value,stake,mode,status,local_date,starts_at,odds_observed_at,created_at,kind)
+               VALUES(:id,:fixture_id,:sport,:competition,:home,:away,:market,:selection,:decimal_odds,:probability,
+               :expected_value,:stake,'PAPER','QUEUED',:local_date,:starts_at,:odds_observed_at,:odds_observed_at,'COMBO')""",
+            {k: v for k, v in bet.items() if k not in ('kind', 'legs')})
+        for leg in legs:
+            connection.execute(
+                """INSERT INTO sports_ai_single_bet_legs(bet_id,leg_no,fixture_id,sport,competition,home,away,market,selection,
+                   decimal_odds,probability,starts_at,odds_observed_at)
+                   VALUES('combo-1',:leg_no,:fixture_id,:sport,:competition,:home,:away,:market,:selection,
+                   :decimal_odds,:probability,:starts_at,:odds_observed_at)""", leg)
         return bet
 
     def _connected(self, connection, now):
@@ -230,6 +318,58 @@ Total Return
             self.assertEqual(updated, 1)
             order = c.execute("SELECT status, payout FROM sports_ai_single_live_orders WHERE kind='SUBMISSION'").fetchone()
             self.assertEqual((order['status'], order['payout']), ('SETTLED_WON', 172.0))
+
+    def test_combined_bet_is_submitted_as_one_multiple_and_reconciled(self):
+        now = datetime.now(timezone.utc)
+        STATE['flow'] = 'multi'
+        with db.connect() as c:
+            self._connected(c, now)
+            self._rehearsals(c, now)
+            acct.grant_authorization(c, 'admin', acct.ACKNOWLEDGEMENT, 24, now)
+            acct.set_execution_mode(c, 'LIVE', 'admin', now)
+            bet = self._combo(c, now)
+        outcome, status, detail = asyncio.run(acct.execute_async(bet, 'SUBMISSION', now))
+        self.assertEqual((outcome, status), ('LIVE_PLACED', 'PLACED'), detail)
+        self.assertIn('combined bet', detail)
+        with db.connect() as c:
+            order = c.execute("SELECT * FROM sports_ai_single_live_orders WHERE kind='SUBMISSION'").fetchone()
+            checks = json.loads(order['checks_json'])
+            self.assertTrue(all(checks['checks'].values()), checks['checks'])
+            self.assertAlmostEqual(order['page_odds'], 1.2768)
+            self.assertEqual(order['bookmaker_ref'], 'TK87654321')
+            sb.apply_execution(c, bet, outcome, status, detail, 'SUBMISSION', now)
+            self.assertEqual(c.execute("SELECT status FROM sports_ai_single_bets WHERE id='combo-1'").fetchone()[0], 'PLACED')
+            placed = acct._now(now).astimezone(acct.WAT).strftime('%d/%m/%Y %H:%M')
+            # A single on one leg is never claimed; the Multiple with exactly both legs is.
+            history = f'''{placed}
+Singles
+Won
+Braga v Estrela
+Total Stake
+100.00
+Total Return
+112.00
+{placed}
+Multiple
+Won
+Porto v Benfica
+SC Braga v Estrela da Amadora
+Total Stake
+100.00
+Total Return
+127.68'''
+            self.assertEqual(acct.reconcile(c, history, now), 1)
+            order = c.execute("SELECT status, payout FROM sports_ai_single_live_orders WHERE kind='SUBMISSION'").fetchone()
+            self.assertEqual((order['status'], order['payout']), ('SETTLED_WON', 127.68))
+
+    def test_combined_bet_on_singles_tab_is_never_placed(self):
+        now = datetime.now(timezone.utc)
+        STATE['flow'] = 'multi_singles'
+        with db.connect() as c:
+            bet = self._combo(c, now)
+        outcome, status, detail = asyncio.run(acct.execute_async(bet, 'REHEARSAL', now))
+        self.assertEqual((outcome, status), ('CANCEL', 'CHECKS'), detail)
+        self.assertIn('one_stake_input', detail)
 
     def test_unclear_result_pauses_engine_and_blocks_further_submissions(self):
         now = datetime.now(timezone.utc)

@@ -11,6 +11,12 @@ Rules (fixed, not configurable from the browser):
 - ₦2,500 daily stake cap
 - one live single per fixture (correlation rule)
 - fresh price, kickoff at least 60 s away, expected value >= MIN_EV
+- decimal odds >= MIN_ODDS (1.20). A selection priced below that is not bet alone; when
+  2–3 such high-probability selections on different fixtures together reach MIN_ODDS
+  with a combined win probability >= COMBO_MIN_PROBABILITY, they are queued as one
+  combined selection (same ₦100 stake, settled only when every leg is graded).
+- a combined selection replaces a fixture's single whenever its combined win probability is
+  higher; all candidates are ranked by win probability first, expected value second.
 
 Every record is a paper record. Real-money submission is not implemented and
 the API answers 403. No SportyBet balance or ticket reference is invented.
@@ -30,6 +36,9 @@ DAILY_TARGET = (20, 25)
 DAILY_LIMIT = 25
 DAILY_STAKE_LIMIT = 2500.0
 MIN_EV = float(os.environ.get('SINGLE_MIN_EXPECTED_VALUE', '0.03'))
+MIN_ODDS = max(1.2, float(os.environ.get('SINGLE_MIN_ODDS', '1.2')))
+COMBO_MAX_LEGS = 3
+COMBO_MIN_PROBABILITY = float(os.environ.get('SINGLE_COMBO_MIN_PROBABILITY', '0.80'))
 MIN_SECONDS_TO_START = 60
 PLACE_PER_TICK = 2
 TICK_SECONDS = 30
@@ -77,10 +86,13 @@ def selection_label(market):
     return name.replace('_', ' ').title() or 'Selection'
 
 
-def evaluate(odds, probability, observed_at, starts_at, now=None, max_age_minutes=15, min_ev=None):
-    """Deterministic eligibility. A probability is an estimate, never a certainty."""
+def evaluate(odds, probability, observed_at, starts_at, now=None, max_age_minutes=15, min_ev=None, min_odds=None):
+    """Deterministic eligibility. A probability is an estimate, never a certainty.
+
+    min_odds=0 evaluates a combined-selection leg, whose own price may sit below MIN_ODDS."""
     current = _now(now)
     floor = MIN_EV if min_ev is None else min_ev
+    odds_floor = MIN_ODDS if min_odds is None else min_odds
     reasons = []
     try:
         odds, probability = float(odds), float(probability)
@@ -88,6 +100,8 @@ def evaluate(odds, probability, observed_at, starts_at, now=None, max_age_minute
         return {'eligible': False, 'ev': None, 'reasons': ['MISSING_PRICE_OR_PROBABILITY']}
     if not 1 < odds <= 1000:
         reasons.append('INVALID_ODDS')
+    elif odds < odds_floor - 1e-9:
+        reasons.append('BELOW_MIN_ODDS')
     if not 0 < probability < 1:
         reasons.append('INVALID_PROBABILITY')
     observed, kickoff = _parse(observed_at), _parse(starts_at)
@@ -188,10 +202,14 @@ def load_candidates(connection, now=None):
            WHERE d.state='QUALIFIED' AND f.starts_at>?
              AND EXISTS (SELECT 1 FROM json_each(d.products_json) WHERE value='booking')
              AND NOT EXISTS (SELECT 1 FROM sports_ai_single_bets b
-                             WHERE b.fixture_id=d.fixture_id AND b.status!='CANCELLED')""",
+                             WHERE b.fixture_id=d.fixture_id AND b.status!='CANCELLED')
+             AND NOT EXISTS (SELECT 1 FROM sports_ai_single_bet_legs l
+                             JOIN sports_ai_single_bets b ON b.id=l.bet_id
+                             WHERE l.fixture_id=d.fixture_id AND b.status!='CANCELLED')""",
         (current.isoformat(),),
     ).fetchall()
     best = {}
+    legs = {}
     rejected = {}
     for row in rows:
         if row['fixture_status'] not in OPEN_FIXTURE:
@@ -208,23 +226,114 @@ def load_candidates(connection, now=None):
             rejected['NO_SPORTYBET_PRICE'] = rejected.get('NO_SPORTYBET_PRICE', 0) + 1
             continue
         verdict = evaluate(quote['decimal_odds'], probability, quote['observed_at'], row['starts_at'], current, max_age)
-        if not verdict['eligible']:
+        combinable = verdict['reasons'] == ['BELOW_MIN_ODDS']
+        if not verdict['eligible'] and not combinable:
             for reason in verdict['reasons']:
                 rejected[reason] = rejected.get(reason, 0) + 1
             continue
         item = {
-            'decision_id': row['decision_id'], 'prediction_id': row['prediction_id'],
+            'kind': 'SINGLE', 'decision_id': row['decision_id'], 'prediction_id': row['prediction_id'],
             'fixture_id': row['fixture_id'], 'sport': row['sport'], 'competition': row['competition'] or '',
             'home': row['home'], 'away': row['away'], 'market': str(row['market']).upper(),
             'selection': selection_label(row['market']), 'decimal_odds': float(quote['decimal_odds']),
             'probability': float(probability), 'expected_value': verdict['ev'],
             'starts_at': row['starts_at'], 'odds_observed_at': quote['observed_at'],
         }
-        held = best.get(row['fixture_id'])
-        if held is None or item['expected_value'] > held['expected_value']:
-            best[row['fixture_id']] = item
-    eligible = sorted(best.values(), key=lambda i: (-i['expected_value'], i['starts_at'], i['fixture_id']))
+        target = legs if combinable else best
+        held = target.get(row['fixture_id'])
+        if held is None or _chance_key(item) < _chance_key(held):
+            target[row['fixture_id']] = item
+    combos, singles, unused, replaced = choose(best, legs)
+    if unused:
+        rejected['BELOW_MIN_ODDS'] = rejected.get('BELOW_MIN_ODDS', 0) + unused
+    if replaced:
+        rejected['SINGLE_REPLACED_BY_COMBINED'] = rejected.get('SINGLE_REPLACED_BY_COMBINED', 0) + replaced
+    eligible = sorted([*singles, *combos], key=_chance_key)
     return {'eligible': eligible, 'rejected': rejected, 'max_odds_age_minutes': max_age}
+
+
+def _chance_key(item):
+    """Higher chance of winning first; expected value breaks ties."""
+    return (-round(item['probability'], 6), -item['expected_value'], item['starts_at'], item['fixture_id'])
+
+
+def choose(singles, legs):
+    """Decide singles versus combined selections, fixture by fixture.
+
+    singles: fixture -> best single priced >= MIN_ODDS. legs: fixture -> best selection priced
+    below MIN_ODDS that passes every other rule. A combined selection is preferred over a
+    fixture's single whenever its combined win probability is higher; otherwise that leg is
+    withdrawn and the remaining legs are regrouped. Returns
+    (combos, singles kept, number of unused legs on fixtures without a single, singles replaced)."""
+    pool = list(legs.values())
+    while True:
+        combos, leftover = build_combos(pool)
+        losers = {leg['fixture_id'] for combo in combos for leg in combo['legs']
+                  if leg['fixture_id'] in singles and singles[leg['fixture_id']]['probability'] >= combo['probability']}
+        if not losers:
+            break
+        pool = [leg for leg in pool if leg['fixture_id'] not in losers]
+    used = {leg['fixture_id'] for combo in combos for leg in combo['legs']}
+    kept = [item for fixture, item in singles.items() if fixture not in used]
+    unused = sum(1 for leg in legs.values() if leg['fixture_id'] not in used and leg['fixture_id'] not in singles)
+    return combos, kept, unused, len(used & set(singles))
+
+
+def _product(values):
+    out = 1.0
+    for value in values:
+        out *= float(value)
+    return out
+
+
+def combine(legs):
+    """One combined selection over legs on different fixtures (independent events)."""
+    odds = round(_product(l['decimal_odds'] for l in legs), 4)
+    probability = _product(l['probability'] for l in legs)
+    sports = {l['sport'] for l in legs}
+    first = legs[0]
+    return {
+        'kind': 'COMBO', 'legs': list(legs),
+        'decision_id': first.get('decision_id'), 'prediction_id': first.get('prediction_id'),
+        'fixture_id': first['fixture_id'], 'sport': first['sport'] if len(sports) == 1 else 'mixed',
+        'competition': ' · '.join(dict.fromkeys(l.get('competition') or '' for l in legs if l.get('competition'))),
+        'home': first['home'], 'away': first['away'], 'market': 'COMBO',
+        'selection': ' + '.join(l['selection'] for l in legs),
+        'decimal_odds': odds, 'probability': probability,
+        'expected_value': round(odds * probability - 1, 6),
+        'starts_at': min(l['starts_at'] for l in legs),
+        'odds_observed_at': min((l.get('odds_observed_at') or '') for l in legs) or None,
+    }
+
+
+def combo_ok(combo):
+    return (combo['decimal_odds'] >= MIN_ODDS - 1e-9 and combo['probability'] >= COMBO_MIN_PROBABILITY
+            and combo['expected_value'] >= MIN_EV)
+
+
+def build_combos(pool):
+    """Group sub-MIN_ODDS legs into combined selections that reach MIN_ODDS.
+
+    Greedy, highest probability first. Each group adds the leg that reaches MIN_ODDS with the
+    highest combined probability, or else the most probable leg, up to COMBO_MAX_LEGS. A group
+    is kept only if it reaches MIN_ODDS with combined probability >= COMBO_MIN_PROBABILITY.
+    Returns (combos, legs left unused)."""
+    pool = sorted(pool, key=lambda l: (-l['probability'], l['starts_at'], l['fixture_id']))
+    combos, unused = [], []
+    while pool:
+        group = [pool.pop(0)]
+        while pool and len(group) < COMBO_MAX_LEGS and _product(l['decimal_odds'] for l in group) < MIN_ODDS - 1e-9:
+            base_odds = _product(l['decimal_odds'] for l in group)
+            closing = [l for l in pool if base_odds * l['decimal_odds'] >= MIN_ODDS - 1e-9]
+            pick = max(closing, key=lambda l: l['probability']) if closing else pool[0]
+            pool.remove(pick)
+            group.append(pick)
+        combo = combine(group)
+        if combo_ok(combo):
+            combos.append(combo)
+        else:
+            unused.extend(group)
+    return combos, unused
 
 
 def _day_usage(connection, day):
@@ -236,8 +345,57 @@ def _day_usage(connection, day):
     return int(row['n']), float(row['staked'])
 
 
+def _kind(bet):
+    try:
+        return bet['kind'] or 'SINGLE'
+    except (IndexError, KeyError):
+        return 'SINGLE'
+
+
+def _legs(connection, bet_id):
+    return connection.execute(
+        'SELECT * FROM sports_ai_single_bet_legs WHERE bet_id=? ORDER BY leg_no', (bet_id,),
+    ).fetchall()
+
+
+def _recheck_combo(connection, bet, current, max_age):
+    from qualification_engine import selection_is_qualified
+    legs = _legs(connection, bet['id'])
+    if len(legs) < 2:
+        return None, 'Combined selection has fewer than two legs.'
+    fresh_legs = []
+    for leg in legs:
+        name = f"{leg['home']} vs {leg['away']}"
+        if not selection_is_qualified(connection, leg['fixture_id'], leg['market']):
+            return None, f'Leg {name} no longer has a current QUALIFIED decision.'
+        quote = _latest_quote(connection, leg['fixture_id'], leg['market'])
+        if quote is None:
+            return None, f'No SportyBet price is stored for leg {name}.'
+        verdict = evaluate(quote['decimal_odds'], leg['probability'], quote['observed_at'], leg['starts_at'],
+                           current, max_age, min_odds=0)
+        if not verdict['eligible']:
+            return None, f'Leg {name} re-validation failed: ' + ', '.join(verdict['reasons'])
+        fresh_legs.append({**dict(leg), 'decimal_odds': float(quote['decimal_odds']), 'odds_observed_at': quote['observed_at']})
+    combo = combine(fresh_legs)
+    if not combo_ok(combo):
+        return None, (f"Combined selection no longer qualifies: odds {combo['decimal_odds']:.2f} (min {MIN_ODDS:.2f}), "
+                      f"probability {combo['probability']:.2f} (min {COMBO_MIN_PROBABILITY:.2f}), EV {combo['expected_value']:+.3f}")
+    return {'decimal_odds': combo['decimal_odds'], 'observed_at': combo['odds_observed_at'], 'ev': combo['expected_value'],
+            'probability': combo['probability'], 'legs': fresh_legs}, ''
+
+
+def _apply_fresh_legs(connection, bet_id, fresh):
+    for leg in fresh.get('legs') or []:
+        connection.execute(
+            'UPDATE sports_ai_single_bet_legs SET decimal_odds=?, odds_observed_at=? WHERE bet_id=? AND leg_no=?',
+            (leg['decimal_odds'], leg['odds_observed_at'], bet_id, leg['leg_no']),
+        )
+
+
 def _recheck(connection, bet, current, max_age):
     from qualification_engine import selection_is_qualified
+    if _kind(bet) == 'COMBO':
+        return _recheck_combo(connection, bet, current, max_age)
     if not selection_is_qualified(connection, bet['fixture_id'], bet['market']):
         return None, 'The selection no longer has a current QUALIFIED decision.'
     quote = _latest_quote(connection, bet['fixture_id'], bet['market'])
@@ -249,8 +407,51 @@ def _recheck(connection, bet, current, max_age):
     return {'decimal_odds': float(quote['decimal_odds']), 'observed_at': quote['observed_at'], 'ev': verdict['ev']}, ''
 
 
-def _fixture(bet):
+def _fixture(bet, legs=None):
+    if legs:
+        return ' + '.join(f"{l['home']} vs {l['away']}" for l in legs)
     return f"{bet['home']} vs {bet['away']}"
+
+
+def _settle_combos(connection, current):
+    from rollover_engine import _outcome
+    settled = 0
+    for bet in connection.execute(
+        "SELECT * FROM sports_ai_single_bets WHERE status='PLACED' AND kind='COMBO'",
+    ).fetchall():
+        legs = _legs(connection, bet['id'])
+        grades = []
+        for leg in legs:
+            grade = leg['status'] if leg['status'] != 'OPEN' else None
+            if grade is None:
+                score = connection.execute(
+                    "SELECT home_score, away_score FROM sports_ai_results WHERE fixture_id=? AND status='final' LIMIT 1",
+                    (leg['fixture_id'],),
+                ).fetchone()
+                outcome = None if score is None else _outcome(leg['sport'], leg['market'], int(score['home_score']), int(score['away_score']))
+                if outcome is not None:
+                    grade = {'WON': 'WON', 'LOST': 'LOST'}.get(outcome, 'VOID')
+                    connection.execute('UPDATE sports_ai_single_bet_legs SET status=? WHERE bet_id=? AND leg_no=?',
+                                       (grade, bet['id'], leg['leg_no']))
+            grades.append(grade)
+        if 'LOST' in grades:
+            status, payout = 'LOST', 0.0
+        elif None in grades or not grades:
+            continue
+        elif all(g == 'VOID' for g in grades):
+            status, payout = 'VOID', float(bet['stake'])
+        else:  # a void leg counts at 1.00, as on the bookmaker
+            odds = _product(l['decimal_odds'] for l, g in zip(legs, grades) if g == 'WON')
+            status, payout = 'WON', round(bet['stake'] * odds, 2)
+        connection.execute(
+            """UPDATE sports_ai_single_bets SET status=?, payout=?, profit=?, settled_at=?
+               WHERE id=? AND status='PLACED'""",
+            (status, payout, round(payout - bet['stake'], 2), current.isoformat(), bet['id']),
+        )
+        _event(connection, bet['id'], 'SETTLED',
+               f"Combined settled {status.lower()} – {_fixture(bet, legs)} (₦{payout - bet['stake']:+,.0f})", current)
+        settled += 1
+    return settled
 
 
 def settle(connection, now=None):
@@ -261,7 +462,7 @@ def settle(connection, now=None):
     for bet in connection.execute(
         """SELECT b.*, r.home_score, r.away_score FROM sports_ai_single_bets b
            JOIN sports_ai_results r ON r.fixture_id=b.fixture_id AND r.status='final'
-           WHERE b.status='PLACED'""",
+           WHERE b.status='PLACED' AND b.kind='SINGLE'""",
     ).fetchall():
         outcome = _outcome(bet['sport'], bet['market'], int(bet['home_score']), int(bet['away_score']))
         if outcome is None:
@@ -276,7 +477,7 @@ def settle(connection, now=None):
         _event(connection, bet['id'], 'SETTLED',
                f"Settled {status.lower()} – {_fixture(bet)} {bet['home_score']}-{bet['away_score']} (₦{payout - bet['stake']:+,.0f})", current)
         settled += 1
-    return settled
+    return settled + _settle_combos(connection, current)
 
 
 def run_cycle(connection, now=None, candidates=None):
@@ -308,6 +509,7 @@ def run_cycle(connection, now=None, candidates=None):
             _event(connection, bet['id'], 'CANCELLED', f'Removed from queue – {_fixture(bet)}: {reason}', current)
             result['cancelled'] += 1
             continue
+        combo = _kind(bet) == 'COMBO'
         if live_mode or result['placed'] >= PLACE_PER_TICK:
             continue
         count, staked = _day_usage(connection, day)
@@ -315,12 +517,16 @@ def run_cycle(connection, now=None, candidates=None):
             continue
         connection.execute(
             """UPDATE sports_ai_single_bets
-               SET status='PLACED', decimal_odds=?, odds_observed_at=?, expected_value=?, placed_at=?, local_date=?
+               SET status='PLACED', decimal_odds=?, odds_observed_at=?, expected_value=?, placed_at=?, local_date=?,
+                   probability=COALESCE(?, probability)
                WHERE id=? AND status='QUEUED'""",
-            (fresh['decimal_odds'], fresh['observed_at'], fresh['ev'], current.isoformat(), day, bet['id']),
+            (fresh['decimal_odds'], fresh['observed_at'], fresh['ev'], current.isoformat(), day,
+             fresh.get('probability'), bet['id']),
         )
+        _apply_fresh_legs(connection, bet['id'], fresh)
+        label = 'Paper combined bet placed' if combo else 'Paper bet placed'
         _event(connection, bet['id'], 'PLACED',
-               f"Paper bet placed – {_fixture(bet)} {bet['selection']} @ {fresh['decimal_odds']:.2f} (₦{bet['stake']:,.0f})", current)
+               f"{label} – {_fixture(bet, fresh.get('legs'))} {bet['selection']} @ {fresh['decimal_odds']:.2f} (₦{bet['stake']:,.0f})", current)
         result['placed'] += 1
 
     # Refill the queue within the daily caps.
@@ -329,20 +535,32 @@ def run_cycle(connection, now=None, candidates=None):
     room = capacity(count, staked)
     for item in pool['eligible'][:room]:
         bet_id = str(uuid.uuid4())
+        kind = item.get('kind') or 'SINGLE'
         cursor = connection.execute(
             """INSERT OR IGNORE INTO sports_ai_single_bets
                (id,decision_id,prediction_id,fixture_id,sport,competition,home,away,market,selection,decimal_odds,
-                probability,expected_value,stake,mode,status,local_date,starts_at,odds_observed_at,created_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PAPER','QUEUED',?,?,?,?)""",
+                probability,expected_value,stake,mode,status,local_date,starts_at,odds_observed_at,created_at,kind)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PAPER','QUEUED',?,?,?,?,?)""",
             (bet_id, item.get('decision_id'), item.get('prediction_id'), item['fixture_id'], item['sport'],
              item.get('competition', ''), item['home'], item['away'], item['market'], item['selection'],
              item['decimal_odds'], item['probability'], item['expected_value'], STAKE, day, item['starts_at'],
-             item.get('odds_observed_at'), current.isoformat()),
+             item.get('odds_observed_at'), current.isoformat(), kind),
         )
         if cursor.rowcount:
+            for number, leg in enumerate(item.get('legs') or [], start=1):
+                connection.execute(
+                    """INSERT INTO sports_ai_single_bet_legs
+                       (bet_id,leg_no,decision_id,prediction_id,fixture_id,sport,competition,home,away,market,selection,
+                        decimal_odds,probability,starts_at,odds_observed_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (bet_id, number, leg.get('decision_id'), leg.get('prediction_id'), leg['fixture_id'], leg['sport'],
+                     leg.get('competition', ''), leg['home'], leg['away'], leg['market'], leg['selection'],
+                     leg['decimal_odds'], leg['probability'], leg['starts_at'], leg.get('odds_observed_at')),
+                )
             result['queued'] += 1
+            what = f"Combined selection qualified ({len(item['legs'])} legs, p={item['probability']:.2f})" if kind == 'COMBO' else 'Selection qualified'
             _event(connection, bet_id, 'QUEUED',
-                   f"Selection qualified – {_fixture(item)} {item['selection']} @ {item['decimal_odds']:.2f}, EV {item['expected_value']:+.3f}", current)
+                   f"{what} – {_fixture(item, item.get('legs'))} {item['selection']} @ {item['decimal_odds']:.2f}, EV {item['expected_value']:+.3f}", current)
     result['status'] = 'complete'
     _save_setting(connection, STATUS_KEY, {
         **result, 'last_run': current.isoformat(), 'eligible': len(pool['eligible']),
@@ -374,7 +592,10 @@ def next_for_execution(connection, now=None):
         if bet['local_date'] != day and capacity(count, staked) <= 0:
             return None
         item = dict(bet)
-        item.update(decimal_odds=fresh['decimal_odds'], odds_observed_at=fresh['observed_at'], expected_value=fresh['ev'])
+        item.update(decimal_odds=fresh['decimal_odds'], odds_observed_at=fresh['observed_at'], expected_value=fresh['ev'],
+                    kind=_kind(bet), legs=fresh.get('legs') or [])
+        if fresh.get('probability') is not None:
+            item['probability'] = fresh['probability']
         return item
     return None
 
@@ -387,13 +608,15 @@ def apply_execution(connection, bet, outcome, order_status, detail, kind, now=No
         # An unclear submission counts as placed: money may have left the account.
         connection.execute(
             """UPDATE sports_ai_single_bets
-               SET status='PLACED', decimal_odds=?, odds_observed_at=?, expected_value=?, placed_at=?, local_date=?, reason=?
+               SET status='PLACED', decimal_odds=?, odds_observed_at=?, expected_value=?, placed_at=?, local_date=?, reason=?,
+                   probability=?
                WHERE id=? AND status='QUEUED'""",
             (bet['decimal_odds'], bet.get('odds_observed_at'), bet['expected_value'], current.isoformat(), day,
-             detail[:300], bet['id']),
+             detail[:300], bet['probability'], bet['id']),
         )
+        _apply_fresh_legs(connection, bet['id'], bet)
         action = {'PAPER_PLACED': 'REHEARSED', 'LIVE_PLACED': 'LIVE_PLACED', 'UNKNOWN': 'EXCEPTION'}[outcome]
-        _event(connection, bet['id'], action, f"{_fixture(bet)} {bet['selection']} – {detail}", current)
+        _event(connection, bet['id'], action, f"{_fixture(bet, bet.get('legs'))} {bet['selection']} – {detail}", current)
         if outcome == 'UNKNOWN':
             set_paused(connection, True, 'live-execution', current)
     elif outcome == 'CANCEL':
@@ -401,12 +624,12 @@ def apply_execution(connection, bet, outcome, order_status, detail, kind, now=No
             "UPDATE sports_ai_single_bets SET status='CANCELLED', reason=? WHERE id=? AND status='QUEUED'",
             (f'{kind.title()} stopped: {detail}'[:300], bet['id']),
         )
-        _event(connection, bet['id'], 'CANCELLED', f"{_fixture(bet)} – {kind.lower()} stopped: {detail}", current)
+        _event(connection, bet['id'], 'CANCELLED', f"{_fixture(bet, bet.get('legs'))} – {kind.lower()} stopped: {detail}", current)
     else:  # WAIT: session or gate not ready; the bet stays queued
         last = connection.execute(
             'SELECT action, detail FROM sports_ai_single_events WHERE bet_id=? ORDER BY created_at DESC LIMIT 1', (bet['id'],),
         ).fetchone()
-        message = f"{_fixture(bet)} waiting – {detail}"
+        message = f"{_fixture(bet, bet.get('legs'))} waiting – {detail}"
         if not last or last['action'] != 'WAITING' or last['detail'] != message[:500]:
             _event(connection, bet['id'], 'WAITING', message, current)
 
@@ -428,9 +651,12 @@ def _account_balance(connection, current):
 
 # ---------------------------------------------------------------- read models
 
-def _bet_public(row):
+def _bet_public(connection, row):
     item = dict(row)
-    item['fixture'] = _fixture(row)
+    legs = [dict(l) for l in _legs(connection, row['id'])] if _kind(row) == 'COMBO' else []
+    item['kind'] = _kind(row)
+    item['legs'] = legs
+    item['fixture'] = _fixture(row, legs)
     return item
 
 
@@ -495,7 +721,8 @@ def dashboard(connection, now=None):
                        'worker_fresh': beat['fresh'], 'last_cycle': status.get('last_run')},
         'balance': _account_balance(connection, current),
         'rules': {'stake': STAKE, 'daily_target': list(DAILY_TARGET), 'daily_limit': DAILY_LIMIT,
-                  'daily_stake_limit': DAILY_STAKE_LIMIT, 'min_ev': MIN_EV},
+                  'daily_stake_limit': DAILY_STAKE_LIMIT, 'min_ev': MIN_EV,
+                  'min_odds': MIN_ODDS, 'combo_max_legs': COMBO_MAX_LEGS, 'combo_min_probability': COMBO_MIN_PROBABILITY},
         'today': {
             'executed': len(today), 'wins': wins, 'losses': losses,
             'pending': sum(1 for b in today if b['status'] == 'PLACED'),
@@ -547,13 +774,13 @@ def engine_view(connection, now=None):
     last = _parse(status.get('last_run'))
     queue = []
     for index, bet in enumerate(queued):
-        item = _bet_public(bet)
+        item = _bet_public(connection, bet)
         item['stage'] = 'Placing' if index < PLACE_PER_TICK else 'Queued'
         wait = math.ceil((index + 1) / PLACE_PER_TICK) * TICK_SECONDS
         base = last or current
         item['eta_seconds'] = max(0, int((base + timedelta(seconds=wait) - current).total_seconds()))
         queue.append(item)
-    recent = [_bet_public(r) for r in connection.execute(
+    recent = [_bet_public(connection, r) for r in connection.execute(
         "SELECT * FROM sports_ai_single_bets WHERE local_date=? AND status!='QUEUED' ORDER BY COALESCE(placed_at,created_at) DESC LIMIT 15",
         (day,),
     ).fetchall()]
@@ -573,7 +800,8 @@ def engine_view(connection, now=None):
         'real_money_enabled': bool(live and live['execution']['submission_allowed']),
         'generated_at': current.isoformat(),
         'strategy': {'stake': STAKE, 'daily_target': list(DAILY_TARGET), 'daily_limit': DAILY_LIMIT,
-                     'daily_stake_limit': DAILY_STAKE_LIMIT, 'min_ev': MIN_EV, 'place_per_tick': PLACE_PER_TICK,
+                     'daily_stake_limit': DAILY_STAKE_LIMIT, 'min_ev': MIN_EV, 'min_odds': MIN_ODDS,
+                     'combo_max_legs': COMBO_MAX_LEGS, 'combo_min_probability': COMBO_MIN_PROBABILITY, 'place_per_tick': PLACE_PER_TICK,
                      'tick_seconds': TICK_SECONDS},
         'autonomous': {'running': beat['fresh'] and not state.get('paused'), 'paused': bool(state.get('paused')),
                        'changed_by': state.get('changed_by'), 'changed_at': state.get('changed_at')},
@@ -630,7 +858,7 @@ def build_single_betting_router(auth, require_admin_key):
                 rows = connection.execute(
                     'SELECT * FROM sports_ai_single_bets ORDER BY created_at DESC LIMIT ?', (limit,),
                 ).fetchall()
-        return [_bet_public(r) for r in rows]
+        return [_bet_public(connection, r) for r in rows]
 
     @router.post('/execution/kill-switch')
     def kill(actor: str = Depends(auth), x_sports_admin_key: str | None = Header(default=None)):

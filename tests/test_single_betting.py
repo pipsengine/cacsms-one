@@ -142,6 +142,108 @@ class SingleBettingTests(unittest.TestCase):
             out = sb.run_cycle(c, NOW)
             self.assertEqual(out['queued'], sb.DAILY_LIMIT)
 
+    def test_single_below_min_odds_is_rejected(self):
+        self.assertIn('BELOW_MIN_ODDS', sb.evaluate(1.15, 0.95, NOW, NOW + timedelta(hours=1), NOW)['reasons'])
+        self.assertTrue(sb.evaluate(1.20, 0.90, NOW, NOW + timedelta(hours=1), NOW)['eligible'])
+        with self.conn() as c:
+            c.execute('PRAGMA foreign_keys=OFF')
+            seed(c, 'lonely', odds=1.12, probability=0.95)  # no partner leg: nothing is bet
+            out = sb.run_cycle(c, NOW)
+            self.assertEqual(out['queued'], 0)
+            status = json.loads(c.execute("SELECT value_json FROM sports_ai_settings WHERE key=?", (sb.STATUS_KEY,)).fetchone()[0])
+            self.assertEqual(status['rejected'].get('BELOW_MIN_ODDS'), 1)
+
+    def test_low_odds_legs_combine_and_settle(self):
+        with self.conn() as c:
+            c.execute('PRAGMA foreign_keys=OFF')
+            seed(c, 'a', odds=1.12, probability=0.95)
+            seed(c, 'b', odds=1.14, probability=0.93)
+            seed(c, 'single', odds=1.72, probability=0.645)
+            out = sb.run_cycle(c, NOW)
+            self.assertEqual(out['queued'], 2)
+            combo = c.execute("SELECT * FROM sports_ai_single_bets WHERE kind='COMBO'").fetchone()
+            self.assertAlmostEqual(combo['decimal_odds'], round(1.12 * 1.14, 4))
+            self.assertGreaterEqual(combo['decimal_odds'], sb.MIN_ODDS)
+            self.assertAlmostEqual(combo['probability'], 0.95 * 0.93)
+            legs = c.execute('SELECT fixture_id FROM sports_ai_single_bet_legs WHERE bet_id=? ORDER BY leg_no', (combo['id'],)).fetchall()
+            self.assertEqual(sorted(r[0] for r in legs), ['a', 'b'])
+            # Neither leg fixture can be queued again.
+            self.assertEqual(sb.run_cycle(c, NOW + timedelta(seconds=30))['queued'], 0)
+            view = sb.engine_view(c, NOW + timedelta(seconds=30))
+            shown = next(b for b in view['recent'] if b['kind'] == 'COMBO')
+            self.assertEqual(shown['fixture'], 'a-H vs a-A + b-H vs b-A')
+            self.assertEqual(c.execute('SELECT status FROM sports_ai_single_bets WHERE id=?', (combo['id'],)).fetchone()[0], 'PLACED')
+            result(c, 'a', 1, 0)
+            sb.run_cycle(c, NOW + timedelta(hours=5))
+            self.assertEqual(c.execute('SELECT status FROM sports_ai_single_bets WHERE id=?', (combo['id'],)).fetchone()[0], 'PLACED')
+            result(c, 'b', 3, 1)
+            sb.run_cycle(c, NOW + timedelta(hours=6))
+            row = c.execute('SELECT * FROM sports_ai_single_bets WHERE id=?', (combo['id'],)).fetchone()
+            self.assertEqual(row['status'], 'WON')
+            self.assertAlmostEqual(row['payout'], round(100 * 1.12 * 1.14, 2))
+
+    def test_combo_loses_on_any_leg_and_needs_high_probability(self):
+        with self.conn() as c:
+            c.execute('PRAGMA foreign_keys=OFF')
+            seed(c, 'a', odds=1.12, probability=0.95)
+            seed(c, 'b', odds=1.14, probability=0.93)
+            sb.run_cycle(c, NOW)
+            sb.run_cycle(c, NOW + timedelta(seconds=30))
+            result(c, 'b', 0, 2)  # leg b lost; leg a still pending
+            sb.run_cycle(c, NOW + timedelta(hours=5))
+            row = c.execute("SELECT * FROM sports_ai_single_bets WHERE kind='COMBO'").fetchone()
+            self.assertEqual(row['status'], 'LOST')
+            self.assertAlmostEqual(row['profit'], -100.0)
+        legs = [{'fixture_id': f, 'sport': 'football', 'home': f, 'away': f, 'selection': 'x', 'starts_at': 'z',
+                 'decimal_odds': 1.11, 'probability': 0.88} for f in ('x', 'y')]
+        combos, unused = sb.build_combos(legs)  # 1.23 but p=0.77 < 0.80
+        self.assertEqual((combos, len(unused)), ([], 2))
+
+    def _seed_second_market(self, c, fixture_id, market, odds, probability):
+        """A second qualified market on a fixture seed() already created."""
+        prediction, quote = f'p-{fixture_id}-{market}', f'q-{fixture_id}-{market}'
+        kickoff = (NOW + timedelta(hours=3)).isoformat()
+        c.execute("""INSERT INTO sports_ai_engine_predictions(id,run_id,fixture_id,model_id,feature_id,market,outcome,probability,settlement_json,explanation_json)
+                     VALUES(?,?,?,?,?,?,?,?,?,?)""", (prediction, 'run', fixture_id, 'model', 'feature', market, market, probability, '{}', '{}'))
+        c.execute("""INSERT INTO sports_ai_odds_snapshots(id,fixture_id,provider_id,bookmaker,market,outcome,line,decimal_odds,source_url,observed_at)
+                     VALUES(?,?,?,?,?,?,?,?,?,?)""", (quote, fixture_id, 'provider', 'SportyBet', market, market, None, odds, 'https://example.test', (NOW - timedelta(minutes=2)).isoformat()))
+        c.execute("""INSERT INTO sports_ai_value_opportunities(id,prediction_id,odds_id,implied_probability,expected_edge,status,reason,evaluated_at)
+                     VALUES(?,?,?,?,?,?,?,?)""", (f'o-{fixture_id}-{market}', prediction, quote, 1 / odds, odds * probability - 1, 'qualified', 'test', NOW.isoformat()))
+        c.execute("""INSERT INTO sports_ai_qualification_decisions(id,prediction_id,fixture_id,sport,competition,market,state,reason_code,reason,evidence_json,products_json,
+                     rank_score,policy_version,decision_version,fingerprint,starts_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  (f'd-{fixture_id}-{market}', prediction, fixture_id, 'football', 'Primeira Liga', market, 'QUALIFIED', 'OK', 'ok',
+                   json.dumps({'probability': probability}), json.dumps(['booking']), 1.0, 1, 1, 'fp', kickoff, NOW.isoformat(), NOW.isoformat()))
+
+    def test_combined_replaces_single_when_more_likely_to_win(self):
+        with self.conn() as c:
+            c.execute('PRAGMA foreign_keys=OFF')
+            seed(c, 'x', odds=1.72, probability=0.645)          # single at 64.5%
+            self._seed_second_market(c, 'x', 'HOME_OR_DRAW', 1.12, 0.95)
+            seed(c, 'y', odds=1.14, probability=0.93)
+            pool = sb.load_candidates(c, NOW)
+            self.assertEqual([i['kind'] for i in pool['eligible']], ['COMBO'])  # 88% beats 64.5%
+            combo = pool['eligible'][0]
+            self.assertEqual({(l['fixture_id'], l['market']) for l in combo['legs']}, {('x', 'HOME_OR_DRAW'), ('y', 'HOME')})
+            self.assertEqual(pool['rejected'].get('SINGLE_REPLACED_BY_COMBINED'), 1)
+
+    def test_single_kept_when_it_is_more_likely_than_the_combination(self):
+        with self.conn() as c:
+            c.execute('PRAGMA foreign_keys=OFF')
+            seed(c, 'x', odds=1.25, probability=0.90)           # single at 90%
+            self._seed_second_market(c, 'x', 'HOME_OR_DRAW', 1.12, 0.95)
+            seed(c, 'y', odds=1.14, probability=0.93)           # combination would be 88%
+            pool = sb.load_candidates(c, NOW)
+            self.assertEqual([(i['kind'], i['fixture_id']) for i in pool['eligible']], [('SINGLE', 'x')])
+            self.assertEqual(pool['rejected'].get('BELOW_MIN_ODDS'), 1)  # y alone cannot reach 1.20
+
+    def test_candidates_ranked_by_chance_of_winning(self):
+        with self.conn() as c:
+            c.execute('PRAGMA foreign_keys=OFF')
+            seed(c, 'value', odds=2.40, probability=0.50)       # EV +0.20, 50%
+            seed(c, 'safe', odds=1.30, probability=0.82)        # EV +0.066, 82%
+            ranked = [i['fixture_id'] for i in sb.load_candidates(c, NOW)['eligible']]
+            self.assertEqual(ranked, ['safe', 'value'])
+
     def test_kill_switch_stops_selection(self):
         with self.conn() as c:
             c.execute('PRAGMA foreign_keys=OFF')

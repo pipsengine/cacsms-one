@@ -182,13 +182,16 @@ SLIP_STATE = r'''() => {
   const selectedMode = pill ? (pill.innerText || '').trim().toUpperCase() : null;
   const toggles = [...root.querySelectorAll('.switch-box [data-op]')].map(node => ({
     label: (node.innerText || '').trim().toUpperCase(), active: node.classList.contains('inside-btn')}));
-  const stakeInput = [...root.querySelectorAll('input')].find(node => /min/i.test(node.placeholder || '') || /m-input/.test(node.className || ''));
+  const stakeInputs = [...root.querySelectorAll('input')].filter(node => (/min/i.test(node.placeholder || '') || /m-input/.test(node.className || ''))
+    && node.getBoundingClientRect().width > 0);
+  const stakeInput = stakeInputs[0];
   const amount = label => { const m = text.match(new RegExp(label + '\\s*(?:NGN|₦)?\\s*([\\d,]+(?:\\.\\d+)?)', 'i')); return m ? Number(m[1].replace(/,/g, '')) : null; };
   const place = [...root.querySelectorAll('button, [role="button"]')].filter(node => /^place\s*bet$/i.test((node.innerText || '').trim()));
   return {
     present: true,
-    text: text.slice(0, 600),
+    text: text.slice(0, 2000),
     count: count ? Number(count[1]) : null,
+    stake_inputs: stakeInputs.length,
     real_active: selectedMode === 'REAL',
     sim_active: selectedMode === 'SIM',
     mode: selectedMode,
@@ -219,6 +222,17 @@ MARK_REAL = r'''() => {
     .find(item => (item.innerText || '').trim().toUpperCase() === 'REAL' && !item.classList.contains('inside-btn'));
   if (!node) return false;
   node.click();
+  return true;
+}'''
+
+MARK_MULTIPLE = r'''() => {
+  // With several selections the slip must be on its Multiple tab: one stake over all legs.
+  const root = document.querySelector('.m-betslip-wrapper, .m-betslips, .m-betslip');
+  if (!root) return false;
+  const tab = [...root.querySelectorAll('li, span, div, a')]
+    .find(node => /^multiples?$/i.test((node.innerText || '').trim()) && node.children.length <= 1);
+  if (!tab) return false;
+  tab.click();
   return true;
 }'''
 
@@ -495,18 +509,32 @@ def reconcile(connection, history_text, now=None):
     claimed = set()
     updated = 0
     orders = connection.execute(
-        """SELECT o.*, b.home, b.away FROM sports_ai_single_live_orders o
+        """SELECT o.*, b.home, b.away, b.kind AS bet_kind FROM sports_ai_single_live_orders o
            JOIN sports_ai_single_bets b ON b.id=o.bet_id
            WHERE o.kind='SUBMISSION' AND o.status IN ('PLACED','UNKNOWN','SUBMITTING')
            ORDER BY o.submitted_at""",
     ).fetchall()
     for order in orders:
         sent = _parse(order['submitted_at'] or order['created_at'])
+        combo = order['bet_kind'] == 'COMBO'
+        pairs = [(order['home'], order['away'])]
+        if combo:
+            pairs = [(leg['home'], leg['away']) for leg in connection.execute(
+                'SELECT home, away FROM sports_ai_single_bet_legs WHERE bet_id=? ORDER BY leg_no', (order['bet_id'],),
+            ).fetchall()]
+        wanted_type = 'multiple' if combo else 'single'
         match = None
         for index, row in enumerate(rows):
-            if index in claimed or row['type'] != 'single' or row['stake'] != STAKE or len(row['events']) != 1:
+            if index in claimed or row['type'] != wanted_type or row['stake'] != STAKE or len(row['events']) != len(pairs):
                 continue
-            if not _same_event(row['events'][0], order['home'], order['away']):
+            # Every leg must match a distinct event of the row, and the row has no other events.
+            free = list(row['events'])
+            for home, away in pairs:
+                hit = next((event for event in free if _same_event(event, home, away)), None)
+                if hit is None:
+                    break
+                free.remove(hit)
+            if free:
                 continue
             # The list shows minutes only, in WAT.
             if sent and not (sent - timedelta(minutes=1) <= row['placed_at'] <= sent + timedelta(minutes=10)):
@@ -527,7 +555,7 @@ def reconcile(connection, history_text, now=None):
         )
         label = status.replace('SETTLED_', '').lower()
         _event(connection, order['bet_id'], 'RECONCILED',
-               f"SportyBet Bet History shows {order['home']} v {order['away']} (₦100 single, placed {row['placed_at']:%H:%M} WAT) as {label}", current)
+               f"SportyBet Bet History shows {' + '.join(f'{h} v {a}' for h, a in pairs)} (₦100 {'multiple' if combo else 'single'}, placed {row['placed_at']:%H:%M} WAT) as {label}", current)
         updated += 1
     return updated
 
@@ -650,6 +678,16 @@ def submission_gate(connection, now=None):
 
 # ---------------------------------------------------------------- execution
 
+def _bet_legs(bet):
+    """The selections a bet puts on the slip: its legs for a combined bet, else itself."""
+    legs = bet.get('legs') or []
+    return list(legs) if (bet.get('kind') == 'COMBO' and legs) else [bet]
+
+
+def _bet_name(bet):
+    return ' + '.join(f"{leg.get('home')} vs {leg.get('away')}" for leg in _bet_legs(bet))
+
+
 def _order(connection, bet, kind, grant_id, now):
     order_id = str(uuid.uuid4())
     connection.execute(
@@ -658,7 +696,7 @@ def _order(connection, bet, kind, grant_id, now):
            VALUES(?,?,?,'PENDING',?,?,?,?,?,?,?)""",
         (order_id, bet['id'], kind, local_date(now), STAKE, bet['decimal_odds'], grant_id,
          # The match name is kept even if the attempt fails before the page opens.
-         json.dumps({'fixture': f"{bet.get('home')} vs {bet.get('away')}"}), now.isoformat(), now.isoformat()),
+         json.dumps({'fixture': _bet_name(bet), 'kind': bet.get('kind') or 'SINGLE'}), now.isoformat(), now.isoformat()),
     )
     return order_id
 
@@ -676,10 +714,16 @@ def _finish_order(order_id, status, now=None, **fields):
 
 
 async def _prepare_in_account(page, bet, test=False):
-    """Open the sport page in the signed-in context, add exactly this one selection, set ₦100."""
+    """Open each needed sport page in the signed-in context, add exactly this bet's selection(s)
+    (one for a single, every leg for a combined bet), set one ₦100 stake, and verify the slip."""
     from sportybet_booking import _open_sport, prepare_slip
+    from single_betting import COMBO_MIN_PROBABILITY, MIN_EV, MIN_ODDS
     local = BASE_URL.startswith(('http://127.0.0.1', 'http://localhost'))
-    await _open_sport(page, bet['sport'], f"{BASE_URL}/ng/sport/{bet['sport']}" if local else None)
+    legs = _bet_legs(bet)
+    combo = len(legs) > 1
+    page_sport = lambda leg: 'football' if leg['sport'] == 'frauenfussball' else leg['sport']
+    sports = list(dict.fromkeys(page_sport(leg) for leg in legs))
+    await _open_sport(page, sports[0], f"{BASE_URL}/ng/sport/{sports[0]}" if local else None)
     state = await _login_state(page)
     if not state.get('logged_in'):
         raise SessionExpired('SportyBet shows the login form. The saved session has expired.')
@@ -688,17 +732,37 @@ async def _prepare_in_account(page, bet, test=False):
         if await _clear_slip(page) > 0:
             slip = await page.evaluate(SLIP_STATE)
             return {'ok': False, 'code': 'SLIP_NOT_EMPTY', 'error': 'The account betslip already held selections that could not be cleared.', 'slip': slip}
-    item = {'fixture_id': bet['fixture_id'], 'sport': bet['sport'], 'competition': bet['competition'],
-            'home': bet['home'], 'away': bet['away'], 'market': bet['market'], 'selection': '',
-            'decimal_odds': bet['decimal_odds']}
-    picked = await prepare_slip(page, [item], book=False, max_move=MAX_PRICE_MOVE)
-    if picked['status'] != 'SELECTED' or not picked.get('seen'):
-        return {'ok': False, 'code': 'PRICE_OR_MARKET', 'error': picked.get('error') or 'The selection was not found at its price.', 'picked': picked}
-    page_odds = float(picked['seen'][0].get('page_odds') or 0)
-    from single_betting import MIN_EV
-    ev = page_odds * float(bet['probability']) - 1
+    seen = []
+    for index, sport in enumerate(sports):
+        if index:
+            await _open_sport(page, sport, f"{BASE_URL}/ng/sport/{sport}" if local else None, reuse=True)
+        items = [{'fixture_id': leg['fixture_id'], 'sport': leg['sport'], 'competition': leg.get('competition') or '',
+                  'home': leg['home'], 'away': leg['away'], 'market': leg['market'], 'selection': '',
+                  'decimal_odds': leg['decimal_odds']} for leg in legs if page_sport(leg) == sport]
+        picked = await prepare_slip(page, items, book=False, max_move=MAX_PRICE_MOVE)
+        if picked['status'] != 'SELECTED' or len(picked.get('seen') or []) != len(items):
+            return {'ok': False, 'code': 'PRICE_OR_MARKET', 'error': picked.get('error') or 'A selection was not found at its price.', 'picked': picked}
+        seen.extend(picked['seen'])
+    leg_odds = [float(item.get('page_odds') or 0) for item in seen]
+    page_odds = 1.0
+    for value in leg_odds:
+        page_odds *= value
+    page_odds = round(page_odds, 4)
+    if page_odds < MIN_ODDS - 1e-9 and not test:
+        return {'ok': False, 'code': 'EDGE_GONE', 'error': f'The displayed {page_odds:.2f} is below the {MIN_ODDS:.2f} minimum.', 'page_odds': page_odds}
+    probability = float(bet['probability'])
+    if combo:
+        probability = 1.0
+        for leg in legs:
+            probability *= float(leg['probability'])
+        if probability < COMBO_MIN_PROBABILITY and not test:
+            return {'ok': False, 'code': 'EDGE_GONE', 'error': f'Combined probability {probability:.2f} is below {COMBO_MIN_PROBABILITY:.2f}.', 'page_odds': page_odds}
+    ev = page_odds * probability - 1
     if ev < MIN_EV and not test:
         return {'ok': False, 'code': 'EDGE_GONE', 'error': f'At the displayed {page_odds:.2f} the expected value is {ev:+.3f}.', 'page_odds': page_odds}
+    if combo:
+        await page.evaluate(MARK_MULTIPLE)
+        await page.wait_for_timeout(800)
     slip = await page.evaluate(SLIP_STATE)
     if not slip.get('real_active') and slip.get('sim_active'):
         await page.evaluate(MARK_REAL)
@@ -709,18 +773,35 @@ async def _prepare_in_account(page, bet, test=False):
     await stake.press('Tab')
     await page.wait_for_timeout(1000)
     slip = await page.evaluate(SLIP_STATE)
-    checks = {
-        'one_selection': slip.get('count') == 1,
-        'teams_on_slip': all(token.casefold() in (slip.get('text') or '').casefold()
-                             for token in (bet['home'].split()[0], bet['away'].split()[0])),
+    text = (slip.get('text') or '').casefold()
+    expected_win = STAKE * page_odds
+    win = slip.get('potential_win')
+    if combo:
+        # Exactly the legs, one stake input, ₦100 in total: on a Singles tab two legs would show
+        # two inputs or ₦200. A multiple pays the product of the leg prices; SportyBet may add a
+        # bonus on top, never less.
+        checks = {
+            'all_legs_only': slip.get('count') == len(legs),
+            'one_stake_input': slip.get('stake_inputs') == 1,
+            'stake_100': slip.get('stake') == STAKE and slip.get('total_stake') == STAKE,
+            'potential_win': win is not None and expected_win * 0.99 - 1.0 <= win <= expected_win * 1.10 + 1.0,
+        }
+    else:
+        checks = {
+            'one_selection': slip.get('count') == 1,
+            'stake_100': slip.get('stake') == STAKE and (slip.get('total_stake') in (None, STAKE)),
+            'potential_win': win is not None and abs(win - expected_win) <= max(1.0, expected_win * 0.01),
+        }
+    checks.update({
+        'teams_on_slip': all(token.casefold() in text
+                             for leg in legs for token in (leg['home'].split()[0], leg['away'].split()[0])),
         'real_mode': bool(slip.get('real_active')) and not slip.get('sim_active'),
-        'stake_100': slip.get('stake') == STAKE and (slip.get('total_stake') in (None, STAKE)),
-        'potential_win': slip.get('potential_win') is not None and abs(slip['potential_win'] - STAKE * page_odds) <= max(1.0, STAKE * page_odds * 0.01),
         'single_place_button': slip.get('place_buttons') == 1 and not slip.get('place_disabled'),
         'balance_covers_stake': state.get('balance') is None or state['balance'] >= STAKE,
-    }
+    })
     return {'ok': all(checks.values()), 'code': 'CHECKS' if not all(checks.values()) else 'READY',
-            'checks': checks, 'slip': slip, 'page_odds': page_odds, 'ev': ev, 'balance': state.get('balance')}
+            'checks': checks, 'slip': slip, 'page_odds': page_odds, 'leg_page_odds': leg_odds, 'ev': ev,
+            'balance': state.get('balance')}
 
 
 async def execute_async(bet, kind, now=None, test=False):
@@ -750,7 +831,7 @@ async def execute_async(bet, kind, now=None, test=False):
                 ready = await _prepare_in_account(page, bet, test=test)
                 if test:
                     ready['test'] = True
-                    ready['fixture'] = f"{bet['home']} vs {bet['away']}"
+                    ready['fixture'] = _bet_name(bet)
                 await page.screenshot(path=str(shot), full_page=False)
                 if not ready['ok']:
                     if ready['code'] != 'SLIP_NOT_EMPTY':
@@ -815,7 +896,7 @@ async def execute_async(bet, kind, now=None, test=False):
     outcome = outcome or {}
     if outcome.get('success'):
         _finish_order(order_id, 'PLACED', bookmaker_ref=outcome.get('ref'))
-        return 'LIVE_PLACED', 'PLACED', f"SportyBet accepted the single{(' – ticket ' + outcome['ref']) if outcome.get('ref') else ''}"
+        return 'LIVE_PLACED', 'PLACED', f"SportyBet accepted the {'combined bet' if len(_bet_legs(bet)) > 1 else 'single'}{(' – ticket ' + outcome['ref']) if outcome.get('ref') else ''}"
     if outcome.get('odds_changed') or outcome.get('insufficient') or outcome.get('rejected'):
         reason = 'odds changed (not accepted)' if outcome.get('odds_changed') else 'insufficient balance' if outcome.get('insufficient') else 'rejected by SportyBet'
         _finish_order(order_id, 'REJECTED', error=reason + ': ' + outcome.get('text', '')[:300])

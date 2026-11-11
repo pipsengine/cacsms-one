@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 GRADED_TABLES = (
     'sports_ai_accumulator_legs', 'sports_ai_ticket_legs', 'sports_ai_single_bets',
     'sports_ai_rollover_days', 'sports_ai_draw_fixtures', 'sports_ai_weekly_draw_watch',
-    'sports_ai_basketball_bet_selections',
+    'sports_ai_basketball_bet_selections', 'sports_ai_single_bet_legs',
 )
 
 
