@@ -519,7 +519,14 @@ def _history_tick():
             'pages', result.get('pages', 0),
             (result.get('error') or '')[:180],
         )
+        # Stored, so a collector that fails cycle after cycle shows on the dashboard instead of only
+        # in the console (it once went 5 hours without a result and nothing recorded why).
+        if result.get('status') not in ('waiting',):
+            failed = result.get('status') in ('failed', 'cooldown', 'missing_provider')
+            reason = result.get('error') or result.get('until') or result.get('status')
+            _observed('match_history', result, failed=failed, error=RuntimeError(reason) if failed else None)
     except Exception as error:
+        _observed('match_history', {'status': 'failed'}, failed=True, error=error)
         _report('match history failed', error)
 
 
