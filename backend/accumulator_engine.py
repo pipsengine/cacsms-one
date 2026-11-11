@@ -2234,7 +2234,7 @@ def _public_config(config):
 
 def _insert_ticket(connection, run_id, ticket, config, current, change_type, reason, family_id=None, version=1):
     from ticket_diversity import assert_available
-    if ticket.get('tier_mode') != 'simulation':
+    if ticket.get('tier_mode') != 'simulation' and not ticket.get('shared_matches'):
         assert_available(connection, ticket['legs'], current, ignore_family=family_id)
     ticket_id = str(uuid.uuid4())
     family = family_id or ticket_id

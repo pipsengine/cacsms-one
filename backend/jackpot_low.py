@@ -49,6 +49,25 @@ def _now(now=None):
     return (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
 
 
+def _label_market(sport, market, outcome, line):
+    """SportyBet page labels the shared normaliser does not map (football double chance, the 1X2 /
+    Double Chance / Over-Under labels of ice hockey and handball, cricket's winner)."""
+    key, pick = str(market or '').strip().casefold(), str(outcome or '').strip().casefold().replace(' ', '')
+    double = {'homeordraw': 'DOUBLE_CHANCE_1X', 'draworaway': 'DOUBLE_CHANCE_X2', 'homeoraway': 'DOUBLE_CHANCE_12',
+              '1x': 'DOUBLE_CHANCE_1X', 'x2': 'DOUBLE_CHANCE_X2', '12': 'DOUBLE_CHANCE_12'}
+    if key in ('double_chance', 'double chance'):
+        return double.get(pick)
+    if key in ('1x2', 'match result', 'full time result'):
+        return {'home': 'HOME', 'draw': 'DRAW', 'away': 'AWAY', '1': 'HOME', 'x': 'DRAW', '2': 'AWAY'}.get(pick)
+    if key in ('over/under', 'total goals', 'totals'):
+        found = re.fullmatch(r'(over|under)(\d+\.5)', pick)
+        if found:
+            return f'{found.group(1).upper()}_{found.group(2)}'
+    if sport == 'cricket' and key.startswith('winner'):
+        return {'home': 'MONEYLINE_HOME', 'away': 'MONEYLINE_AWAY'}.get(pick)
+    return None
+
+
 def _margins(rows):
     """Overround per fixture/market/line from every outcome priced together; default otherwise."""
     groups = {}
@@ -64,7 +83,7 @@ def _margins(rows):
     return margins
 
 
-def scan(connection, now=None):
+def scan(connection, now=None, horizon_hours=None):
     """Best low-odds selection per match across every sport, most likely first."""
     from accumulator_engine import _simulated_competition
     from prediction_engine import normalize_quote_market
@@ -84,7 +103,7 @@ def scan(connection, now=None):
                                   AND q2.market=q.market AND q2.outcome=q.outcome AND IFNULL(q2.line,-1)=IFNULL(q.line,-1))""",
         ((current - timedelta(hours=PRICE_HOURS)).isoformat(),
          (current + timedelta(minutes=LEAD_MINUTES)).isoformat(),
-         (current + timedelta(hours=HORIZON_HOURS)).isoformat(),
+         (current + timedelta(hours=horizon_hours or HORIZON_HOURS)).isoformat(),
          (current - timedelta(hours=OFFER_HOURS)).isoformat()),
     ).fetchall()
     margins = _margins(rows)
@@ -101,6 +120,7 @@ def scan(connection, now=None):
             market = normalize_quote_market(row['sport'], fixture, dict(row))
         except Exception:
             market = None
+        market = market or _label_market(row['sport'], row['market'], row['outcome'], row['line'])
         if not market or not BOOKABLE.match(market):
             continue  # only markets the booking browser places, and never a line that can push
         margin = margins.get((row['fixture_id'], row['market'], row['line']), DEFAULT_MARGIN)

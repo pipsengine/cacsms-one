@@ -317,7 +317,7 @@ def import_coded_tickets(connection, now=None):
            JOIN sports_ai_booking_codes b ON b.accumulator_ticket_id=t.id
             AND b.verification_method='displayed' AND TRIM(COALESCE(b.code,''))<>''
            WHERE b.created_at>=? AND t.combined_odds>1 AND t.joint_probability>0
-             AND COALESCE(json_extract(t.parameters_json,'$.product'),'')!='jackpot_low'
+             AND COALESCE(json_extract(t.parameters_json,'$.product'),'') NOT IN ('jackpot_low','prize_ladder')
              AND NOT EXISTS (SELECT 1 FROM sports_ai_single_bets s WHERE s.id=?||t.id)
            ORDER BY b.created_at""",
         (datetime.fromisoformat(TICKET_IMPORT_FROM).replace(tzinfo=WAT).astimezone(timezone.utc).isoformat(), TICKET_PREFIX),

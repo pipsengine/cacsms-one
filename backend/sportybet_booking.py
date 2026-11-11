@@ -9,7 +9,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from booking_schedule import describe, last_publication_at, phase_at, publication_due, publication_open
-from db import connect
+from db import connect as _db_connect
+
+
+def connect(busy_timeout_ms=180000):
+    """Booking writes wait up to 3 minutes for SQLite's write lock. A booking runs on its own
+    thread after minutes of browser work, possibly after SportyBet has displayed a code; giving
+    up after the default 20 s lost results and left jobs stuck in PREPARING."""
+    return _db_connect(busy_timeout_ms)
 from sportybet_feed import SECTIONS
 from sportybet_research import blocked_page
 
@@ -195,7 +202,7 @@ def create_job(connection, selections, high_odds=False):
     from qualification_engine import require_current_qualification
     product = _ticket_product(connection, selections[0]['ticket_id']) if selections and selections[0].get('ticket_id') else None
     # Low-odds jackpots use SportyBet's own price, not the (quarantined) basketball model.
-    guarded = [] if product == 'jackpot_low' else (
+    guarded = [] if product in ('jackpot_low', 'prize_ladder') else (
         selections if high_odds else [item for item in selections if item.get('sport') == 'basketball'])
     if guarded:
         require_current_qualification(connection, guarded, _now())
@@ -207,13 +214,13 @@ def create_job(connection, selections, high_odds=False):
     if product == 'favourites' and not high_odds:
         from favourites import require_bookable as require_favourite
         integrity = require_favourite(connection, selections, _now())
-    elif product == 'jackpot_low' and not high_odds:
+    elif product in ('jackpot_low', 'prize_ladder') and not high_odds:
         from jackpot_low import require_bookable as require_jackpot
         integrity = require_jackpot(connection, selections, _now())
     else:
         from prediction_integrity import require_bookable as require_integrity
         integrity = require_integrity(connection, selections, _now())
-    limit = 50 if product == 'jackpot_low' else 30 if high_odds else 25
+    limit = 50 if product in ('jackpot_low', 'prize_ladder') else 30 if high_odds else 25
     if not selections or len(selections) > limit:
         raise ValueError(f'A booking needs 1 to {limit} selections')
     sports = {item['sport'] for item in selections}
@@ -682,6 +689,11 @@ def create_sure_odds_job(connection, ticket_id):
     return create_job(connection, selections, high_odds=True)
 
 
+def _selection_limit(connection, ticket_id):
+    """Selections a stored ticket may carry: SportyBet takes 50; long products use that room."""
+    return 50 if _ticket_product(connection, ticket_id) in ('jackpot_low', 'prize_ladder') else 25
+
+
 def _ticket_product(connection, ticket_id):
     row = connection.execute(
         'SELECT parameters_json FROM sports_ai_accumulator_tickets WHERE id=?',
@@ -699,7 +711,7 @@ def _store_displayed_code(connection, ticket_id, code, evidence):
     from qualification_engine import require_current_qualification
     selections = ticket_selections(connection, ticket_id)
     stored_product = _ticket_product(connection, ticket_id)
-    guarded = [] if stored_product == 'jackpot_low' else selections if stored_product in ('high_odds', 'sure_odds') else [
+    guarded = [] if stored_product in ('jackpot_low', 'prize_ladder') else selections if stored_product in ('high_odds', 'sure_odds') else [
         item for item in selections if item.get('sport') == 'basketball'
     ]
     if guarded:
@@ -1412,6 +1424,53 @@ async def _open_sport(page, sport, page_url=None, reuse=False):
         raise RuntimeError(f'HTTP {response.status}')
 
 
+async def _top_up_from_reserves(page, booked, seen, policy, limit=50, chunk=3):
+    """Add reserve legs SportyBet does show until the slip reaches its prize again (max `limit` legs)."""
+    ticket_id = next((item.get('ticket_id') for item in booked if item.get('ticket_id')), None)
+    if not ticket_id:
+        return []
+    from prize_ladder import reserve_legs
+    with connect() as connection:
+        reserves = reserve_legs(connection, ticket_id)
+    teams = {str(t or '').strip().casefold() for item in booked for t in (item.get('home'), item.get('away'))}
+    pool = [dict(leg, ticket_id=ticket_id) for leg in reserves
+            if not ({str(leg['home']).strip().casefold(), str(leg['away']).strip().casefold()} & teams)]
+    page_sport = lambda item: 'football' if item.get('sport') == 'frauenfussball' else item.get('sport')
+    added = []
+    for sport in list(dict.fromkeys(page_sport(leg) for leg in pool)):
+        group = [leg for leg in pool if page_sport(leg) == sport]
+        await _open_sport(page, sport, None, reuse=True)
+        for start in range(0, len(group), chunk):
+            if not _prize_short(booked + added, seen) or len(booked) + len(added) >= limit:
+                return added
+            batch = group[start:start + max(1, min(chunk, limit - len(booked) - len(added)))]
+            part = await prepare_slip(page, batch, book=False, skip_unpriced=True,
+                                      max_move=float(policy['max_price_move']) if policy['accept_displayed_odds'] else None)
+            if part['status'] != 'SELECTED':
+                continue
+            found = {item.get('fixture_id') for item in part['seen']}
+            seen.extend(part['seen'])
+            added.extend(leg for leg in batch if leg['fixture_id'] in found)
+    return added
+
+
+def _prize_short(booked, seen):
+    """For a prize-ladder ticket: (displayed odds, prize odds) when the booked legs fall short."""
+    ticket_id = next((item.get('ticket_id') for item in booked if item.get('ticket_id')), None)
+    if not ticket_id:
+        return None
+    from prize_ladder import minimum_odds
+    with connect() as connection:
+        floor = minimum_odds(connection, ticket_id)
+    if floor is None:
+        return None
+    prices = {item.get('fixture_id'): float(item.get('page_odds') or 0) for item in seen}
+    shown = 1.0
+    for item in booked:
+        shown *= prices.get(item.get('fixture_id')) or float(item.get('decimal_odds') or 1)
+    return (shown, floor) if shown < floor else None
+
+
 def _flexible_high_odds(selections):
     """The 1.95 band can be booked without a line SportyBet is not showing."""
     ticket_id = next((item.get('ticket_id') for item in selections if item.get('ticket_id')), None)
@@ -1505,7 +1564,10 @@ async def _execute_job(job_id, page_url=None):
             return {'id': job_id, 'status': 'FAILED', 'error': 'Retry limit reached', 'places_wager': False}
         selections = json.loads(job['selections_json'])
         from qualification_engine import require_current_qualification
-        guarded = [item for item in selections if item.get('sport') == 'basketball'
+        market_priced = any(_ticket_product(connection, item.get('ticket_id')) in ('jackpot_low', 'prize_ladder')
+                            for item in selections if item.get('ticket_id'))
+        # Jackpot and prize-ladder legs are priced by SportyBet itself, not by the quarantined basketball model.
+        guarded = [] if market_priced else [item for item in selections if item.get('sport') == 'basketball'
                    or _ticket_product(connection, item.get('ticket_id')) in ('high_odds', 'sure_odds')]
         try:
             if guarded:
@@ -1584,6 +1646,7 @@ async def _execute_job(job_id, page_url=None):
                 page = await context.new_page()
                 seen = []
                 skipped = []
+                reserve_added = []
                 result = None
                 flexible = policy['drop_unavailable_legs'] or _flexible_high_odds(selections)
                 needed = minimum if policy['drop_unavailable_legs'] else 15
@@ -1600,6 +1663,14 @@ async def _execute_job(job_id, page_url=None):
                 if result is None:
                     clicked = {item.get('fixture_id') for item in seen}
                     booked = [item for item in selections if item.get('fixture_id') in clicked]
+                    if _prize_short(booked, seen):
+                        # Prize ladder: replace legs SportyBet does not show with reserves, on this page.
+                        added = await _top_up_from_reserves(page, booked, seen, policy)
+                        if added:
+                            selections = selections + added
+                            reserve_added.extend(added)
+                            clicked = {item.get('fixture_id') for item in seen}
+                            booked = [item for item in selections if item.get('fixture_id') in clicked]
                     if flexible and len(booked) < needed:
                         missing = [item for item in selections if item.get('fixture_id') not in clicked]
                         names = ', '.join(f"{i.get('home')} vs {i.get('away')} ({i.get('market')})" for i in missing[:6])
@@ -1607,6 +1678,13 @@ async def _execute_job(job_id, page_url=None):
                             'status': 'FAILED', 'reason_code': 'LEGS_NOT_OFFERED', 'seen': seen, 'code': None,
                             'error': f'SportyBet is not offering {len(missing)} of {len(selections)} selection(s): {names}. '
                                      f'At least {needed} are needed to book.',
+                        }
+                    elif _prize_short(booked, seen):
+                        shown, floor = _prize_short(booked, seen)
+                        result = {
+                            'status': 'FAILED', 'reason_code': 'PRIZE_SHORT', 'seen': seen, 'code': None,
+                            'error': f'After SportyBet dropped unavailable legs the ticket pays {shown:,.0f}x; '
+                                     f'its prize needs at least {floor:,.0f}x. Not booked.',
                         }
                     elif policy['accept_displayed_odds']:
                         # Book at the prices on the page; they are stored on the ticket below.
@@ -1668,6 +1746,12 @@ async def _execute_job(job_id, page_url=None):
                 except ValueError as error:
                     result = {**result, 'status': 'FAILED', 'error': str(error),
                               'reason_code': 'QUALIFICATION_LAPSED'}
+            if result['status'] == 'CODE_GENERATED' and ticket_id and reserve_added:
+                from prize_ladder import add_legs
+                add_legs(connection, ticket_id, reserve_added)
+                _log_booking(connection, job_id, 'policy', f'Replaced unavailable legs with {len(reserve_added)} reserve selection(s)',
+                             ticket_id=ticket_id, session_id=session_id,
+                             detail={'added': [f"{i.get('home')} vs {i.get('away')} {i.get('market')}" for i in reserve_added]})
             if result['status'] == 'CODE_GENERATED':
                 dropped = (result.get('skipped') or []) + started_legs
                 if ticket_id and dropped:
@@ -2047,7 +2131,8 @@ def _parse_booking_time(value):
 def recover_stopped_bookings(connection, now=None):
     """Release interrupted browser jobs; a dead PREPARING row cannot block forever."""
     current = now or _now()
-    cutoff = (current-timedelta(hours=1)).isoformat()
+    # A browser slot lasts 15 minutes, so a booking still PREPARING after 20 has stopped.
+    cutoff = (current-timedelta(minutes=20)).isoformat()
     rows = connection.execute("SELECT id,ticket_id,session_id FROM sports_ai_booking_jobs WHERE status='PREPARING' AND updated_at<?", (cutoff,)).fetchall()
     for row in rows:
         _set_job(connection,row['id'],'FAILED',reason_code='WORKER_STOPPED',error='Booking worker stopped before displaying a code; eligible tickets will be retried.')
@@ -2096,7 +2181,7 @@ def process_booking_queue(now=None, ignore_gap=False):
         else:
             ticket_id = choice['ticket_id']
             selections = ticket_selections(connection, ticket_id)
-            if not selections or len(selections) > 25:
+            if not selections or len(selections) > _selection_limit(connection, ticket_id):
                 return {'status': 'waiting', 'phase': phase, 'qualified': len(qualified), 'expired': expired, 'examined': examined, 'places_wager': False}
             try:
                 created = create_job(connection, selections)
@@ -2216,7 +2301,7 @@ def confirm_missed_publication(now=None):
                 'places_wager': False, 'opens_browser': False,
             }
         selections = ticket_selections(connection, ticket_id)
-        if not selections or len(selections) > 25:
+        if not selections or len(selections) > _selection_limit(connection, ticket_id):
             return {
                 'status': 'waiting', 'confirmation': True, 'examined': examined,
                 'places_wager': False, 'opens_browser': False,
@@ -2261,7 +2346,7 @@ def book_prepared_tickets(limit=1, now=None):
             if not ticket_id:
                 break
             selections = ticket_selections(connection, ticket_id)
-            if not selections or len(selections) > 25:
+            if not selections or len(selections) > _selection_limit(connection, ticket_id):
                 break
             try:
                 created = create_job(connection, selections)
