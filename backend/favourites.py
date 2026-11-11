@@ -68,8 +68,9 @@ def _freshness_minutes(connection):
         return 15
 
 
-def candidates(connection, now=None):
-    """Best favourite per fixture, highest anchored probability first."""
+def candidates(connection, now=None, fixture_id=None, market=None):
+    """Best favourite per fixture, highest anchored probability first. With fixture_id/market,
+    only that selection is evaluated (used to re-check a queued favourite before placement)."""
     from accumulator_engine import _reliability, _settlement_kind, _simulated_competition
     from market_anchor import anchor, load as load_anchors
     current = _now(now)
@@ -101,10 +102,11 @@ def candidates(connection, now=None):
               AND d.updated_at=(SELECT MAX(d2.updated_at) FROM sports_ai_qualification_decisions d2
                                 WHERE d2.fixture_id=d.fixture_id AND upper(d2.market)=upper(d.market))
               AND NOT EXISTS (SELECT 1 FROM sports_ai_data_quality_issues i
-                              WHERE i.fixture_id=f.id AND i.resolved_at IS NULL AND i.severity IN ('high','critical'))""",
+                              WHERE i.fixture_id=f.id AND i.resolved_at IS NULL AND i.severity IN ('high','critical'))
+              AND (? IS NULL OR f.id=?) AND (? IS NULL OR upper(p.market)=upper(?))""",
         ((current + timedelta(minutes=LEAD_MINUTES)).isoformat(),
          (current + timedelta(hours=HORIZON_HOURS)).isoformat(),
-         *EXCLUDED_SPORTS, *PRICE_OR_EDGE_REASONS, fresh),
+         *EXCLUDED_SPORTS, *PRICE_OR_EDGE_REASONS, fresh, fixture_id, fixture_id, market, market),
     ).fetchall()
     best = {}
     for row in rows:

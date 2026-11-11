@@ -1,5 +1,5 @@
 import React, {useEffect, useMemo, useRef, useState} from 'react';
-import {Activity, AlertCircle, BarChart3, Bot, CalendarDays, CheckCircle2, ChevronRight, Clock3, Cpu, Database, Download, FileText, Layers3, Pause, Play, RefreshCw, Settings, ShieldCheck, Square, Target, Ticket, TrendingUp, Workflow} from 'lucide-react';
+import {Activity, AlertCircle, BarChart3, Bot, CalendarDays, Check, CheckCircle2, ChevronRight, Clock3, Copy, Cpu, Database, Download, FileText, Layers3, Pause, Play, RefreshCw, Settings, ShieldCheck, Square, Target, Ticket, TrendingUp, Workflow} from 'lucide-react';
 import {get, post, put} from './api';
 import './autonomous.css';
 
@@ -336,7 +336,90 @@ function OpportunityTable({rows, onOpen}) {
   </tbody></table></div>;
 }
 
+function marketLabel(market) {
+  const name = String(market || '').toUpperCase();
+  const fixed = {HOME: 'Home win', AWAY: 'Away win', DRAW: 'Draw', BTTS_YES: 'Both teams score', BTTS_NO: 'Not both teams score',
+    DOUBLE_CHANCE_1X: 'Double chance 1X', DOUBLE_CHANCE_X2: 'Double chance X2', DOUBLE_CHANCE_12: 'Double chance 12',
+    MONEYLINE_HOME: 'Home win', MONEYLINE_AWAY: 'Away win'};
+  if (fixed[name]) return fixed[name];
+  const line = name.match(/^(OVER|UNDER)_(.+)$/);
+  if (line) return `${line[1] === 'OVER' ? 'Over' : 'Under'} ${line[2].replace('_', '.')}`;
+  return name.replace(/_/g, ' ').toLowerCase().replace(/^./, c => c.toUpperCase());
+}
+
+function kickoff(value) {
+  if (!value) return '';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return parsed.toLocaleString('en-GB', {timeZone: 'Africa/Lagos', weekday: 'short', hour: '2-digit', minute: '2-digit'});
+}
+
+function CodeChip({code}) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* clipboard blocked */ }
+  };
+  return <button type="button" className="ae-code-chip" onClick={copy} title="Copy booking code" aria-label={`Copy booking code ${code}`}>
+    <span>{code}</span>{copied ? <Check size={14}/> : <Copy size={14}/>}
+  </button>;
+}
+
+// Scrolls the ticket feed slowly on its own; pauses while the pointer or focus is inside,
+// and stays still for people who prefer reduced motion.
+function useAutoScroll(ref, deps) {
+  useEffect(() => {
+    const node = ref.current;
+    if (!node || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return undefined;
+    let frame, paused = false, hold = 90, position = node.scrollTop;
+    const pause = () => { paused = true; };
+    const resume = () => { paused = false; position = node.scrollTop; };
+    const step = () => {
+      if (!paused && node.scrollHeight > node.clientHeight + 4) {
+        if (hold > 0) hold -= 1;
+        else if (node.scrollTop + node.clientHeight >= node.scrollHeight - 2) { hold = 150; position = 0; node.scrollTo({top: 0, behavior: 'smooth'}); }
+        else { position += 0.35; node.scrollTop = position; }
+      }
+      frame = requestAnimationFrame(step);
+    };
+    node.addEventListener('mouseenter', pause); node.addEventListener('mouseleave', resume);
+    node.addEventListener('focusin', pause); node.addEventListener('focusout', resume);
+    node.addEventListener('touchstart', pause, {passive: true}); node.addEventListener('touchend', resume);
+    frame = requestAnimationFrame(step);
+    return () => {
+      cancelAnimationFrame(frame);
+      node.removeEventListener('mouseenter', pause); node.removeEventListener('mouseleave', resume);
+      node.removeEventListener('focusin', pause); node.removeEventListener('focusout', resume);
+      node.removeEventListener('touchstart', pause); node.removeEventListener('touchend', resume);
+    };
+  }, deps); // eslint-disable-line react-hooks/exhaustive-deps
+}
+
 function TicketGrid({tickets}) {
-  if (!tickets.length) return <p className="ae-empty">No ticket above 70% is stored for this week. The worker checks again on its next cycle.</p>;
-  return <div className="ae-ticket-grid">{tickets.map(ticket => <article className="ae-ticket" key={ticket.id}><h3><Ticket size={16}/>{ticket.type}</h3><small>{clock(ticket.created_at)}</small>{ticket.booking_code ? <p className="ae-code">{ticket.booking_code}</p> : <p className="ae-code wait">{ticket.status === 'qualified' ? 'Awaiting code' : ticket.status}</p>}{ticket.picks.map(pick => <p key={pick}>{pick}</p>)}<div><strong>{ticket.odds == null ? 'Odds not stored' : `Total odds ${Number(ticket.odds).toFixed(2)}`}</strong><span>{ticket.status}</span></div></article>)}</div>;
+  const feed = useRef(null);
+  useAutoScroll(feed, [tickets.length]);
+  if (!tickets.length) return <p className="ae-empty">No ticket is stored for this week. The worker checks again on its next cycle.</p>;
+  const coded = tickets.filter(t => t.booking_code).length;
+  return <>
+    <div className="ae-ticket-summary"><span><b>{tickets.length}</b> tickets</span><span><b>{coded}</b> with code</span><span><b>{tickets.length - coded}</b> awaiting</span></div>
+    <div className="ae-ticket-feed" ref={feed} tabIndex={0} aria-label="Generated tickets, scrolls automatically; hover or focus to pause">
+      {tickets.map(ticket => {
+        const favourite = ticket.product === 'favourites';
+        const legs = ticket.legs?.length ? ticket.legs : (ticket.picks || []).map(text => ({text}));
+        return <article className={`ae-ticket ${favourite ? 'fav' : ''}`} key={ticket.id}>
+          <header>
+            <h3><Ticket size={15}/>{ticket.type}</h3>
+            {favourite ? <em className="ae-tag warn" title="Strong favourites without a positive edge; expected to lose money over time">Favourites · no edge</em>
+              : <em className="ae-tag">Qualified edge</em>}
+          </header>
+          <small className="ae-ticket-meta">Built {clock(ticket.created_at)}{ticket.kickoff ? ` · first kickoff ${kickoff(ticket.kickoff)} WAT` : ''}</small>
+          {ticket.booking_code ? <CodeChip code={ticket.booking_code}/>
+            : <p className="ae-code wait"><Clock3 size={13}/>{ticket.status === 'qualified' ? 'Awaiting SportyBet code' : ticket.status}</p>}
+          <ul className="ae-legs">{legs.map((leg, index) => leg.text ? <li key={index}><span>{leg.text}</span></li> :
+            <li key={index}><span><b>{leg.home} v {leg.away}</b><small>{marketLabel(leg.market)} · {kickoff(leg.starts_at)}</small></span><strong>{Number(leg.odds).toFixed(2)}</strong></li>)}</ul>
+          <footer><strong>{ticket.odds == null ? 'Odds not stored' : `Total odds ${Number(ticket.odds).toFixed(2)}`}</strong>
+            {ticket.probability != null && <span title="Estimated chance that every leg wins">{ticket.probability}% win chance</span>}</footer>
+        </article>;
+      })}
+    </div>
+  </>;
 }

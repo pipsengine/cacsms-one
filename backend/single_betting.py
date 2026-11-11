@@ -39,6 +39,10 @@ MIN_EV = float(os.environ.get('SINGLE_MIN_EXPECTED_VALUE', '0.03'))
 MIN_ODDS = max(1.2, float(os.environ.get('SINGLE_MIN_ODDS', '1.2')))
 COMBO_MAX_LEGS = 3
 COMBO_MIN_PROBABILITY = float(os.environ.get('SINGLE_COMBO_MIN_PROBABILITY', '0.80'))
+# Favourites (no edge): strong favourites from favourites.py, used only while edge selections
+# do not fill the day. PAPER ONLY in every mode: never handed to the live account lane.
+FAVOURITE_DAILY_LIMIT = 10
+FAVOURITE_NOTICE = 'Favourite (no edge) - paper only; expected to lose money over time.'
 MIN_SECONDS_TO_START = 60
 PLACE_PER_TICK = 2
 TICK_SECONDS = 30
@@ -211,6 +215,12 @@ def load_candidates(connection, now=None):
     best = {}
     legs = {}
     rejected = {}
+    if not rows:
+        # Nothing upstream is QUALIFIED; say so instead of an empty reason list.
+        rejected['NO_QUALIFIED_SELECTION'] = connection.execute(
+            "SELECT COUNT(DISTINCT fixture_id) FROM sports_ai_qualification_decisions WHERE starts_at>?",
+            (current.isoformat(),),
+        ).fetchone()[0] or 1
     for row in rows:
         if row['fixture_status'] not in OPEN_FIXTURE:
             continue
@@ -249,7 +259,42 @@ def load_candidates(connection, now=None):
     if replaced:
         rejected['SINGLE_REPLACED_BY_COMBINED'] = rejected.get('SINGLE_REPLACED_BY_COMBINED', 0) + replaced
     eligible = sorted([*singles, *combos], key=_chance_key)
-    return {'eligible': eligible, 'rejected': rejected, 'max_odds_age_minutes': max_age}
+    used = {item['fixture_id'] for item in singles} | {l['fixture_id'] for c in combos for l in c['legs']}
+    return {'eligible': eligible, 'favourites': favourite_candidates(connection, current, used),
+            'rejected': rejected, 'max_odds_age_minutes': max_age}
+
+
+def _active_fixtures(connection):
+    rows = connection.execute(
+        """SELECT fixture_id FROM sports_ai_single_bets WHERE status!='CANCELLED'
+           UNION SELECT l.fixture_id FROM sports_ai_single_bet_legs l
+           JOIN sports_ai_single_bets b ON b.id=l.bet_id WHERE b.status!='CANCELLED'""",
+    ).fetchall()
+    return {row[0] for row in rows}
+
+
+def _favourite_item(leg):
+    return {
+        'kind': 'FAVOURITE', 'decision_id': None, 'prediction_id': leg['opportunity_id'],
+        'fixture_id': leg['fixture_id'], 'sport': leg['sport'], 'competition': leg['competition'],
+        'home': leg['home'], 'away': leg['away'], 'market': leg['market'],
+        'selection': selection_label(leg['market']), 'decimal_odds': float(leg['decimal_odds']),
+        'probability': float(leg['probability']),
+        'expected_value': round(leg['probability'] * leg['decimal_odds'] - 1, 6),
+        'starts_at': leg['starts_at'], 'odds_observed_at': leg['odds_observed_at'],
+    }
+
+
+def favourite_candidates(connection, now=None, exclude=()):
+    """Favourites priced at or above MIN_ODDS on fixtures not already backed. No edge by design."""
+    from favourites import candidates
+    taken = _active_fixtures(connection) | set(exclude)
+    try:
+        legs = candidates(connection, _now(now))
+    except Exception:  # favourites are optional; the edge engine must keep running
+        return []
+    return [_favourite_item(leg) for leg in legs
+            if leg['fixture_id'] not in taken and float(leg['decimal_odds']) >= MIN_ODDS - 1e-9]
 
 
 def _chance_key(item):
@@ -336,6 +381,12 @@ def build_combos(pool):
     return combos, unused
 
 
+def _favourites_today(connection, day):
+    return connection.execute(
+        "SELECT COUNT(*) FROM sports_ai_single_bets WHERE local_date=? AND kind='FAVOURITE' AND status!='CANCELLED'", (day,),
+    ).fetchone()[0]
+
+
 def _day_usage(connection, day):
     row = connection.execute(
         f"""SELECT COUNT(*) AS n, COALESCE(SUM(stake),0) AS staked FROM sports_ai_single_bets
@@ -396,6 +447,15 @@ def _recheck(connection, bet, current, max_age):
     from qualification_engine import selection_is_qualified
     if _kind(bet) == 'COMBO':
         return _recheck_combo(connection, bet, current, max_age)
+    if _kind(bet) == 'FAVOURITE':
+        from favourites import candidates
+        leg = next(iter(candidates(connection, current, fixture_id=bet['fixture_id'], market=bet['market'])), None)
+        if leg is None:
+            return None, 'No longer a favourite with a fresh SportyBet price and every safety check passing.'
+        if float(leg['decimal_odds']) < MIN_ODDS - 1e-9:
+            return None, f"Price {leg['decimal_odds']:.2f} is below the {MIN_ODDS:.2f} single minimum."
+        return {'decimal_odds': float(leg['decimal_odds']), 'observed_at': leg['odds_observed_at'],
+                'ev': round(leg['probability'] * leg['decimal_odds'] - 1, 6), 'probability': leg['probability']}, ''
     if not selection_is_qualified(connection, bet['fixture_id'], bet['market']):
         return None, 'The selection no longer has a current QUALIFIED decision.'
     quote = _latest_quote(connection, bet['fixture_id'], bet['market'])
@@ -462,7 +522,7 @@ def settle(connection, now=None):
     for bet in connection.execute(
         """SELECT b.*, r.home_score, r.away_score FROM sports_ai_single_bets b
            JOIN sports_ai_results r ON r.fixture_id=b.fixture_id AND r.status='final'
-           WHERE b.status='PLACED' AND b.kind='SINGLE'""",
+           WHERE b.status='PLACED' AND b.kind!='COMBO'""",
     ).fetchall():
         outcome = _outcome(bet['sport'], bet['market'], int(bet['home_score']), int(bet['away_score']))
         if outcome is None:
@@ -510,7 +570,9 @@ def run_cycle(connection, now=None, candidates=None):
             result['cancelled'] += 1
             continue
         combo = _kind(bet) == 'COMBO'
-        if live_mode or result['placed'] >= PLACE_PER_TICK:
+        favourite = _kind(bet) == 'FAVOURITE'
+        # In a live mode the account lane places edge bets; favourites are paper-only and placed here.
+        if (live_mode and not favourite) or result['placed'] >= PLACE_PER_TICK:
             continue
         count, staked = _day_usage(connection, day)
         if bet['local_date'] != day and capacity(count, staked) <= 0:
@@ -524,7 +586,7 @@ def run_cycle(connection, now=None, candidates=None):
              fresh.get('probability'), bet['id']),
         )
         _apply_fresh_legs(connection, bet['id'], fresh)
-        label = 'Paper combined bet placed' if combo else 'Paper bet placed'
+        label = 'Paper combined bet placed' if combo else 'Paper favourite placed (no edge)' if favourite else 'Paper bet placed'
         _event(connection, bet['id'], 'PLACED',
                f"{label} – {_fixture(bet, fresh.get('legs'))} {bet['selection']} @ {fresh['decimal_odds']:.2f} (₦{bet['stake']:,.0f})", current)
         result['placed'] += 1
@@ -533,7 +595,11 @@ def run_cycle(connection, now=None, candidates=None):
     pool = load_candidates(connection, current) if candidates is None else candidates
     count, staked = _day_usage(connection, day)
     room = capacity(count, staked)
-    for item in pool['eligible'][:room]:
+    picks = list(pool['eligible'][:room])
+    favourite_room = min(room - len(picks), FAVOURITE_DAILY_LIMIT - _favourites_today(connection, day))
+    if favourite_room > 0:
+        picks += (pool.get('favourites') or [])[:favourite_room]
+    for item in picks:
         bet_id = str(uuid.uuid4())
         kind = item.get('kind') or 'SINGLE'
         cursor = connection.execute(
@@ -558,7 +624,9 @@ def run_cycle(connection, now=None, candidates=None):
                      leg['decimal_odds'], leg['probability'], leg['starts_at'], leg.get('odds_observed_at')),
                 )
             result['queued'] += 1
-            what = f"Combined selection qualified ({len(item['legs'])} legs, p={item['probability']:.2f})" if kind == 'COMBO' else 'Selection qualified'
+            what = (f"Combined selection qualified ({len(item['legs'])} legs, p={item['probability']:.2f})" if kind == 'COMBO'
+                    else f"Favourite queued (no edge, paper only, p={item['probability']:.2f})" if kind == 'FAVOURITE'
+                    else 'Selection qualified')
             _event(connection, bet_id, 'QUEUED',
                    f"{what} – {_fixture(item, item.get('legs'))} {item['selection']} @ {item['decimal_odds']:.2f}, EV {item['expected_value']:+.3f}", current)
     result['status'] = 'complete'
@@ -577,7 +645,7 @@ def next_for_execution(connection, now=None):
     current = _now(now)
     max_age = _max_odds_age(connection)
     for bet in connection.execute(
-        "SELECT * FROM sports_ai_single_bets WHERE status='QUEUED' ORDER BY created_at, id",
+        "SELECT * FROM sports_ai_single_bets WHERE status='QUEUED' AND kind!='FAVOURITE' ORDER BY created_at, id",
     ).fetchall():
         fresh, reason = _recheck(connection, bet, current, max_age)
         if fresh is None:
@@ -722,7 +790,8 @@ def dashboard(connection, now=None):
         'balance': _account_balance(connection, current),
         'rules': {'stake': STAKE, 'daily_target': list(DAILY_TARGET), 'daily_limit': DAILY_LIMIT,
                   'daily_stake_limit': DAILY_STAKE_LIMIT, 'min_ev': MIN_EV,
-                  'min_odds': MIN_ODDS, 'combo_max_legs': COMBO_MAX_LEGS, 'combo_min_probability': COMBO_MIN_PROBABILITY},
+                  'min_odds': MIN_ODDS, 'combo_max_legs': COMBO_MAX_LEGS, 'combo_min_probability': COMBO_MIN_PROBABILITY,
+                  'favourite_daily_limit': FAVOURITE_DAILY_LIMIT, 'favourite_notice': FAVOURITE_NOTICE},
         'today': {
             'executed': len(today), 'wins': wins, 'losses': losses,
             'pending': sum(1 for b in today if b['status'] == 'PLACED'),
@@ -801,7 +870,8 @@ def engine_view(connection, now=None):
         'generated_at': current.isoformat(),
         'strategy': {'stake': STAKE, 'daily_target': list(DAILY_TARGET), 'daily_limit': DAILY_LIMIT,
                      'daily_stake_limit': DAILY_STAKE_LIMIT, 'min_ev': MIN_EV, 'min_odds': MIN_ODDS,
-                     'combo_max_legs': COMBO_MAX_LEGS, 'combo_min_probability': COMBO_MIN_PROBABILITY, 'place_per_tick': PLACE_PER_TICK,
+                     'combo_max_legs': COMBO_MAX_LEGS, 'combo_min_probability': COMBO_MIN_PROBABILITY,
+                     'favourite_daily_limit': FAVOURITE_DAILY_LIMIT, 'favourite_notice': FAVOURITE_NOTICE, 'place_per_tick': PLACE_PER_TICK,
                      'tick_seconds': TICK_SECONDS},
         'autonomous': {'running': beat['fresh'] and not state.get('paused'), 'paused': bool(state.get('paused')),
                        'changed_by': state.get('changed_by'), 'changed_at': state.get('changed_at')},

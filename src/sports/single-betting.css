@@ -160,6 +160,7 @@ button.sb-card{text-align:left;color:inherit;font:inherit}
 .sb-stage-chip{display:inline-flex;align-items:center;gap:6px;padding:6px 11px;border-radius:8px;font-weight:700;font-size:12.5px;white-space:nowrap}
 .sb-stage-chip.placing{background:var(--green-soft);color:#15803d;border:1px solid #c6ecd0}.sb-stage-chip.placing svg{animation:sb-spin 2.4s linear infinite}
 .sb-stage-chip.queued{background:#f3eeff;color:#6d28d9;border:1px solid #e1d5fd}
+.sb-stage-chip.fav{background:#fff3df;color:#9a5b05;border:1px solid #f6d9a8}
 .sb-status{padding:3px 9px;border-radius:7px;font-weight:700;font-size:12px;background:#eef2f7;color:#475569;white-space:nowrap}
 .sb-status.won{background:#dcfce7;color:#15803d}.sb-status.lost{background:#fee2e2;color:#b91c1c}.sb-status.cancelled{background:#fff4dd;color:#a15c00}.sb-status.placed{background:var(--blue-soft);color:#1d4ed8}
 .sb-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;text-align:center;color:var(--muted);padding:34px 16px}

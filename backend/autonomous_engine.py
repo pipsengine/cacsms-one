@@ -490,7 +490,8 @@ def _tickets(connection, now=None):
     now_iso = current.astimezone(timezone.utc).isoformat()
     week_end = opportunity_week(current)[1].astimezone(timezone.utc).isoformat()
     candidates = [dict(row) for row in connection.execute(
-        """SELECT id,tier,status,combined_odds,joint_probability,estimated_edge,leg_count,created_at,sport_mode
+        """SELECT id,tier,status,combined_odds,joint_probability,estimated_edge,leg_count,created_at,sport_mode,
+                  COALESCE(json_extract(parameters_json,'$.product'), json_extract(parameters_json,'$.coverage')) AS product
            FROM sports_ai_accumulator_tickets
            WHERE probability_basis='independent'
              AND (
@@ -553,6 +554,12 @@ def _tickets(connection, now=None):
         'edge': None if row['estimated_edge'] is None else round(100 * float(row['estimated_edge']), 1),
         'created_at': row['created_at'],
         'picks': legs.get(row['id'], []),
+        'product': row['product'],
+        'positive_edge': row['product'] != 'favourites',
+        'kickoff': min((item['starts_at'] for item in selections.get(row['id'], [])), default=None),
+        'legs': [{'home': item['home'], 'away': item['away'], 'market': item['market'],
+                  'odds': float(item['decimal_odds']), 'starts_at': item['starts_at']}
+                 for item in sorted(selections.get(row['id'], []), key=lambda i: i['starts_at'] or '')],
         'booking_code': codes[row['id']]['code'] if row['id'] in codes else None,
         'code_status': codes[row['id']]['status'] if row['id'] in codes else None,
     } for row in tickets]

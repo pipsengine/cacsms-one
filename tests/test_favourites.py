@@ -118,5 +118,69 @@ class FavouritesTests(unittest.TestCase):
                 fv.require_bookable(c, selections + selections[:1], NOW)
 
 
+class FavouriteSinglesTests(unittest.TestCase):
+    """Single betting falls back to favourites as PAPER ONLY bets, in every execution mode."""
+
+    def setUp(self):
+        self.previous = db.DB
+        self.temp = tempfile.TemporaryDirectory()
+        db.DB = Path(self.temp.name) / 'sports.sqlite3'
+        db.initialize()
+
+    def tearDown(self):
+        db.DB = self.previous
+        self.temp.cleanup()
+
+    def _live(self, c):
+        import single_betting as sb
+        state = sb.runtime(c)
+        state['execution_mode'] = 'LIVE'
+        sb._save_setting(c, sb.RUNTIME_KEY, state, NOW)
+
+    def test_favourites_are_paper_only_even_in_live_mode(self):
+        import single_betting as sb
+        import sportybet_account as acct
+        with db.connect() as c:
+            c.execute('PRAGMA foreign_keys=OFF')
+            model(c)
+            leg(c, 'fav1', odds=1.25, probability=0.86)
+            leg(c, 'cheap', odds=1.16, probability=0.90)   # below the 1.20 single minimum
+            self._live(c)
+            first = sb.run_cycle(c, NOW)
+            self.assertEqual(first['queued'], 1)
+            row = c.execute('SELECT * FROM sports_ai_single_bets').fetchone()
+            self.assertEqual((row['kind'], row['fixture_id'], row['mode']), ('FAVOURITE', 'fav1', 'PAPER'))
+            self.assertLess(row['expected_value'], 0.03)
+            # The live account lane never receives it ...
+            self.assertIsNone(sb.next_for_execution(c, NOW + timedelta(seconds=30)))
+            # ... and the engine places it as paper although the mode is LIVE.
+            sb.run_cycle(c, NOW + timedelta(seconds=30))
+            self.assertEqual(c.execute('SELECT status FROM sports_ai_single_bets').fetchone()[0], 'PLACED')
+            c.execute("INSERT INTO sports_ai_results(id,fixture_id,home_score,away_score,status,source,settled_at) VALUES('r','fav1',2,0,'final','t',?)",
+                      (NOW.isoformat(),))
+            sb.run_cycle(c, NOW + timedelta(hours=6))
+            settled = c.execute('SELECT status, profit FROM sports_ai_single_bets').fetchone()
+            self.assertEqual(settled['status'], 'WON')
+            self.assertAlmostEqual(settled['profit'], 25.0)
+        outcome, _status, detail = __import__('asyncio').run(acct.execute_async({'kind': 'FAVOURITE', 'stake': 100.0}, 'SUBMISSION', NOW))
+        self.assertEqual(outcome, 'CANCEL')
+        self.assertIn('paper only', detail)
+
+    def test_favourites_capped_and_rechecked(self):
+        import single_betting as sb
+        with db.connect() as c:
+            c.execute('PRAGMA foreign_keys=OFF')
+            model(c)
+            for i in range(sb.FAVOURITE_DAILY_LIMIT + 3):
+                leg(c, f'f{i}', odds=1.25, probability=0.86)
+            self.assertEqual(sb.run_cycle(c, NOW)['queued'], sb.FAVOURITE_DAILY_LIMIT)
+            # A favourite whose price went stale is cancelled before placement.
+            c.execute("UPDATE sports_ai_odds_snapshots SET observed_at=? WHERE fixture_id='f0'",
+                      ((NOW - timedelta(hours=2)).isoformat(),))
+            out = sb.run_cycle(c, NOW + timedelta(seconds=30))
+            self.assertGreaterEqual(out['cancelled'], 1)
+            self.assertEqual(c.execute("SELECT status FROM sports_ai_single_bets WHERE fixture_id='f0'").fetchone()[0], 'CANCELLED')
+
+
 if __name__ == '__main__':
     unittest.main()

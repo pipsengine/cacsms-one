@@ -812,6 +812,8 @@ async def execute_async(bet, kind, now=None, test=False):
     grant_id = None
     if test and kind != 'REHEARSAL':
         raise ValueError('A test can only rehearse')
+    if bet.get('kind') == 'FAVOURITE':
+        return 'CANCEL', None, 'Favourites (no edge) are paper only and never go to the SportyBet account'
     with connect() as connection:
         if kind == 'SUBMISSION':
             reasons, grant = submission_gate(connection, current)

@@ -346,6 +346,23 @@ def _rollover_tick():
         _report('rollover failed', error)
 
 
+def _single_betting_fast():
+    """Run the single-betting cycle every 30 s from the account lane, so queue, settlement and
+    the dashboards stay current between full worker cycles. Records a stage row only when
+    something changed; a locked database just waits for the next tick."""
+    try:
+        from single_betting import run_cycle
+        with connect() as connection:
+            result = run_cycle(connection)
+        if any(result.get(key) for key in ('placed', 'queued', 'settled', 'cancelled')):
+            print('single betting', result.get('status'), 'placed', result.get('placed'), 'queued', result.get('queued'),
+                  'settled', result.get('settled'), 'places_wager', result.get('places_wager'))
+            _observed('single_betting', result)
+    except Exception as error:
+        if 'database is locked' not in str(error):
+            _report('single betting (fast) failed', error)
+
+
 def _single_betting_tick():
     """Single Betting AI: paper singles from current QUALIFIED decisions. No wager is placed."""
     try:
@@ -629,6 +646,7 @@ def _account_lane(stop):
     """
     from sportybet_account import run_once
     while not stop.wait(30):
+        _single_betting_fast()
         try:
             result = run_once()
             if result.get('status') not in ('paper', 'idle', 'waiting_for_login'):
