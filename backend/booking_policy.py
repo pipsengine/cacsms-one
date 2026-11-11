@@ -13,7 +13,10 @@ displays when the code is requested:
 These limits always hold, whatever the policy says:
 * every leg passes prediction_integrity.require_bookable when the job is queued:
   a current QUALIFIED decision, a clean immutable probability record, an ELIGIBLE
-  capability and positive conservative EV at the requested price,
+  capability and positive conservative EV at the requested price. The single
+  exception is the labelled no-edge favourites product (favourites.py), which passes
+  favourites.require_bookable instead: scheduled fixture before kickoff, no shared
+  fixture or team, an allowed market, no basketball or simulated game,
 * no wager is placed, and a code is stored only when SportyBet displays it,
 * a match that has kicked off is never booked,
 * an access challenge or blocked page stops the run,

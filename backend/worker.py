@@ -465,11 +465,14 @@ def _ticket_tick():
             result = build_autonomous_tickets(connection, 'sports-ai-worker', _audit, now=current)
             cross = build_bookable_cross_tickets(connection, 'sports-ai-worker', _audit, now=current)
             coverage = build_high_probability_tickets(connection, 'sports-ai-worker', _audit, now=current)
+            from favourites import build_favourite_tickets
+            favourites = build_favourite_tickets(connection, 'sports-ai-worker', now=current)
         print(
             'tickets', result.get('status'),
             'created', result.get('tickets_created', result.get('ticket_count', 0)),
             'cross_market', cross.get('created', 0),
             'high_probability', coverage.get('created', 0),
+            'favourites', favourites.get('created', 0), 'of', favourites.get('candidates', 0),
             'leagues', coverage.get('leagues', 0),
             'sports', coverage.get('sports', 0),
             'quoted_board', priced.get('fixtures', 0),

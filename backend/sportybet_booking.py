@@ -199,8 +199,16 @@ def create_job(connection, selections, high_odds=False):
     if not high_odds and policy['require_live_qualification']:
         require_bookable(connection, selections)
     # Hard gate for every product; booking_policy relaxations cannot switch it off.
-    from prediction_integrity import require_bookable as require_integrity
-    integrity = require_integrity(connection, selections, _now())
+    # The one exception is the labelled no-edge favourites product (favourites.py): it is
+    # positive-EV by design never, so it passes its own structural gate instead.
+    favourite_ticket = selections and selections[0].get('ticket_id') and \
+        _ticket_product(connection, selections[0]['ticket_id']) == 'favourites'
+    if favourite_ticket and not high_odds:
+        from favourites import require_bookable as require_favourite
+        integrity = require_favourite(connection, selections, _now())
+    else:
+        from prediction_integrity import require_bookable as require_integrity
+        integrity = require_integrity(connection, selections, _now())
     limit = 30 if high_odds else 25
     if not selections or len(selections) > limit:
         raise ValueError(f'A booking needs 1 to {limit} selections')
