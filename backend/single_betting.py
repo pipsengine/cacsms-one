@@ -40,9 +40,15 @@ MIN_ODDS = max(1.2, float(os.environ.get('SINGLE_MIN_ODDS', '1.2')))
 COMBO_MAX_LEGS = 3
 COMBO_MIN_PROBABILITY = float(os.environ.get('SINGLE_COMBO_MIN_PROBABILITY', '0.80'))
 # Favourites (no edge): strong favourites from favourites.py, used only while edge selections
-# do not fill the day. PAPER ONLY in every mode: never handed to the live account lane.
+# do not fill the day. They follow the execution mode like every bet: paper in PAPER, rehearsed
+# in LIVE_REHEARSAL, and real money in LIVE under authorization (owner's decision, 2026-11-11).
+# Real-money bets of every kind are capped at sportybet_account.DAILY_COUNT (10) a day.
 FAVOURITE_DAILY_LIMIT = 10
-FAVOURITE_NOTICE = 'Favourite (no edge) - paper only; expected to lose money over time.'
+FAVOURITE_NOTICE = 'Favourite (no edge) - expected to lose money over time.'
+# Coded accumulator tickets are followed as ₦100 paper bets (kind TICKET), the same way as singles.
+# Only codes SportyBet displayed before the first kickoff, from this date (WAT) on, are imported.
+TICKET_IMPORT_FROM = '2026-11-11'
+TICKET_PREFIX = 'ticket:'
 MIN_SECONDS_TO_START = 60
 PLACE_PER_TICK = 2
 TICK_SECONDS = 30
@@ -285,16 +291,111 @@ def _favourite_item(leg):
     }
 
 
+def _ticket_fixtures(connection):
+    """Matches on open favourites accumulator tickets (built, being booked, or coded)."""
+    rows = connection.execute(
+        """SELECT l.fixture_id FROM sports_ai_accumulator_legs l
+           JOIN sports_ai_accumulator_tickets t ON t.id=l.ticket_id
+           WHERE json_extract(t.parameters_json,'$.product')='favourites' AND t.status='qualified'""",
+    ).fetchall()
+    return {row[0] for row in rows}
+
+
+def import_coded_tickets(connection, now=None):
+    """Follow each accumulator ticket SportyBet displayed a booking code for, as one ₦100 PAPER bet.
+
+    Processed like a single: daily count and stake caps, settlement from verified results, P/L.
+    Placed at the moment the code was displayed, and only when that was before the first kickoff,
+    so a result is never known at placement. Nothing is submitted to SportyBet.
+    """
+    current = _now(now)
+    live_mode = (runtime(connection).get('execution_mode') or 'PAPER') != 'PAPER'
+    rows = connection.execute(
+        """SELECT t.id, t.combined_odds, t.joint_probability, t.parameters_json, b.code, b.created_at AS coded_at,
+                  (SELECT MIN(l.starts_at) FROM sports_ai_accumulator_legs l WHERE l.ticket_id=t.id) AS first_kickoff
+           FROM sports_ai_accumulator_tickets t
+           JOIN sports_ai_booking_codes b ON b.accumulator_ticket_id=t.id
+            AND b.verification_method='displayed' AND TRIM(COALESCE(b.code,''))<>''
+           WHERE b.created_at>=? AND t.combined_odds>1 AND t.joint_probability>0
+             AND COALESCE(json_extract(t.parameters_json,'$.product'),'')!='jackpot_low'
+             AND NOT EXISTS (SELECT 1 FROM sports_ai_single_bets s WHERE s.id=?||t.id)
+           ORDER BY b.created_at""",
+        (datetime.fromisoformat(TICKET_IMPORT_FROM).replace(tzinfo=WAT).astimezone(timezone.utc).isoformat(), TICKET_PREFIX),
+    ).fetchall()
+    imported = 0
+    for row in rows:
+        coded, kickoff = _parse(row['coded_at']), _parse(row['first_kickoff'])
+        if coded is None or kickoff is None or coded >= kickoff:
+            continue  # a code displayed after kickoff is never followed
+        if live_mode and (kickoff - current).total_seconds() < MIN_SECONDS_TO_START:
+            continue  # too close to kickoff to place on the account
+        legs = connection.execute(
+            """SELECT fixture_id, sport, competition, home, away, market, selection, decimal_odds, probability,
+                      starts_at, odds_observed_at FROM sports_ai_accumulator_legs WHERE ticket_id=? ORDER BY starts_at""",
+            (row['id'],),
+        ).fetchall()
+        if not legs:
+            continue
+        day = local_date(current if live_mode else coded)
+        count, staked = _day_usage(connection, day)
+        if capacity(count, staked) <= 0:
+            continue
+        taken = _active_fixtures(connection)
+        if any(leg['fixture_id'] in taken for leg in legs):
+            continue  # correlation rule: a match is never backed twice
+        params = json.loads(row['parameters_json'] or '{}')
+        favourite = params.get('product') == 'favourites'
+        odds, probability = float(row['combined_odds']), float(row['joint_probability'])
+        bet_id = TICKET_PREFIX + row['id']
+        first = legs[0]
+        sports = {leg['sport'] for leg in legs}
+        label = ('Favourites ticket (no edge)' if favourite else 'Qualified ticket') + f" · code {row['code']}"
+        connection.execute(
+            """INSERT OR IGNORE INTO sports_ai_single_bets
+               (id,decision_id,prediction_id,fixture_id,sport,competition,home,away,market,selection,decimal_odds,
+                probability,expected_value,stake,mode,status,local_date,starts_at,odds_observed_at,created_at,placed_at,kind,reason)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PAPER',?,?,?,?,?,?,'TICKET',?)""",
+            (bet_id, None, None, first['fixture_id'], first['sport'] if len(sports) == 1 else 'mixed',
+             ' · '.join(dict.fromkeys(leg['competition'] for leg in legs if leg['competition'])),
+             first['home'], first['away'], 'TICKET', label, odds, min(probability, 0.999999),
+             round(probability * odds - 1, 6), STAKE, 'QUEUED' if live_mode else 'PLACED', day, kickoff.isoformat(),
+             first['odds_observed_at'], (current if live_mode else coded).isoformat(),
+             None if live_mode else coded.isoformat(), (FAVOURITE_NOTICE if favourite else '')[:300]),
+        )
+        if not connection.execute('SELECT 1 FROM sports_ai_single_bets WHERE id=?', (bet_id,)).fetchone():
+            continue
+        for number, leg in enumerate(legs, start=1):
+            connection.execute(
+                """INSERT OR IGNORE INTO sports_ai_single_bet_legs
+                   (bet_id,leg_no,fixture_id,sport,competition,home,away,market,selection,decimal_odds,probability,
+                    starts_at,odds_observed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (bet_id, number, leg['fixture_id'], leg['sport'], leg['competition'] or '', leg['home'], leg['away'],
+                 leg['market'], leg['selection'] or leg['market'], float(leg['decimal_odds']),
+                 min(max(float(leg['probability'] or 0.5), 0.000001), 0.999999), leg['starts_at'], leg['odds_observed_at']),
+            )
+        _event(connection, bet_id, 'QUEUED' if live_mode else 'PLACED',
+               (f"Ticket queued for the account – code {row['code']}" if live_mode
+                else f"Paper ticket placed – code {row['code']}")
+               + f", {len(legs)} legs @ {odds:.2f} (₦{STAKE:,.0f})" + (' · no edge' if favourite else ''), current)
+        imported += 1
+    return imported
+
+
 def favourite_candidates(connection, now=None, exclude=()):
     """Favourites priced at or above MIN_ODDS on fixtures not already backed. No edge by design."""
-    from favourites import candidates
-    taken = _active_fixtures(connection) | set(exclude)
+    from favourites import candidates, lane_of, DAILY_LIMIT, _today_count
+    current = _now(now)
+    taken = _active_fixtures(connection) | set(exclude) | _ticket_fixtures(connection)
     try:
-        legs = candidates(connection, _now(now))
+        legs = candidates(connection, current)
+        tickets_full = _today_count(connection, current) >= DAILY_LIMIT
     except Exception:  # favourites are optional; the edge engine must keep running
         return []
+    # Each price batch is split with the ticket lane (favourites.lane_of); once the tickets' daily
+    # cap is reached, singles may use the whole batch.
     return [_favourite_item(leg) for leg in legs
-            if leg['fixture_id'] not in taken and float(leg['decimal_odds']) >= MIN_ODDS - 1e-9]
+            if leg['fixture_id'] not in taken and float(leg['decimal_odds']) >= MIN_ODDS - 1e-9
+            and (tickets_full or lane_of(leg) == 'single')]
 
 
 def _chance_key(item):
@@ -435,6 +536,25 @@ def _recheck_combo(connection, bet, current, max_age):
             'probability': combo['probability'], 'legs': fresh_legs}, ''
 
 
+def _recheck_ticket(connection, bet, current):
+    """A followed ticket may be placed while every leg is still a scheduled match before kickoff.
+    Prices are checked on the SportyBet page itself (each leg within MAX_PRICE_MOVE)."""
+    legs = _legs(connection, bet['id'])
+    if not legs:
+        return None, 'The ticket has no legs.'
+    for leg in legs:
+        fixture = connection.execute('SELECT status, starts_at FROM sports_ai_fixtures WHERE id=?', (leg['fixture_id'],)).fetchone()
+        kickoff = _parse(fixture['starts_at'] if fixture else leg['starts_at'])
+        if not fixture or fixture['status'] not in OPEN_FIXTURE or kickoff is None \
+                or (kickoff - current).total_seconds() < MIN_SECONDS_TO_START:
+            return None, f"{leg['home']} vs {leg['away']} is no longer before kickoff."
+    fresh_legs = [dict(leg) for leg in legs]
+    odds = round(_product(l['decimal_odds'] for l in fresh_legs), 4)
+    probability = _product(l['probability'] for l in fresh_legs)
+    return {'decimal_odds': odds, 'observed_at': bet['odds_observed_at'], 'ev': round(odds * probability - 1, 6),
+            'probability': min(probability, 0.999999), 'legs': fresh_legs}, ''
+
+
 def _apply_fresh_legs(connection, bet_id, fresh):
     for leg in fresh.get('legs') or []:
         connection.execute(
@@ -447,6 +567,8 @@ def _recheck(connection, bet, current, max_age):
     from qualification_engine import selection_is_qualified
     if _kind(bet) == 'COMBO':
         return _recheck_combo(connection, bet, current, max_age)
+    if _kind(bet) == 'TICKET':
+        return _recheck_ticket(connection, bet, current)
     if _kind(bet) == 'FAVOURITE':
         from favourites import candidates
         leg = next(iter(candidates(connection, current, fixture_id=bet['fixture_id'], market=bet['market'])), None)
@@ -477,7 +599,7 @@ def _settle_combos(connection, current):
     from rollover_engine import _outcome
     settled = 0
     for bet in connection.execute(
-        "SELECT * FROM sports_ai_single_bets WHERE status='PLACED' AND kind='COMBO'",
+        "SELECT * FROM sports_ai_single_bets WHERE status='PLACED' AND kind IN ('COMBO','TICKET')",
     ).fetchall():
         legs = _legs(connection, bet['id'])
         grades = []
@@ -571,8 +693,8 @@ def run_cycle(connection, now=None, candidates=None):
             continue
         combo = _kind(bet) == 'COMBO'
         favourite = _kind(bet) == 'FAVOURITE'
-        # In a live mode the account lane places edge bets; favourites are paper-only and placed here.
-        if (live_mode and not favourite) or result['placed'] >= PLACE_PER_TICK:
+        # In a live mode the account lane places (or rehearses) the head of the queue.
+        if live_mode or result['placed'] >= PLACE_PER_TICK:
             continue
         count, staked = _day_usage(connection, day)
         if bet['local_date'] != day and capacity(count, staked) <= 0:
@@ -590,6 +712,9 @@ def run_cycle(connection, now=None, candidates=None):
         _event(connection, bet['id'], 'PLACED',
                f"{label} – {_fixture(bet, fresh.get('legs'))} {bet['selection']} @ {fresh['decimal_odds']:.2f} (₦{bet['stake']:,.0f})", current)
         result['placed'] += 1
+
+    # Coded accumulator tickets become paper bets first, so favourite singles never take their matches.
+    result['tickets_imported'] = import_coded_tickets(connection, current)
 
     # Refill the queue within the daily caps.
     pool = load_candidates(connection, current) if candidates is None else candidates
@@ -645,7 +770,7 @@ def next_for_execution(connection, now=None):
     current = _now(now)
     max_age = _max_odds_age(connection)
     for bet in connection.execute(
-        "SELECT * FROM sports_ai_single_bets WHERE status='QUEUED' AND kind!='FAVOURITE' ORDER BY created_at, id",
+        "SELECT * FROM sports_ai_single_bets WHERE status='QUEUED' ORDER BY created_at, id",
     ).fetchall():
         fresh, reason = _recheck(connection, bet, current, max_age)
         if fresh is None:
@@ -721,10 +846,17 @@ def _account_balance(connection, current):
 
 def _bet_public(connection, row):
     item = dict(row)
-    legs = [dict(l) for l in _legs(connection, row['id'])] if _kind(row) == 'COMBO' else []
+    legs = [dict(l) for l in _legs(connection, row['id'])] if _kind(row) in ('COMBO', 'TICKET') else []
     item['kind'] = _kind(row)
     item['legs'] = legs
     item['fixture'] = _fixture(row, legs)
+    item['booking_code'] = None
+    if item['kind'] == 'TICKET' and str(row['id']).startswith(TICKET_PREFIX):
+        code = connection.execute(
+            "SELECT code FROM sports_ai_booking_codes WHERE accumulator_ticket_id=? AND verification_method='displayed' "
+            "ORDER BY created_at DESC LIMIT 1", (row['id'][len(TICKET_PREFIX):],),
+        ).fetchone()
+        item['booking_code'] = code['code'] if code else None
     return item
 
 

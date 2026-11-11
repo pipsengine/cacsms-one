@@ -362,6 +362,28 @@ Total Return
             order = c.execute("SELECT status, payout FROM sports_ai_single_live_orders WHERE kind='SUBMISSION'").fetchone()
             self.assertEqual((order['status'], order['payout']), ('SETTLED_WON', 127.68))
 
+    def test_no_edge_ticket_is_submitted_in_live_mode(self):
+        now = datetime.now(timezone.utc)
+        STATE['flow'] = 'multi'
+        with db.connect() as c:
+            self._connected(c, now)
+            self._rehearsals(c, now)
+            acct.grant_authorization(c, 'admin', acct.ACKNOWLEDGEMENT, 24, now)
+            acct.set_execution_mode(c, 'LIVE', 'admin', now)
+            bet = self._combo(c, now)
+            for item in bet['legs']:
+                item['probability'] = 0.75          # 56% joint, negative expected value
+            bet.update(kind='TICKET', probability=0.5625, expected_value=1.2768 * 0.5625 - 1)
+            c.execute("UPDATE sports_ai_single_bets SET kind='TICKET', probability=0.5625 WHERE id='combo-1'")
+        outcome, status, detail = asyncio.run(acct.execute_async(bet, 'SUBMISSION', now))
+        self.assertEqual((outcome, status), ('LIVE_PLACED', 'PLACED'), detail)
+        with db.connect() as c:
+            order = c.execute("SELECT checks_json FROM sports_ai_single_live_orders WHERE kind='SUBMISSION'").fetchone()
+            self.assertTrue(all(json.loads(order['checks_json'])['checks'].values()))
+            self.assertEqual(acct.grant_authorization.__module__, 'sportybet_account')
+            reasons, grant = acct.submission_gate(c, now)
+            self.assertEqual(grant['daily_count'], 10)
+
     def test_combined_bet_on_singles_tab_is_never_placed(self):
         now = datetime.now(timezone.utc)
         STATE['flow'] = 'multi_singles'

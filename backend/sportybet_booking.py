@@ -193,7 +193,10 @@ def create_job(connection, selections, high_odds=False):
     from qualification_engine import require_bookable
     policy = load(connection)
     from qualification_engine import require_current_qualification
-    guarded = selections if high_odds else [item for item in selections if item.get('sport') == 'basketball']
+    product = _ticket_product(connection, selections[0]['ticket_id']) if selections and selections[0].get('ticket_id') else None
+    # Low-odds jackpots use SportyBet's own price, not the (quarantined) basketball model.
+    guarded = [] if product == 'jackpot_low' else (
+        selections if high_odds else [item for item in selections if item.get('sport') == 'basketball'])
     if guarded:
         require_current_qualification(connection, guarded, _now())
     if not high_odds and policy['require_live_qualification']:
@@ -201,15 +204,16 @@ def create_job(connection, selections, high_odds=False):
     # Hard gate for every product; booking_policy relaxations cannot switch it off.
     # The one exception is the labelled no-edge favourites product (favourites.py): it is
     # positive-EV by design never, so it passes its own structural gate instead.
-    favourite_ticket = selections and selections[0].get('ticket_id') and \
-        _ticket_product(connection, selections[0]['ticket_id']) == 'favourites'
-    if favourite_ticket and not high_odds:
+    if product == 'favourites' and not high_odds:
         from favourites import require_bookable as require_favourite
         integrity = require_favourite(connection, selections, _now())
+    elif product == 'jackpot_low' and not high_odds:
+        from jackpot_low import require_bookable as require_jackpot
+        integrity = require_jackpot(connection, selections, _now())
     else:
         from prediction_integrity import require_bookable as require_integrity
         integrity = require_integrity(connection, selections, _now())
-    limit = 30 if high_odds else 25
+    limit = 50 if product == 'jackpot_low' else 30 if high_odds else 25
     if not selections or len(selections) > limit:
         raise ValueError(f'A booking needs 1 to {limit} selections')
     sports = {item['sport'] for item in selections}
@@ -694,7 +698,8 @@ def _ticket_product(connection, ticket_id):
 def _store_displayed_code(connection, ticket_id, code, evidence):
     from qualification_engine import require_current_qualification
     selections = ticket_selections(connection, ticket_id)
-    guarded = selections if _ticket_product(connection, ticket_id) in ('high_odds', 'sure_odds') else [
+    stored_product = _ticket_product(connection, ticket_id)
+    guarded = [] if stored_product == 'jackpot_low' else selections if stored_product in ('high_odds', 'sure_odds') else [
         item for item in selections if item.get('sport') == 'basketball'
     ]
     if guarded:
@@ -1535,6 +1540,10 @@ async def _execute_job(job_id, page_url=None):
                         and item.get('starts_at')]
         from booking_policy import legs_needed
         minimum = legs_needed(policy, len(selections))
+        jackpot_ticket = next((item.get('ticket_id') for item in selections if item.get('ticket_id')), None)
+        if jackpot_ticket and _ticket_product(connection, jackpot_ticket) == 'jackpot_low':
+            from jackpot_low import MIN_BOOKED
+            minimum = min(MIN_BOOKED, len(selections))  # a jackpot keeps at least 40 legs or is not booked
         # A leg SportyBet has not listed for a day is not on its pages; do not open a browser for it.
         since = (moment - timedelta(hours=OFFER_HOURS)).isoformat()
         unlisted = [item for item in selections if item not in started_legs and not connection.execute(

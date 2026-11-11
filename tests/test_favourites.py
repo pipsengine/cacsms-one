@@ -13,6 +13,17 @@ import favourites as fv
 NOW = datetime(2026, 11, 11, 9, 0, tzinfo=timezone.utc)
 
 
+def ids(prefix, lane, n):
+    """Fixture ids that favourites.lane_of sends to `lane` (for legs priced at 1.20 or more)."""
+    out, i = [], 0
+    while len(out) < n:
+        fid = f'{prefix}{i}'
+        if fv.lane_of({'fixture_id': fid, 'decimal_odds': 1.25}) == lane:
+            out.append(fid)
+        i += 1
+    return out
+
+
 def model(c, sport='football'):
     c.execute("""INSERT INTO sports_ai_model_registry(id,training_run_id,sport,model_name,version,status,active,parameters_json,
                  metrics_json,calibration_status,lifecycle) VALUES(?,?,?,?,?,'active',1,'{}',?,'validated','active')""",
@@ -62,7 +73,7 @@ class FavouritesTests(unittest.TestCase):
             c.execute('PRAGMA foreign_keys=OFF')
             model(c)
             for i in range(4):
-                leg(c, f'f{i}', odds=1.20 + i * 0.02)
+                leg(c, f'f{i}', odds=1.16 + i * 0.01)
             out = fv.build_favourite_tickets(c, now=NOW)
             self.assertEqual(out['created'], 1)
             ticket = c.execute('SELECT * FROM sports_ai_accumulator_tickets').fetchone()
@@ -97,7 +108,7 @@ class FavouritesTests(unittest.TestCase):
             c.execute('PRAGMA foreign_keys=OFF')
             model(c)
             for i in range(4):
-                leg(c, f'f{i}', odds=1.20 + i * 0.02)
+                leg(c, f'f{i}', odds=1.16 + i * 0.01)
             ticket_id = fv.build_favourite_tickets(c, now=NOW)['ticket_ids'][0]
             selections = sb.ticket_selections(c, ticket_id)
             original = sb._now
@@ -137,49 +148,159 @@ class FavouriteSinglesTests(unittest.TestCase):
         state['execution_mode'] = 'LIVE'
         sb._save_setting(c, sb.RUNTIME_KEY, state, NOW)
 
-    def test_favourites_are_paper_only_even_in_live_mode(self):
+    def test_favourites_follow_the_execution_mode(self):
         import single_betting as sb
-        import sportybet_account as acct
         with db.connect() as c:
             c.execute('PRAGMA foreign_keys=OFF')
             model(c)
-            leg(c, 'fav1', odds=1.25, probability=0.86)
+            fav1 = ids('fav', 'single', 1)[0]
+            leg(c, fav1, odds=1.25, probability=0.86)
             leg(c, 'cheap', odds=1.16, probability=0.90)   # below the 1.20 single minimum
             self._live(c)
-            first = sb.run_cycle(c, NOW)
-            self.assertEqual(first['queued'], 1)
+            self.assertEqual(sb.run_cycle(c, NOW)['queued'], 1)
             row = c.execute('SELECT * FROM sports_ai_single_bets').fetchone()
-            self.assertEqual((row['kind'], row['fixture_id'], row['mode']), ('FAVOURITE', 'fav1', 'PAPER'))
-            self.assertLess(row['expected_value'], 0.03)
-            # The live account lane never receives it ...
-            self.assertIsNone(sb.next_for_execution(c, NOW + timedelta(seconds=30)))
-            # ... and the engine places it as paper although the mode is LIVE.
+            self.assertEqual((row['kind'], row['fixture_id']), ('FAVOURITE', fav1))
+            # In a live mode the engine does not paper-place it: the account lane takes it.
             sb.run_cycle(c, NOW + timedelta(seconds=30))
-            self.assertEqual(c.execute('SELECT status FROM sports_ai_single_bets').fetchone()[0], 'PLACED')
-            c.execute("INSERT INTO sports_ai_results(id,fixture_id,home_score,away_score,status,source,settled_at) VALUES('r','fav1',2,0,'final','t',?)",
-                      (NOW.isoformat(),))
+            self.assertEqual(c.execute('SELECT status FROM sports_ai_single_bets').fetchone()[0], 'QUEUED')
+            head = sb.next_for_execution(c, NOW + timedelta(seconds=30))
+            self.assertEqual((head['kind'], head['fixture_id']), ('FAVOURITE', fav1))
+            sb.apply_execution(c, head, 'LIVE_PLACED', 'PLACED', 'accepted', 'SUBMISSION', NOW + timedelta(seconds=40))
+            c.execute("INSERT INTO sports_ai_results(id,fixture_id,home_score,away_score,status,source,settled_at) VALUES('r',?,2,0,'final','t',?)",
+                      (fav1, NOW.isoformat()))
             sb.run_cycle(c, NOW + timedelta(hours=6))
             settled = c.execute('SELECT status, profit FROM sports_ai_single_bets').fetchone()
             self.assertEqual(settled['status'], 'WON')
             self.assertAlmostEqual(settled['profit'], 25.0)
-        outcome, _status, detail = __import__('asyncio').run(acct.execute_async({'kind': 'FAVOURITE', 'stake': 100.0}, 'SUBMISSION', NOW))
-        self.assertEqual(outcome, 'CANCEL')
-        self.assertIn('paper only', detail)
+
+    def test_real_money_cap_is_ten_a_day_including_combined(self):
+        import sportybet_account as acct
+        self.assertEqual((acct.DAILY_COUNT, acct.DAILY_STAKE), (10, 1000.0))
+        self.assertIn('TICKET', acct.NO_EDGE_KINDS)
+        legs = [{'home': 'A', 'away': 'B'}, {'home': 'C', 'away': 'D'}]
+        self.assertEqual(len(acct._bet_legs({'kind': 'TICKET', 'legs': legs})), 2)
 
     def test_favourites_capped_and_rechecked(self):
         import single_betting as sb
         with db.connect() as c:
             c.execute('PRAGMA foreign_keys=OFF')
             model(c)
-            for i in range(sb.FAVOURITE_DAILY_LIMIT + 3):
-                leg(c, f'f{i}', odds=1.25, probability=0.86)
+            singles = ids('f', 'single', sb.FAVOURITE_DAILY_LIMIT + 3)
+            for fid in singles:
+                leg(c, fid, odds=1.25, probability=0.86)
             self.assertEqual(sb.run_cycle(c, NOW)['queued'], sb.FAVOURITE_DAILY_LIMIT)
             # A favourite whose price went stale is cancelled before placement.
-            c.execute("UPDATE sports_ai_odds_snapshots SET observed_at=? WHERE fixture_id='f0'",
-                      ((NOW - timedelta(hours=2)).isoformat(),))
+            first = c.execute("SELECT fixture_id FROM sports_ai_single_bets ORDER BY created_at, id LIMIT 1").fetchone()[0]
+            c.execute("UPDATE sports_ai_odds_snapshots SET observed_at=? WHERE fixture_id=?",
+                      ((NOW - timedelta(hours=2)).isoformat(), first))
             out = sb.run_cycle(c, NOW + timedelta(seconds=30))
             self.assertGreaterEqual(out['cancelled'], 1)
-            self.assertEqual(c.execute("SELECT status FROM sports_ai_single_bets WHERE fixture_id='f0'").fetchone()[0], 'CANCELLED')
+            self.assertEqual(c.execute("SELECT status FROM sports_ai_single_bets WHERE fixture_id=?", (first,)).fetchone()[0], 'CANCELLED')
+
+
+class SplitTests(unittest.TestCase):
+    def setUp(self):
+        self.previous = db.DB
+        self.temp = tempfile.TemporaryDirectory()
+        db.DB = Path(self.temp.name) / 'sports.sqlite3'
+        db.initialize()
+
+    def tearDown(self):
+        db.DB = self.previous
+        self.temp.cleanup()
+
+    def test_each_batch_is_split_and_never_shared(self):
+        import single_betting as sb
+        with db.connect() as c:
+            c.execute('PRAGMA foreign_keys=OFF')
+            model(c)
+            single_ids, ticket_ids = ids('s', 'single', 3), ids('t', 'ticket', 4)
+            for fid in single_ids + ticket_ids:
+                leg(c, fid, odds=1.21, probability=0.88)
+            self.assertEqual(fv.lane_of({'fixture_id': single_ids[0], 'decimal_odds': 1.10}), 'ticket')  # too short for a single
+            built = fv.build_favourite_tickets(c, now=NOW)
+            self.assertEqual(built['created'], 1)
+            used = {r[0] for r in c.execute('SELECT fixture_id FROM sports_ai_accumulator_legs')}
+            self.assertTrue(used <= set(ticket_ids))
+            singles = {i['fixture_id'] for i in sb.favourite_candidates(c, NOW)}
+            self.assertEqual(singles, set(single_ids))
+            sb.run_cycle(c, NOW)
+            backed = {r[0] for r in c.execute("SELECT fixture_id FROM sports_ai_single_bets WHERE kind='FAVOURITE'")}
+            self.assertFalse(backed & used)
+            # Matches already backed as singles are never put on a later ticket.
+            self.assertFalse(backed & {l['fixture_id'] for l in fv.candidates(c, NOW) if l['fixture_id'] in
+                                       {r[0] for r in c.execute('SELECT fixture_id FROM sports_ai_accumulator_legs')}})
+
+
+class TicketFollowTests(unittest.TestCase):
+    """Booked accumulator tickets are followed in single betting as ₦100 paper bets."""
+
+    def setUp(self):
+        self.previous = db.DB
+        self.temp = tempfile.TemporaryDirectory()
+        db.DB = Path(self.temp.name) / 'sports.sqlite3'
+        db.initialize()
+
+    def tearDown(self):
+        db.DB = self.previous
+        self.temp.cleanup()
+
+    def _coded_ticket(self, c, code, coded_at):
+        model(c)
+        for i in range(4):
+            leg(c, f'{code}{i}', odds=1.16 + i * 0.01)
+        ticket_id = fv.build_favourite_tickets(c, now=NOW)['ticket_ids'][0]
+        c.execute("""INSERT INTO sports_ai_booking_codes(id,accumulator_ticket_id,code,verification_method,evidence,status,
+                     verified_at,created_at) VALUES(?,?,?,'displayed','test','verified',?,?)""",
+                  (f'bc-{code}', ticket_id, code, coded_at.isoformat(), coded_at.isoformat()))
+        return ticket_id
+
+    def test_coded_ticket_is_followed_as_paper_bet_and_settled(self):
+        import single_betting as sb
+        with db.connect() as c:
+            c.execute('PRAGMA foreign_keys=OFF')
+            ticket_id = self._coded_ticket(c, 'AB12CD', NOW + timedelta(minutes=1))
+            out = sb.run_cycle(c, NOW + timedelta(minutes=2))
+            self.assertEqual(out['tickets_imported'], 1)
+            bet = c.execute("SELECT * FROM sports_ai_single_bets WHERE kind='TICKET'").fetchone()
+            self.assertEqual((bet['id'], bet['status'], bet['mode'], bet['stake']), (f'ticket:{ticket_id}', 'PLACED', 'PAPER', 100.0))
+            self.assertEqual(bet['placed_at'], (NOW + timedelta(minutes=1)).isoformat())
+            public = sb._bet_public(c, bet)
+            self.assertEqual(public['booking_code'], 'AB12CD')
+            legs = public['legs']
+            # Imported once only; its matches are not offered as favourite singles.
+            self.assertEqual(sb.run_cycle(c, NOW + timedelta(minutes=3))['tickets_imported'], 0)
+            taken = {l['fixture_id'] for l in legs}
+            self.assertFalse(taken & {i['fixture_id'] for i in sb.favourite_candidates(c, NOW + timedelta(minutes=3))})
+            for l in legs:  # every leg is a HOME pick: a home win settles it
+                c.execute("INSERT INTO sports_ai_results(id,fixture_id,home_score,away_score,status,source,settled_at) VALUES(?,?,2,0,'final','t',?)",
+                          (f"r-{l['fixture_id']}", l['fixture_id'], NOW.isoformat()))
+            sb.run_cycle(c, NOW + timedelta(hours=6))
+            settled = c.execute("SELECT status, payout FROM sports_ai_single_bets WHERE kind='TICKET'").fetchone()
+            self.assertEqual(settled['status'], 'WON')
+            self.assertAlmostEqual(settled['payout'], round(100 * bet['decimal_odds'], 2), places=1)
+
+    def test_live_mode_queues_tickets_for_the_account(self):
+        import single_betting as sb
+        with db.connect() as c:
+            c.execute('PRAGMA foreign_keys=OFF')
+            self._coded_ticket(c, 'LIVE01', NOW + timedelta(minutes=1))
+            state = sb.runtime(c)
+            state['execution_mode'] = 'LIVE_REHEARSAL'
+            sb._save_setting(c, sb.RUNTIME_KEY, state, NOW)
+            self.assertEqual(sb.import_coded_tickets(c, NOW + timedelta(minutes=2)), 1)
+            bet = c.execute("SELECT * FROM sports_ai_single_bets WHERE kind='TICKET'").fetchone()
+            self.assertEqual((bet['status'], bet['placed_at']), ('QUEUED', None))
+            head = sb.next_for_execution(c, NOW + timedelta(minutes=3))
+            self.assertEqual((head['kind'], len(head['legs'])), ('TICKET', bet['decimal_odds'] and len(head['legs'])))
+            self.assertGreaterEqual(len(head['legs']), 3)
+
+    def test_code_shown_after_kickoff_is_never_followed(self):
+        import single_betting as sb
+        with db.connect() as c:
+            c.execute('PRAGMA foreign_keys=OFF')
+            self._coded_ticket(c, 'LATE01', NOW + timedelta(hours=5))   # legs kick off at NOW+4h
+            self.assertEqual(sb.import_coded_tickets(c, NOW + timedelta(hours=6)), 0)
 
 
 if __name__ == '__main__':

@@ -41,8 +41,12 @@ BASE_URL = os.environ.get('SPORTS_ACCOUNT_BASE_URL', 'https://www.sportybet.com'
 HOME_PATH = '/ng/'
 HISTORY_PATH = '/ng/my_accounts/bet_history/sport_bets?isSettled=10'
 STAKE = 100.0
-DAILY_COUNT = 25
-DAILY_STAKE = 2500.0
+# Owner's limit (2026-11-11): at most 10 real-money bets a day, combined bets and tickets included.
+DAILY_COUNT = 10
+DAILY_STAKE = 1000.0
+# Kinds that are favourites by design (no positive edge): their live checks are price and kickoff,
+# not expected value. They exist only because the owner explicitly chose real money on favourites.
+NO_EDGE_KINDS = ('FAVOURITE', 'TICKET')
 REQUIRED_REHEARSALS = 3
 MAX_AUTHORIZATION_HOURS = 168
 SESSION_CHECK_MINUTES = 20
@@ -516,7 +520,7 @@ def reconcile(connection, history_text, now=None):
     ).fetchall()
     for order in orders:
         sent = _parse(order['submitted_at'] or order['created_at'])
-        combo = order['bet_kind'] == 'COMBO'
+        combo = order['bet_kind'] in ('COMBO', 'TICKET')
         pairs = [(order['home'], order['away'])]
         if combo:
             pairs = [(leg['home'], leg['away']) for leg in connection.execute(
@@ -681,7 +685,7 @@ def submission_gate(connection, now=None):
 def _bet_legs(bet):
     """The selections a bet puts on the slip: its legs for a combined bet, else itself."""
     legs = bet.get('legs') or []
-    return list(legs) if (bet.get('kind') == 'COMBO' and legs) else [bet]
+    return list(legs) if (bet.get('kind') in ('COMBO', 'TICKET') and legs) else [bet]
 
 
 def _bet_name(bet):
@@ -751,14 +755,17 @@ async def _prepare_in_account(page, bet, test=False):
     if page_odds < MIN_ODDS - 1e-9 and not test:
         return {'ok': False, 'code': 'EDGE_GONE', 'error': f'The displayed {page_odds:.2f} is below the {MIN_ODDS:.2f} minimum.', 'page_odds': page_odds}
     probability = float(bet['probability'])
+    no_edge = bet.get('kind') in NO_EDGE_KINDS
     if combo:
         probability = 1.0
         for leg in legs:
             probability *= float(leg['probability'])
-        if probability < COMBO_MIN_PROBABILITY and not test:
+        if probability < COMBO_MIN_PROBABILITY and not test and not no_edge:
             return {'ok': False, 'code': 'EDGE_GONE', 'error': f'Combined probability {probability:.2f} is below {COMBO_MIN_PROBABILITY:.2f}.', 'page_odds': page_odds}
     ev = page_odds * probability - 1
-    if ev < MIN_EV and not test:
+    # Favourites and followed tickets carry no edge by design; their gate is the 1.20 minimum above
+    # and every leg within MAX_PRICE_MOVE of its stored price (prepare_slip).
+    if ev < MIN_EV and not test and not no_edge:
         return {'ok': False, 'code': 'EDGE_GONE', 'error': f'At the displayed {page_odds:.2f} the expected value is {ev:+.3f}.', 'page_odds': page_odds}
     if combo:
         await page.evaluate(MARK_MULTIPLE)
@@ -812,8 +819,6 @@ async def execute_async(bet, kind, now=None, test=False):
     grant_id = None
     if test and kind != 'REHEARSAL':
         raise ValueError('A test can only rehearse')
-    if bet.get('kind') == 'FAVOURITE':
-        return 'CANCEL', None, 'Favourites (no edge) are paper only and never go to the SportyBet account'
     with connect() as connection:
         if kind == 'SUBMISSION':
             reasons, grant = submission_gate(connection, current)

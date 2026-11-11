@@ -354,7 +354,7 @@ def _single_betting_fast():
         from single_betting import run_cycle
         with connect() as connection:
             result = run_cycle(connection)
-        if any(result.get(key) for key in ('placed', 'queued', 'settled', 'cancelled')):
+        if any(result.get(key) for key in ('placed', 'queued', 'settled', 'cancelled', 'tickets_imported')):
             print('single betting', result.get('status'), 'placed', result.get('placed'), 'queued', result.get('queued'),
                   'settled', result.get('settled'), 'places_wager', result.get('places_wager'))
             _observed('single_betting', result)
@@ -484,12 +484,15 @@ def _ticket_tick():
             coverage = build_high_probability_tickets(connection, 'sports-ai-worker', _audit, now=current)
             from favourites import build_favourite_tickets
             favourites = build_favourite_tickets(connection, 'sports-ai-worker', now=current)
+            from jackpot_low import build as build_jackpots
+            jackpots = build_jackpots(connection, 'sports-ai-worker', now=current)  # once per WAT day
         print(
             'tickets', result.get('status'),
             'created', result.get('tickets_created', result.get('ticket_count', 0)),
             'cross_market', cross.get('created', 0),
             'high_probability', coverage.get('created', 0),
             'favourites', favourites.get('created', 0), 'of', favourites.get('candidates', 0),
+            'jackpots', jackpots.get('status'), jackpots.get('created', 0),
             'leagues', coverage.get('leagues', 0),
             'sports', coverage.get('sports', 0),
             'quoted_board', priced.get('fixtures', 0),

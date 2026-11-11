@@ -25,6 +25,7 @@ places a wager; the booking lane only requests a displayed booking code.
 import json
 import re
 import uuid
+import zlib
 from datetime import datetime, timedelta, timezone
 
 PRODUCT = 'favourites'
@@ -99,8 +100,10 @@ def candidates(connection, now=None, fixture_id=None, market=None):
               AND q.observed_at>=?
               AND p.created_at=(SELECT MAX(p2.created_at) FROM sports_ai_engine_predictions p2
                                 WHERE p2.fixture_id=p.fixture_id AND p2.market=p.market)
+              -- The newest decision on THIS prediction. Decisions on an old model's predictions for the
+              -- same match are often newer (MODEL_INACTIVE) and must not mask the active model's own.
               AND d.updated_at=(SELECT MAX(d2.updated_at) FROM sports_ai_qualification_decisions d2
-                                WHERE d2.fixture_id=d.fixture_id AND upper(d2.market)=upper(d.market))
+                                WHERE d2.prediction_id=d.prediction_id)
               AND NOT EXISTS (SELECT 1 FROM sports_ai_data_quality_issues i
                               WHERE i.fixture_id=f.id AND i.resolved_at IS NULL AND i.severity IN ('high','critical'))
               AND (? IS NULL OR f.id=?) AND (? IS NULL OR upper(p.market)=upper(?))""",
@@ -140,6 +143,33 @@ def candidates(connection, now=None, fixture_id=None, market=None):
         if held is None or (leg['probability'], leg['decimal_odds']) > (held['probability'], held['decimal_odds']):
             best[row['fixture_id']] = leg
     return sorted(best.values(), key=lambda l: (-l['probability'], l['starts_at'], l['fixture_id']))
+
+
+SINGLE_MIN_ODDS = 1.20  # single betting's minimum (single_betting.MIN_ODDS)
+
+
+def lane_of(leg):
+    """Which product a favourite belongs to. Stable per match, so the ticket and single lanes can
+    split each price batch without coordinating: under 1.20 only a ticket can use it; otherwise an
+    even split by match id."""
+    if float(leg['decimal_odds']) < SINGLE_MIN_ODDS - 1e-9:
+        return 'ticket'
+    return 'single' if zlib.crc32(str(leg['fixture_id']).encode()) % 2 == 0 else 'ticket'
+
+
+def _singles_cap_reached(connection, current):
+    from single_betting import FAVOURITE_DAILY_LIMIT, _favourites_today, local_date
+    return _favourites_today(connection, local_date(current)) >= FAVOURITE_DAILY_LIMIT
+
+
+def _single_fixtures(connection):
+    """Matches backed by single betting (singles, combined bets or followed tickets)."""
+    rows = connection.execute(
+        """SELECT fixture_id FROM sports_ai_single_bets WHERE status!='CANCELLED'
+           UNION SELECT l.fixture_id FROM sports_ai_single_bet_legs l
+           JOIN sports_ai_single_bets b ON b.id=l.bet_id WHERE b.status!='CANCELLED'""",
+    ).fetchall()
+    return {row[0] for row in rows}
 
 
 def _teams(leg):
@@ -189,7 +219,11 @@ def build_favourite_tickets(connection, actor='sports-ai-worker', now=None):
     room = min(PER_RUN, DAILY_LIMIT - _today_count(connection, current))
     if room <= 0:
         return {'status': 'daily_limit', 'created': 0, 'candidates': 0, 'places_wager': False}
-    pool = unallocated(connection, candidates(connection, current), current)
+    singles_full = _singles_cap_reached(connection, current)
+    backed = _single_fixtures(connection)
+    pool = [leg for leg in candidates(connection, current)
+            if leg['fixture_id'] not in backed and (singles_full or lane_of(leg) == 'ticket')]
+    pool = unallocated(connection, pool, current)
     open_signatures = open_selection_signatures(connection)
     config = default_config()
     config['max_per_competition'] = MAX_PER_LEAGUE
