@@ -12,8 +12,9 @@ from booking_schedule import describe, last_publication_at, phase_at, publicatio
 from db import connect as _db_connect
 
 
-def connect(busy_timeout_ms=180000):
-    """Booking writes wait up to 3 minutes for SQLite's write lock. A booking runs on its own
+def connect(busy_timeout_ms=600000):
+    """Booking writes wait up to 10 minutes for SQLite's write lock (catalog/discovery stages hold it
+    for minutes on the live database). A booking runs on its own
     thread after minutes of browser work, possibly after SportyBet has displayed a code; giving
     up after the default 20 s lost results and left jobs stuck in PREPARING."""
     return _db_connect(busy_timeout_ms)
@@ -148,7 +149,10 @@ SLIP_CONTAINS = '''(args) => {
   const parts = [...document.querySelectorAll('.m-pop-main, .share-bet-container')].map(node => node.innerText || '');
   const blob = fold(parts.join(' '));
   const text = parts.join(' ').replace(/\\s+/g, ' ').slice(0, 400);
-  return {ok: args.names.every(name => tokens(name).every(token => present(token, blob))), text};
+  // SportyBet's share dialog states the slip's total odds, e.g. "Odds 589,452.46".
+  const shown = parts.join(' ').replace(/\\s+/g, ' ').match(/Odds\\s*([\\d,]+(?:\\.\\d+)?)/i);
+  const odds = shown ? Number(shown[1].replace(/,/g, '')) : null;
+  return {ok: args.names.every(name => tokens(name).every(token => present(token, blob))), text, odds};
 }'''
 
 
@@ -1355,11 +1359,86 @@ async def prepare_slip(page, selections, book=True, skip_unpriced=False, max_mov
     return result
 
 
+BETSLIP_TEXT = '''() => {
+  const root = document.querySelector('.m-betslip-wrapper, .m-betslips, .m-betslip, .betslip, [class*="betslip"]');
+  if (!root) return null;
+  const text = root.innerText || '';
+  const count = text.match(/Betslip\\s*(\\d+)/i);
+  return {text, count: count ? Number(count[1]) : null};
+}'''
+
+
+def _name_tokens(value):
+    skip = {'fc', 'sc', 'sv', 'ac', 'cf', 'afc', 'cfc', 'vfb', 'vfl', 'tsg', 'bsc', 'fk', 'sk', 'dsc', 'rcd'}
+    folded = re.sub(r'[^a-z0-9]+', ' ', str(value or '').casefold()).split()
+    kept = [token for token in folded if token not in skip and not token.isdigit()]
+    return kept or folded
+
+
+def _on_slip(item, blob):
+    present = lambda token: token in blob or (len(token) >= 6 and token[:5] in blob)
+    return all(present(token) for side in ('home', 'away') for token in _name_tokens(item.get(side)))
+
+
+async def _keep_slip_selections(page, seen, selections):
+    """Keep only the clicked selections the betslip actually shows. When the slip cannot be read
+    or already holds every click, nothing changes."""
+    try:
+        slip = await page.evaluate(BETSLIP_TEXT)
+    except Exception:
+        return seen
+    if not slip or not slip.get('text'):
+        return seen
+    if slip.get('count') is not None and slip['count'] >= len(seen):
+        return seen
+    blob = ' '.join(re.sub(r'[^a-z0-9]+', ' ', slip['text'].casefold()).split())
+    by_id = {item.get('fixture_id'): item for item in selections}
+    kept = [item for item in seen if by_id.get(item.get('fixture_id')) is None or _on_slip(by_id[item.get('fixture_id')], blob)]
+    # Only trust the name match when it explains the slip's own count; otherwise keep the clicks.
+    if slip.get('count') is not None and len(kept) != slip['count']:
+        return seen
+    return kept
+
+
+def _odds_confirm_slip(shown_odds, selections, seen, tolerance=0.02):
+    """A long slip's dialog does not list every game by name. Its stated total odds equal the
+    product of exactly the booked selections' displayed prices; that confirms the slip."""
+    if not shown_odds or len(selections) < 15:
+        return False
+    prices = {item.get('fixture_id'): item.get('page_odds') for item in seen}
+    product = 1.0
+    for item in selections:
+        price = prices.get(item.get('fixture_id'))
+        if not price:
+            return False
+        product *= float(price)
+    return abs(float(shown_odds) / product - 1) <= tolerance
+
+
+SLIP_LOADING = '''() => {
+  const root = document.querySelector('.m-betslip-wrapper, .m-betslips, .m-betslip');
+  return !!root && /loading/i.test(root.innerText || '');
+}'''
+
+
+async def _ready_book_control(page, attempts=30, pause_ms=1500):
+    """A long slip makes SportyBet recalculate ("Loading ...") and keeps the book control disabled
+    for a while. Wait for it to settle instead of failing on the first look."""
+    control, controls = None, 0
+    for _ in range(attempts):
+        loading = await page.evaluate(SLIP_LOADING)
+        controls = await page.evaluate(FIND_BOOK)
+        control = await page.evaluate(INSPECT, '[data-sports-ai-book="1"]') if controls == 1 else None
+        if not loading and controls == 1 and control and not control.get('disabled'):
+            return controls, control
+        await page.wait_for_timeout(pause_ms)
+    return controls, control
+
+
 async def request_displayed_code(page, selections, seen):
-    controls = await page.evaluate(FIND_BOOK)
+    controls, control = await _ready_book_control(page)
     if controls != 1:
         raise RuntimeError('Booking-code control missing or ambiguous')
-    control = await page.evaluate(INSPECT, '[data-sports-ai-book="1"]')
     name = (control or {}).get('name') or ''
     if not control or control.get('disabled') or not BOOK.search(name) or re.search(r'place\s*bet|bet\s*now|\bpay\b|deposit|confirm\s*bet', name, re.I):
         raise RuntimeError('The booking-code control is not the allowed share control')
@@ -1372,8 +1451,17 @@ async def request_displayed_code(page, selections, seen):
     if await page.locator('.m-pop-main, .booking-code-share').count():
         names = [item['home'] for item in selections] + [item['away'] for item in selections]
         check = await page.evaluate(SLIP_CONTAINS, {'names': names})
-        if not check['ok']:
-            raise RuntimeError(f"The booking slip did not include every selected game. Slip: {check['text']}")
+        if not check['ok'] and not _odds_confirm_slip(check.get('odds'), selections, seen):
+            prices = {item.get('fixture_id'): item.get('page_odds') for item in seen}
+            expected = 1.0
+            priced = 0
+            for item in selections:
+                if prices.get(item.get('fixture_id')):
+                    expected *= float(prices[item.get('fixture_id')])
+                    priced += 1
+            raise RuntimeError(
+                f"The booking slip did not include every selected game (SportyBet odds {check.get('odds')}, "
+                f"expected {expected:,.2f} from {priced}/{len(selections)} clicked legs). Slip: {check['text']}")
     codes = await page.evaluate(READ_CODES)
     if len(codes) != 1 or not CODE.fullmatch(codes[0]):
         raise RuntimeError('The page did not show one booking code')
@@ -1532,15 +1620,31 @@ def _drop_unpriced_legs(connection, ticket_id, skipped):
     )
 
 
+JOB_TIMEOUT_SECONDS = 12 * 60
+
+
 async def execute_job(job_id, page_url=None, slot_wait=60):
     """Run one booking job while holding a shared browser slot.
 
     When every slot is busy the job stays QUEUED and no attempt is spent.
     """
+    import asyncio
     from browser_slots import BrowserBusy, async_browser_slot
     try:
         async with async_browser_slot('booking', wait=slot_wait):
-            return await _execute_job(job_id, page_url)
+            try:
+                # A frozen SportyBet page must not hold the slot and the queue: hard limit per booking.
+                return await asyncio.wait_for(_execute_job(job_id, page_url), timeout=JOB_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                message = f'Booking stopped after {JOB_TIMEOUT_SECONDS // 60} minutes; the page did not finish. Retried with fresh legs.'
+                with connect() as connection:
+                    _set_job(connection, job_id, 'FAILED', error=message, reason_code='BOOKING_TIMEOUT')
+                    _log_booking(connection, job_id, 'failed', message, level='error')
+                    ticket_id = _ticket_on_job(connection, job_id)
+                    if ticket_id:
+                        _record_diagnostic(connection, ticket_id, 'BOOKING_TIMEOUT', message, _now())
+                return {'id': job_id, 'status': 'FAILED', 'reason_code': 'BOOKING_TIMEOUT', 'error': message,
+                        'code': None, 'places_wager': False}
     except BrowserBusy as busy:
         with connect() as connection:
             _log_booking(connection, job_id, 'prepare', str(busy), level='warning')
@@ -1661,6 +1765,9 @@ async def _execute_job(job_id, page_url=None):
                         break
                     seen.extend(part['seen'])
                 if result is None:
+                    # A clicked selection SportyBet suspended or rejected is not on the betslip. Trust the
+                    # betslip, not the clicks, so the code always holds exactly the stored legs.
+                    seen = await _keep_slip_selections(page, seen, selections)
                     clicked = {item.get('fixture_id') for item in seen}
                     booked = [item for item in selections if item.get('fixture_id') in clicked]
                     if _prize_short(booked, seen):
@@ -1669,6 +1776,9 @@ async def _execute_job(job_id, page_url=None):
                         if added:
                             selections = selections + added
                             reserve_added.extend(added)
+                            seen = await _keep_slip_selections(page, seen, selections)
+                            reserve_added[:] = [item for item in reserve_added
+                                                if item.get('fixture_id') in {s.get('fixture_id') for s in seen}]
                             clicked = {item.get('fixture_id') for item in seen}
                             booked = [item for item in selections if item.get('fixture_id') in clicked]
                     if flexible and len(booked) < needed:
@@ -1800,7 +1910,7 @@ async def _execute_job(job_id, page_url=None):
         message = str(exc)[:500]
         reason = classify_booking_failure(message)
         from browser_slots import classify_browser_error
-        if classify_browser_error(exc) == 'transient':
+        if classify_browser_error(exc) == 'transient' or 'database is locked' in message:
             # The page or network was unavailable. Requeue with backoff and
             # give the attempt back, so an outage does not exhaust retries.
             with connect() as connection:

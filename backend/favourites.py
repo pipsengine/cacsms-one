@@ -69,6 +69,13 @@ def _freshness_minutes(connection):
         return 15
 
 
+def _release(connection):
+    """Commit pending writes so SQLite's single write lock is not held through a long read-only scan
+    (the booking lane waits on that lock; holding it for minutes lost bookings)."""
+    if connection.in_transaction:
+        connection.commit()
+
+
 def candidates(connection, now=None, fixture_id=None, market=None):
     """Best favourite per fixture, highest anchored probability first. With fixture_id/market,
     only that selection is evaluated (used to re-check a queued favourite before placement)."""
@@ -216,6 +223,7 @@ def build_favourite_tickets(connection, actor='sports-ai-worker', now=None):
     from accumulator_engine import CONFIG_ID, combine_ticket, default_config, _insert_ticket, open_selection_signatures
     from ticket_diversity import unallocated
     current = _now(now)
+    _release(connection)
     room = min(PER_RUN, DAILY_LIMIT - _today_count(connection, current))
     if room <= 0:
         return {'status': 'daily_limit', 'created': 0, 'candidates': 0, 'places_wager': False}
@@ -269,6 +277,7 @@ def build_favourite_tickets(connection, actor='sports-ai-worker', now=None):
             (json.dumps({'tickets': len(created), 'candidates': len(pool), 'positive_edge': False, 'places_wager': False}),
              current.isoformat(), run_id),
         )
+    _release(connection)
     return {'status': 'complete' if created else 'insufficient', 'created': len(created), 'ticket_ids': created,
             'candidates': len(pool), 'places_wager': False}
 

@@ -118,3 +118,38 @@ class ReserveRankingTests(unittest.TestCase):
         self.assertLessEqual(max(sports.count(s) for s in set(sports)), pl.RESERVE_PER_SPORT)
         self.assertEqual(spare[0]['sport'], 'basketball')            # 100% page hit rate ranks first
         self.assertGreaterEqual(len(set(sports)), 3)
+
+
+class SlipConfirmationTests(unittest.TestCase):
+    def test_long_slip_confirmed_by_displayed_odds(self):
+        import sportybet_booking as sb
+        selections = [{'fixture_id': f'f{i}'} for i in range(40)]
+        seen = [{'fixture_id': f'f{i}', 'page_odds': 1.4} for i in range(40)]
+        product = 1.4 ** 40
+        self.assertTrue(sb._odds_confirm_slip(product * 1.005, selections, seen))     # matches
+        self.assertFalse(sb._odds_confirm_slip(product / 1.4, selections, seen))      # one game missing
+        self.assertFalse(sb._odds_confirm_slip(None, selections, seen))
+        self.assertFalse(sb._odds_confirm_slip(1.4 ** 5, selections[:5], seen[:5]))   # short slips keep the name check
+
+
+class SlipReconcileTests(unittest.TestCase):
+    def _run(self, text):
+        import asyncio
+        import sportybet_booking as sb
+
+        class Page:
+            async def evaluate(self, script, *args):
+                return {'text': text, 'count': int(text.split('Betslip')[1].split()[0])}
+
+        selections = [{'fixture_id': 'a', 'home': 'Arsenal FC', 'away': 'Chelsea'},
+                      {'fixture_id': 'b', 'home': 'Kanka, Tomas', 'away': 'Simek, Jakub'},
+                      {'fixture_id': 'c', 'home': 'Lakers', 'away': 'Celtics'}]
+        seen = [{'fixture_id': f, 'page_odds': 1.3} for f in 'abc']
+        return [s['fixture_id'] for s in asyncio.run(sb._keep_slip_selections(Page(), seen, selections))]
+
+    def test_drops_a_click_the_betslip_does_not_hold(self):
+        self.assertEqual(self._run('Betslip 2 Arsenal v Chelsea 1.30 Lakers v Celtics 1.30'), ['a', 'c'])
+
+    def test_full_slip_and_unexplained_counts_change_nothing(self):
+        self.assertEqual(self._run('Betslip 3 anything'), ['a', 'b', 'c'])
+        self.assertEqual(self._run('Betslip 1 Arsenal v Chelsea Lakers v Celtics'), ['a', 'b', 'c'])   # names say 2, count says 1
