@@ -7,3 +7,4 @@ reports/private/
 
 backend/.secrets/
 backend/account_evidence/
+backend/logs/

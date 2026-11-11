@@ -52,6 +52,9 @@ MAX_AUTHORIZATION_HOURS = 168
 SESSION_CHECK_MINUTES = 20
 LOGIN_WAIT_SECONDS = 600
 MAX_PRICE_MOVE = 0.05
+# Worker jobs can hold the SQLite write lock for 40 s (measured 2026-11-11); an operator's
+# Authorize / mode / Revoke click waits that out instead of failing with "database is locked".
+OPERATOR_WRITE_WAIT_MS = 90000
 ACKNOWLEDGEMENT = 'I AUTHORIZE REAL MONEY BETTING ON MY SPORTYBET ACCOUNT'
 MODES = ('PAPER', 'LIVE_REHEARSAL', 'LIVE')
 WAT = timezone(timedelta(hours=1), 'WAT')
@@ -1141,7 +1144,7 @@ def build_account_router(auth, require_admin_key):
     def post_mode(body: ModeIn, actor: str = Depends(auth), x_sports_admin_key: str | None = Header(default=None)):
         admin(x_sports_admin_key)
         try:
-            with connect() as connection:
+            with connect(busy_timeout_ms=OPERATOR_WRITE_WAIT_MS) as connection:
                 return set_execution_mode(connection, body.mode, actor)
         except ValueError as error:
             raise HTTPException(409, str(error))
@@ -1150,7 +1153,7 @@ def build_account_router(auth, require_admin_key):
     def post_authorize(body: GrantIn, actor: str = Depends(auth), x_sports_admin_key: str | None = Header(default=None)):
         admin(x_sports_admin_key)
         try:
-            with connect() as connection:
+            with connect(busy_timeout_ms=OPERATOR_WRITE_WAIT_MS) as connection:
                 return grant_authorization(connection, actor, body.acknowledgement, body.hours)
         except ValueError as error:
             raise HTTPException(409, str(error))
@@ -1158,7 +1161,7 @@ def build_account_router(auth, require_admin_key):
     @router.post('/revoke')
     def post_revoke(actor: str = Depends(auth), x_sports_admin_key: str | None = Header(default=None)):
         admin(x_sports_admin_key)
-        with connect() as connection:
+        with connect(busy_timeout_ms=OPERATOR_WRITE_WAIT_MS) as connection:
             revoked = revoke_authorization(connection, actor)
             if execution_mode(connection) == 'LIVE':
                 set_execution_mode(connection, 'LIVE_REHEARSAL', actor)

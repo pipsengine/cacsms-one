@@ -19,6 +19,8 @@ from db import connect
 
 DEFAULT_TTL = 15 * 60
 DEFAULT_WAIT = 90
+ACCOUNT_PURPOSE = 'account'
+ACCOUNT_SLOT = 3
 
 
 class BrowserBusy(RuntimeError):
@@ -67,19 +69,30 @@ def _owner_dead(owner):
 
 
 def try_acquire(purpose, ttl=DEFAULT_TTL, now=None):
-    """Claim a free, expired or orphaned slot. Returns the owner token, or None."""
+    """Claim a free, expired or orphaned slot. Returns the owner token, or None.
+
+    The signed-in account lane has its own reserved slot: booking and feed jobs can hold
+    the shared slots for up to ``ttl``, and a queued bet must not miss its kickoff waiting.
+    The account prefers its slot and may fall back to a shared one; nothing else may use it.
+    """
     current = now or _now()
     owner = _owner(purpose)
+    reserved = str(purpose).startswith(ACCOUNT_PURPOSE)  # 'account' and 'account-login'
+    allowed = '1=1' if reserved else f'slot!={ACCOUNT_SLOT}'
+    order = f'(slot={ACCOUNT_SLOT}) DESC, slot' if reserved else 'slot'
     with connect() as connection:
         connection.execute('BEGIN IMMEDIATE')
+        if reserved:
+            # Added at run time rather than by migration: a migration backs up the whole live DB.
+            connection.execute('INSERT OR IGNORE INTO sports_ai_browser_slots(slot) VALUES (?)', (ACCOUNT_SLOT,))
         row = connection.execute(
-            """SELECT slot FROM sports_ai_browser_slots
-               WHERE owner='' OR julianday(expires_at)<=julianday(?)
-               ORDER BY slot LIMIT 1""", (current.isoformat(),),
+            f"""SELECT slot FROM sports_ai_browser_slots
+               WHERE ({allowed}) AND (owner='' OR owner IS NULL OR julianday(expires_at)<=julianday(?))
+               ORDER BY {order} LIMIT 1""", (current.isoformat(),),
         ).fetchone()
         if not row:
             row = next((held for held in connection.execute(
-                'SELECT slot, owner FROM sports_ai_browser_slots ORDER BY slot').fetchall()
+                f'SELECT slot, owner FROM sports_ai_browser_slots WHERE {allowed} ORDER BY {order}').fetchall()
                 if _owner_dead(held['owner'])), None)
         if not row:
             return None

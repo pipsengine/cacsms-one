@@ -115,7 +115,26 @@ class OrphanedLeaseTests(unittest.TestCase):
         with db.connect() as connection:
             connection.execute("UPDATE sports_ai_browser_slots SET owner=?, purpose='feed', expires_at=?",
                                (f'{os.getpid()}:1:feed:alive', future))
-        self.assertIsNone(try_acquire('account'))
+        self.assertIsNone(try_acquire('research'))
+
+    def test_account_has_a_reserved_slot_others_cannot_take(self):
+        held = [try_acquire('booking'), try_acquire('feed')]
+        self.assertTrue(all(held))
+        account = try_acquire('account')
+        self.assertIsNotNone(account)  # shared slots full, the reserved one is still free
+        release(account)
+        login = try_acquire('account-login')
+        self.assertIsNotNone(login)
+        release(login)
+        for owner in held:
+            release(owner)
+        account = try_acquire('account')
+        third = [try_acquire('a'), try_acquire('b')]
+        self.assertTrue(all(third))  # the account took slot 3, leaving both shared slots
+        self.assertIsNone(try_acquire('c'))
+        with db.connect() as c:
+            slot = c.execute('SELECT slot FROM sports_ai_browser_slots WHERE owner=?', (account,)).fetchone()[0]
+        self.assertEqual(slot, browser_slots.ACCOUNT_SLOT)
 
 
 class ClassificationTests(unittest.TestCase):

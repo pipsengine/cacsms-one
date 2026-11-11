@@ -312,24 +312,24 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
             <tr className="ccx-sure-ticket"><td colSpan="7"><b>{ticket.label}</b><span>{ticket.odds_band} · {ticket.selection_count} selections · combined {ticket.combined_odds == null ? '—' : Number(ticket.combined_odds).toFixed(2)} · joint {ticket.joint_probability == null ? '—' : `${Number(ticket.joint_probability).toFixed(1)}%`} · {ticket.code || 'No booking code yet'}</span></td></tr>
             {(ticket.selections || []).map((row, index) => <tr key={`${row.fixture}-${row.starts_at}-${index}`}><td>{index + 1}</td><td className="ccx-sure-match"><b>{row.fixture}</b><small>{row.selection || 'Selection not stored'}{row.probability == null ? '' : ` · ${Number(row.probability).toFixed(1)}%`}</small></td><td>{row.league || '—'}</td><td>{ticket.code || '—'}</td><td>{wat(row.starts_at)}{row.starts_at ? <small className="ccx-wat">WAT</small> : null}</td><td className="ccx-odds">{row.odds == null ? '—' : Number(row.odds).toFixed(2)}</td><td><ProbBar value={row.confidence}/></td></tr>)}
           </React.Fragment>)}
-          {!(view.sure_odds || []).length && <tr><td colSpan="7">No combined ticket priced from 2.00 to 2.95 is stored for today.</td></tr>}
+          {!(view.sure_odds || []).length && <tr><td colSpan="7">No ready ticket priced from 2.00 to 2.95 is still to play today. Tickets whose first game has kicked off are not listed.</td></tr>}
         </tbody></table></div>
       </section>
     </div>
     <div className="ccx-bottom ccx-bottom-summary">
       <section className="ccx-card">
-        <header><strong><BarChart3 size={16}/>Performance <small>(Last 30 days)</small></strong></header>
+        <header><strong><BarChart3 size={16}/>Performance</strong></header>
         <div className="ccx-metrics">
-          <div><i className="green"><Target size={16}/></i><span>Win Rate</span><strong>{performance.win_rate == null ? 'Awaiting results' : `${performance.win_rate}%`}</strong></div>
-          <div><i className="blue"><BarChart3 size={16}/></i><span>Total Predictions</span><strong>{shown(performance.predictions_30d)}</strong></div>
-          <div><i className="teal"><Hash size={16}/></i><span>Average Odds</span><strong>{performance.average_odds == null ? '—' : Number(performance.average_odds).toFixed(2)}</strong></div>
+          <div><i className="green"><Target size={16}/></i><span>Bet Win Rate</span><strong>{performance.win_rate == null ? 'Awaiting results' : `${performance.win_rate}%`}</strong><small>{shown(performance.bets_placed)} real-money bets placed</small></div>
+          <div><i className="blue"><BarChart3 size={16}/></i><span>Predictions (30 days)</span><strong>{shown(performance.predictions_30d)}</strong><small>Every market and line priced</small></div>
+          <div><i className="teal"><Hash size={16}/></i><span>Average Bet Odds</span><strong>{performance.average_odds == null ? '—' : Number(performance.average_odds).toFixed(2)}</strong><small>Real-money bets placed</small></div>
         </div>
       </section>
       <section className="ccx-card ccx-action">
         <header><strong><Clock3 size={16}/>Next Key Action</strong></header>
         <p>Next publication window</p>
         <strong>{windowLabel} WAT</strong>
-        <small>{view.publication_open ? 'One ready ticket can be sent to SportyBet. No wager is placed.' : 'Africa/Lagos. No wager is placed.'}</small>
+        <small>{!view.publication_open ? 'Africa/Lagos.' : (view.kpis?.slips || 0) > 0 ? 'One ready ticket can be sent to SportyBet for a booking code.' : 'The window is open, but no ticket is ready for a booking code yet.'}</small>
       </section>
 
     </div>

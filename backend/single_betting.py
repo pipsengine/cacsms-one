@@ -49,6 +49,10 @@ FAVOURITE_NOTICE = 'Favourite (no edge) - expected to lose money over time.'
 # Only codes SportyBet displayed before the first kickoff, from this date (WAT) on, are imported.
 TICKET_IMPORT_FROM = '2026-11-11'
 TICKET_PREFIX = 'ticket:'
+# Only short low-odds tickets are followed (and, in LIVE mode, bet with real money). An allow-list,
+# so a new or untagged product never reaches the account: jackpots, the prize ladder and the
+# high-odds categories (odds in the hundreds to millions) are never bet.
+TICKET_PRODUCTS = ('favourites', 'sure_odds')
 MIN_SECONDS_TO_START = 60
 PLACE_PER_TICK = 2
 TICK_SECONDS = 30
@@ -311,16 +315,17 @@ def import_coded_tickets(connection, now=None):
     current = _now(now)
     live_mode = (runtime(connection).get('execution_mode') or 'PAPER') != 'PAPER'
     rows = connection.execute(
-        """SELECT t.id, t.combined_odds, t.joint_probability, t.parameters_json, b.code, b.created_at AS coded_at,
+        f"""SELECT t.id, t.combined_odds, t.joint_probability, t.parameters_json, b.code, b.created_at AS coded_at,
                   (SELECT MIN(l.starts_at) FROM sports_ai_accumulator_legs l WHERE l.ticket_id=t.id) AS first_kickoff
            FROM sports_ai_accumulator_tickets t
            JOIN sports_ai_booking_codes b ON b.accumulator_ticket_id=t.id
             AND b.verification_method='displayed' AND TRIM(COALESCE(b.code,''))<>''
            WHERE b.created_at>=? AND t.combined_odds>1 AND t.joint_probability>0
-             AND COALESCE(json_extract(t.parameters_json,'$.product'),'') NOT IN ('jackpot_low','prize_ladder')
+             AND json_extract(t.parameters_json,'$.product') IN ({','.join('?' * len(TICKET_PRODUCTS))})
              AND NOT EXISTS (SELECT 1 FROM sports_ai_single_bets s WHERE s.id=?||t.id)
            ORDER BY b.created_at""",
-        (datetime.fromisoformat(TICKET_IMPORT_FROM).replace(tzinfo=WAT).astimezone(timezone.utc).isoformat(), TICKET_PREFIX),
+        (datetime.fromisoformat(TICKET_IMPORT_FROM).replace(tzinfo=WAT).astimezone(timezone.utc).isoformat(),
+         *TICKET_PRODUCTS, TICKET_PREFIX),
     ).fetchall()
     imported = 0
     for row in rows:
@@ -482,16 +487,29 @@ def build_combos(pool):
     return combos, unused
 
 
+# In LIVE mode the daily caps count real submissions and the queue only. A bet only rehearsed
+# (Place Bet not clicked) staked nothing and must not use up the day's real-money capacity.
+# The real-money ceiling itself is enforced separately from live orders (sportybet_account).
+_LIVE_ONLY = """ AND (status='QUEUED' OR EXISTS (SELECT 1 FROM sports_ai_single_live_orders o
+                 WHERE o.bet_id=sports_ai_single_bets.id AND o.kind='SUBMISSION'))"""
+
+
+def _live(connection):
+    return runtime(connection).get('execution_mode') == 'LIVE'
+
+
 def _favourites_today(connection, day):
     return connection.execute(
-        "SELECT COUNT(*) FROM sports_ai_single_bets WHERE local_date=? AND kind='FAVOURITE' AND status!='CANCELLED'", (day,),
+        "SELECT COUNT(*) FROM sports_ai_single_bets WHERE local_date=? AND kind='FAVOURITE' AND status!='CANCELLED'"
+        + (_LIVE_ONLY if _live(connection) else ''), (day,),
     ).fetchone()[0]
 
 
 def _day_usage(connection, day):
     row = connection.execute(
         f"""SELECT COUNT(*) AS n, COALESCE(SUM(stake),0) AS staked FROM sports_ai_single_bets
-            WHERE local_date=? AND status IN ({','.join('?' * (len(COUNTED) + 1))})""",
+            WHERE local_date=? AND status IN ({','.join('?' * (len(COUNTED) + 1))})"""
+        + (_LIVE_ONLY if _live(connection) else ''),
         (day, *COUNTED, 'QUEUED'),
     ).fetchone()
     return int(row['n']), float(row['staked'])
@@ -750,7 +768,7 @@ def run_cycle(connection, now=None, candidates=None):
                 )
             result['queued'] += 1
             what = (f"Combined selection qualified ({len(item['legs'])} legs, p={item['probability']:.2f})" if kind == 'COMBO'
-                    else f"Favourite queued (no edge, paper only, p={item['probability']:.2f})" if kind == 'FAVOURITE'
+                    else f"Favourite queued (no edge{', real money' if _live(connection) else ', paper only'}, p={item['probability']:.2f})" if kind == 'FAVOURITE'
                     else 'Selection qualified')
             _event(connection, bet_id, 'QUEUED',
                    f"{what} – {_fixture(item, item.get('legs'))} {item['selection']} @ {item['decimal_odds']:.2f}, EV {item['expected_value']:+.3f}", current)
@@ -850,6 +868,11 @@ def _bet_public(connection, row):
     item['kind'] = _kind(row)
     item['legs'] = legs
     item['fixture'] = _fixture(row, legs)
+    # The mode column always says PAPER; a SUBMISSION order is what makes a bet real money.
+    item['real_money'] = bool(connection.execute(
+        "SELECT 1 FROM sports_ai_single_live_orders WHERE bet_id=? AND kind='SUBMISSION' AND status NOT IN ('FAILED','NOT_PLACED') LIMIT 1",
+        (row['id'],),
+    ).fetchone())
     item['booking_code'] = None
     if item['kind'] == 'TICKET' and str(row['id']).startswith(TICKET_PREFIX):
         code = connection.execute(

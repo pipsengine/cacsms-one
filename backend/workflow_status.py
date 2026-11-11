@@ -62,9 +62,14 @@ def workflow_board(connection, now=None, ready_slips=0, qualified_visible=0, win
         "SELECT COUNT(*) AS total, MAX(observed_at) AS latest FROM sports_ai_odds_snapshots WHERE bookmaker='SportyBet'",
     ).fetchone()
     odds_age = _age_seconds(current, odds_row['latest'])
-    codes = connection.execute(
-        "SELECT COUNT(*) FROM sports_ai_booking_codes WHERE verification_method='displayed'",
-    ).fetchone()[0]
+    # Distinct codes: one code can be stored on several ticket versions.
+    today_start = (current + timedelta(hours=1)).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(hours=1)
+    codes, codes_today = connection.execute(
+        """SELECT COUNT(DISTINCT upper(trim(code))),
+                  COUNT(DISTINCT CASE WHEN created_at>=? THEN upper(trim(code)) END)
+           FROM sports_ai_booking_codes WHERE verification_method='displayed' AND trim(COALESCE(code,''))<>''""",
+        (today_start.isoformat(),),
+    ).fetchone()
     settled = connection.execute(
         "SELECT COUNT(*) FROM sports_ai_results WHERE status='final'",
     ).fetchone()[0]
@@ -163,8 +168,9 @@ def workflow_board(connection, now=None, ready_slips=0, qualified_visible=0, win
             {'label': 'Predictions stored', 'value': _fmt(predictions), 'note': f'+{_fmt(predictions_24h)} in 24h' if predictions_24h else 'Stored'},
             {'label': 'Qualified opportunities', 'value': _fmt(qualified_visible), 'note': 'Above 80%'},
             {'label': 'Ready slips', 'value': _fmt(ready_slips), 'note': 'Above 70%'},
-            {'label': 'Booking codes', 'value': _fmt(codes), 'note': 'Displayed'},
-            {'label': 'Settled win rate', 'value': 'Awaiting results' if win_rate is None else f'{win_rate}%', 'note': 'Prospective selections'},
+            {'label': 'Booking codes', 'value': _fmt(codes), 'note': f'All time · {_fmt(codes_today)} today'},
+            {'label': 'Bet win rate', 'value': 'Awaiting results' if win_rate is None else f'{win_rate}%',
+             'note': 'Real-money bets placed'},
         ],
         'stages': stages,
     }

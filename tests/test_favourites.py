@@ -295,6 +295,16 @@ class TicketFollowTests(unittest.TestCase):
             self.assertEqual((head['kind'], len(head['legs'])), ('TICKET', bet['decimal_odds'] and len(head['legs'])))
             self.assertGreaterEqual(len(head['legs']), 3)
 
+    def test_high_odds_and_untagged_tickets_are_never_followed(self):
+        import single_betting as sb
+        with db.connect() as c:
+            c.execute('PRAGMA foreign_keys=OFF')
+            self._coded_ticket(c, 'JACK01', NOW + timedelta(minutes=1))
+            c.execute("UPDATE sports_ai_accumulator_tickets SET parameters_json=json_set(parameters_json,'$.product','high_odds')")
+            self.assertEqual(sb.import_coded_tickets(c, NOW + timedelta(minutes=2)), 0)
+            c.execute("UPDATE sports_ai_accumulator_tickets SET parameters_json=json_remove(parameters_json,'$.product')")
+            self.assertEqual(sb.import_coded_tickets(c, NOW + timedelta(minutes=2)), 0)
+
     def test_code_shown_after_kickoff_is_never_followed(self):
         import single_betting as sb
         with db.connect() as c:

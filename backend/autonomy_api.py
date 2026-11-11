@@ -121,14 +121,14 @@ def build_autonomy_router(auth, require_admin_key):
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
 
-    @router.get('/results')
-    def match_results(sport: str | None = None, market: str | None = None, competition: str | None = None,
-                      model: str | None = None, date_from: str | None = None, date_to: str | None = None,
-                      limit: int = 200, user=Depends(auth)):
-        from results_view import results_view
+    @router.get('/placed-results')
+    def placed_results(kind: str | None = None, sport: str | None = None,
+                       date_from: str | None = None, date_to: str | None = None,
+                       page: int = 1, page_size: int = 25, user=Depends(auth)):
+        from placed_results import placed_view
         try:
             with connect() as connection:
-                return results_view(connection, sport, market, competition, model, date_from, date_to, limit)
+                return placed_view(connection, kind, sport, date_from, date_to, page, page_size)
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
 

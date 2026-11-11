@@ -142,6 +142,24 @@ class SingleBettingTests(unittest.TestCase):
             out = sb.run_cycle(c, NOW)
             self.assertEqual(out['queued'], sb.DAILY_LIMIT)
 
+    def test_rehearsed_bets_do_not_use_up_live_capacity(self):
+        day = sb.local_date(NOW)
+        with self.conn() as c:
+            c.execute('PRAGMA foreign_keys=OFF')
+            for i in range(3):
+                c.execute(
+                    """INSERT INTO sports_ai_single_bets(id,fixture_id,sport,competition,home,away,market,selection,decimal_odds,
+                       probability,expected_value,stake,mode,status,local_date,starts_at,created_at,kind)
+                       VALUES(?,?,'football','L','A','B','HOME','Home',1.3,0.8,0.04,100,'PAPER','PLACED',?,?,?,'FAVOURITE')""",
+                    (f'b{i}', f'f{i}', day, (NOW + timedelta(hours=3)).isoformat(), NOW.isoformat()))
+            c.execute("""INSERT INTO sports_ai_single_live_orders(id,bet_id,kind,status,local_date,stake,expected_odds,created_at,updated_at)
+                         VALUES('o0','b0','SUBMISSION','PLACED',?,100,1.3,?,?)""", (day, NOW.isoformat(), NOW.isoformat()))
+            self.assertEqual(sb._day_usage(c, day), (3, 300.0))  # paper and rehearsal modes count everything
+            self.assertEqual(sb._favourites_today(c, day), 3)
+            sb._save_setting(c, sb.RUNTIME_KEY, {'paused': False, 'execution_mode': 'LIVE'}, NOW)
+            self.assertEqual(sb._day_usage(c, day), (1, 100.0))  # only the real submission
+            self.assertEqual(sb._favourites_today(c, day), 1)
+
     def test_single_below_min_odds_is_rejected(self):
         self.assertIn('BELOW_MIN_ODDS', sb.evaluate(1.15, 0.95, NOW, NOW + timedelta(hours=1), NOW)['reasons'])
         self.assertTrue(sb.evaluate(1.20, 0.90, NOW, NOW + timedelta(hours=1), NOW)['eligible'])

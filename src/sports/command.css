@@ -281,7 +281,8 @@
 .ccx-pipeline strong{text-align:right}
 .ccx-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
 .ccx-metrics>div{background:#f6f9ff;border:1px solid #cbdcfb;border-radius:10px;min-height:72px;padding:10px;display:grid;grid-template-columns:28px 1fr;column-gap:8px;align-items:center}
-.ccx-metrics i{grid-row:span 2;width:28px;height:28px;display:grid;place-items:center}
+.ccx-metrics i{grid-row:span 3;width:28px;height:28px;display:grid;place-items:center}
+.ccx-metrics small{font-size:10px;color:#5b6f8f;grid-column:2}
 .ccx-metrics i.green{color:#0ba14c}
 .ccx-metrics i.blue{color:#0066e8}
 .ccx-metrics i.teal{color:#12a9a4}

@@ -1,6 +1,7 @@
 import os, json, re, sqlite3, uuid, threading, hmac, math, time
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlsplit
+from pathlib import Path
 from fastapi import FastAPI, APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -28,6 +29,30 @@ from learning_engine import build_learning_router
 
 app=FastAPI(title='CACSMS Sports AI module',version='1.0.0')
 router=APIRouter(prefix='/api/sports-ai',tags=['Sports AI'])
+ERROR_LOG=Path(__file__).parent/'logs'/'api-errors.log'
+
+def _log_error(request:Request, error:BaseException):
+    import traceback
+    try:
+        ERROR_LOG.parent.mkdir(parents=True,exist_ok=True)
+        with ERROR_LOG.open('a',encoding='utf-8') as handle:
+            handle.write(f"\n=== {datetime.now(timezone.utc).isoformat()} {request.method} {request.url.path}\n")
+            handle.write(''.join(traceback.format_exception(type(error),error,error.__traceback__)))
+    except OSError:
+        pass
+
+@app.exception_handler(sqlite3.OperationalError)
+async def _database_busy(request:Request, error:sqlite3.OperationalError):
+    # The worker writes to the same SQLite file; a long write can outlast the 20 s busy timeout.
+    _log_error(request,error)
+    if 'locked' in str(error).lower() or 'busy' in str(error).lower():
+        return JSONResponse({'detail':'The database is busy with a background job, so nothing was saved. Try again in a minute.'},status_code=503)
+    return JSONResponse({'detail':f'Database error: {error}. Nothing was saved; details are in backend/logs/api-errors.log.'},status_code=500)
+
+@app.exception_handler(Exception)
+async def _unhandled(request:Request, error:Exception):
+    _log_error(request,error)
+    return JSONResponse({'detail':f'Server error: {type(error).__name__}: {str(error)[:200]}. Details are in backend/logs/api-errors.log.'},status_code=500)
 lock=threading.RLock()
 from sport_support import ANALYSED_SPORTS, GOAL_SPORTS, WINNER_SPORTS
 SportCode = Literal[ANALYSED_SPORTS]

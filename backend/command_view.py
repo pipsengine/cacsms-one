@@ -151,19 +151,18 @@ def command_view(connection, now=None):
     unresolved = connection.execute(
         "SELECT COUNT(*) FROM sports_ai_fixture_identity_links WHERE status='unresolved'",
     ).fetchone()[0]
-    settled = connection.execute(
-        """SELECT
-             SUM(CASE WHEN settled_outcome='won' THEN 1 ELSE 0 END) AS won,
-             SUM(CASE WHEN settled_outcome='lost' THEN 1 ELSE 0 END) AS lost
-           FROM sports_ai_engine_predictions
-           WHERE result_settled_at IS NOT NULL AND observation_class='live_observed'""",
-    ).fetchone()
-    won = int(settled['won'] or 0)
-    lost = int(settled['lost'] or 0)
-    average = connection.execute(
-        """SELECT AVG(combined_odds) FROM sports_ai_accumulator_tickets
-           WHERE status='qualified' AND publication_state='READY_FOR_WINDOW'""",
-    ).fetchone()[0]
+    # Win rate and odds of the real-money bets the system placed (as on Match Results). The
+    # settled engine predictions cover every outcome and line of a match (~75 per fixture),
+    # so their hit rate says nothing about how the bets did.
+    from placed_results import collect as placed_bets, metrics as bet_metrics
+    try:
+        bets = placed_bets(connection)
+    except Exception:  # single-betting tables missing on an old database
+        bets = []
+    bet_stats = bet_metrics(bets)
+    won, lost = bet_stats['won'], bet_stats['lost']
+    priced = [b['odds'] for b in bets if b['odds']]
+    average = sum(priced) / len(priced) if priced else None
     from pipeline_engine import latest_snapshot
     snapshot = latest_snapshot(connection) or {}
     stages = {item['stage']: item['count'] for item in snapshot.get('stages') or []}
@@ -215,6 +214,8 @@ def command_view(connection, now=None):
             'won': won,
             'lost': lost,
             'win_rate': round(100 * won / (won + lost), 1) if won + lost else None,
+            'bets_placed': bet_stats['placed'],
+            'profit': bet_stats['profit'],
             'predictions_30d': connection.execute(
                 "SELECT COUNT(*) FROM sports_ai_engine_predictions WHERE created_at>=?",
                 ((current - timedelta(days=30)).isoformat(),),

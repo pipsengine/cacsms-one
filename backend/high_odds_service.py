@@ -764,6 +764,10 @@ def coded_accumulator_tickets(connection, now=None, cats=None, limit=500):
             continue  # one row per displayed code (newest first)
         seen_codes.add(row['code'])
         category = _category_for(row['combined_odds'] or 0, cats)
+        if not category and float(row['combined_odds'] or 0) > 1000:
+            # Lottery-style tickets (e.g. the prize ladder) above every regular range are shown with the
+            # jackpot, where the page states their real chance of winning, instead of being hidden.
+            category = JACKPOT
         if not category:
             continue
         legs = [dict(l) for l in connection.execute(

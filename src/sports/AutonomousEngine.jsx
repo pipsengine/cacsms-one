@@ -313,7 +313,7 @@ export default function AutonomousEngine({nav}) {
       <span><Cpu size={18}/> Models <b>Football and basketball registry</b></span>
       <span><ShieldCheck size={18}/> Wagers <b>Not placed</b></span>
     </footer>
-    <p className="ae-footnote">Counts, odds, tickets and model metrics come from the Sports AI database. A blank value has not been stored. No automated wagering is implemented.</p>
+    <p className="ae-footnote">Counts, odds, tickets and model metrics come from the Sports AI database. A blank value has not been stored. Real-money bets are placed only by Single Betting, under an authorization you grant.</p>
     {selected && <div className="ae-overlay" onClick={() => setSelected(null)}><div className="ae-modal" onClick={event => event.stopPropagation()}><button className="ae-close" onClick={() => setSelected(null)}>×</button><h2>{selected.fixture}</h2><p>{selected.competition} · {clock(selected.starts_at)} · {selected.market} · {selected.bookmaker} {Number(selected.odds).toFixed(2)} · probability {selected.probability}% · edge +{selected.edge}%</p><button className="ae-btn primary" onClick={() => setSelected(null)}>Close</button></div></div>}
   </div>;
 }
