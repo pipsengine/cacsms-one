@@ -152,14 +152,12 @@ def candidates(connection, now=None, fixture_id=None, market=None):
     return sorted(best.values(), key=lambda l: (-l['probability'], l['starts_at'], l['fixture_id']))
 
 
-SINGLE_MIN_ODDS = 1.20  # single betting's minimum (single_betting.MIN_ODDS)
-
-
 def lane_of(leg):
     """Which product a favourite belongs to. Stable per match, so the ticket and single lanes can
-    split each price batch without coordinating: under 1.20 only a ticket can use it; otherwise an
-    even split by match id."""
-    if float(leg['decimal_odds']) < SINGLE_MIN_ODDS - 1e-9:
+    split each price batch without coordinating: below single betting's minimum (single_betting.MIN_ODDS)
+    only a ticket can use it; otherwise an even split by match id."""
+    from single_betting import MIN_ODDS
+    if float(leg['decimal_odds']) < MIN_ODDS - 1e-9:
         return 'ticket'
     return 'single' if zlib.crc32(str(leg['fixture_id']).encode()) % 2 == 0 else 'ticket'
 

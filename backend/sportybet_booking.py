@@ -554,6 +554,8 @@ def next_ticket_id(connection, now):
                  AND (j.status IN ('QUEUED','PREPARING','CODE_GENERATED') OR j.updated_at>?)
              )
              AND COALESCE(json_extract(t.parameters_json, '$.tier_mode'), 'standard')!='simulation'
+             -- Owner's structure (12 Nov 2026): codes only for Sure Odds and the category cards.
+             AND json_extract(t.parameters_json, '$.product') IN ('sure_odds','high_odds')
              AND t.probability_basis='independent' AND t.joint_probability>0
              AND (SELECT COUNT(*) FROM sports_ai_booking_jobs j WHERE j.ticket_id=t.id
                   AND j.status IN ('FAILED','ODDS_CHANGED') AND j.updated_at>?) < ?

@@ -81,6 +81,21 @@ def _european_handicap(sport, selection, line, market):
     }
 
 
+def _side_line(selection, market_line, side):
+    """The handicap of the selected side, as settlement reads it ("AWAY_SPREAD_-2.5": away gives 2.5).
+
+    SportyBet labels the market with the home side's handicap ("Handicap 2.5") and each
+    selection with its own ("Home (+2.5)", "Away (-2.5)"). Before 12 Nov 2026 the market line
+    was used for both sides, so every away handicap was stored with the wrong sign (e.g. a
+    4.60 price for "Spurs -26.5" stored as "Spurs +26.5")."""
+    own = re.search(r'\(\s*([+-]?\d+(?:\.\d+)?)\s*\)', selection or '')
+    if own:
+        parsed = _quarter_line(own.group(1))
+        if parsed is not None:
+            return parsed + 0.0  # "+0" / "-0" -> 0
+    return (market_line if side == 'HOME' else -market_line) + 0.0
+
+
 def map_market(sport, market_label, selection_label, line=None, home=None, away=None):
     """Return a canonical market only when the settlement definition is the same."""
     market = (market_label or '').strip()
@@ -203,11 +218,7 @@ def map_market(sport, market_label, selection_label, line=None, home=None, away=
                 return {'supported': False, 'reason': 'The Asian handicap line is missing or not a supported quarter line.'}
             side = 'HOME' if pick in {'1', 'home'} or 'home' in pick else 'AWAY' if pick in {'2', 'away'} or 'away' in pick else None
             if side:
-                signed = parsed_line if side == 'HOME' else -parsed_line if 'home' not in pick else parsed_line
-                if pick in {'1', 'home'} or pick.startswith('home'):
-                    signed = parsed_line
-                elif pick in {'2', 'away'} or pick.startswith('away'):
-                    signed = parsed_line
+                signed = _side_line(selection, parsed_line, side)
                 return {
                     'supported': True,
                     'canonical_market': f'{side}_HANDICAP_{signed:g}',
@@ -232,16 +243,20 @@ def map_market(sport, market_label, selection_label, line=None, home=None, away=
                     'provider_market': 'totals', 'provider_outcome': side,
                 }
         if 'spread' in combined or 'handicap' in combined:
+            if re.search(r'\d+\s*:\s*\d+', market) or pick.startswith('draw'):
+                # "Handicap 0:2" with Home/Draw/Away is a three-way head start, not a point spread.
+                return {'supported': False, 'reason': 'A three-way (score) handicap is not the point-spread settlement.'}
             if parsed_line is None:
                 return {'supported': False, 'reason': 'The point-spread line is missing or not a supported quarter line.'}
             side = 'HOME' if pick in {'1', 'home'} or pick.startswith('home') else 'AWAY' if pick in {'2', 'away'} or pick.startswith('away') else None
             if side:
+                own = _side_line(selection, parsed_line, side)
                 return {
                     'supported': True,
-                    'canonical_market': f'{side}_SPREAD_{parsed_line:g}',
-                    'line': parsed_line,
+                    'canonical_market': f'{side}_SPREAD_{own:g}',
+                    'line': own,
                     'provider_market': 'spreads',
-                    'provider_outcome': f'{side}_SPREAD_{parsed_line:g}',
+                    'provider_outcome': f'{side}_SPREAD_{own:g}',
                 }
     if sport in WINNER_SPORTS:
         folded = market.casefold()

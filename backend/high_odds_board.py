@@ -147,8 +147,18 @@ def _sure_today(connection, day, now, candidates=None):
              AND (t.publication_state='DUPLICATE' OR EXISTS (SELECT 1 FROM sports_ai_booking_codes b
                   WHERE b.accumulator_ticket_id=t.id AND b.verification_method='displayed' AND TRIM(COALESCE(b.code,''))<>''))""",
         (day['start'].isoformat(), day['end'].isoformat()))}
+    # At most SURE_DAILY_MAX per day: tickets already stored or coded today count towards it.
+    made_today = connection.execute(
+        """SELECT COUNT(*) FROM sports_ai_accumulator_tickets
+           WHERE json_extract(parameters_json,'$.product')='sure_odds'
+             AND julianday(created_at)>=julianday(?) AND julianday(created_at)<julianday(?)""",
+        (day['start'].isoformat(), day['end'].isoformat()),
+    ).fetchone()[0]
+    room = max(0, SURE_DAILY_MAX - max(made_today, len(stored)))
+    if not room:
+        return stored
     pool = _sure_pool(connection, _candidates(connection, day, now), now) if candidates is None else candidates
-    return stored + pack_sure_tickets([leg for leg in pool if leg['fixture_id'] not in used], day)
+    return stored + pack_sure_tickets([leg for leg in pool if leg['fixture_id'] not in used], day, limit=room)
 
 
 def _today_window(now):
@@ -288,12 +298,21 @@ def build_slip(candidates, count, at_most=False, minimum=None, minimum_product=N
     return chosen, product, joint
 
 
-def pack_sure_tickets(candidates, day):
-    """Combine analyzed selections until the ticket price is from 2.00 to 2.95.
+SURE_MAX_LEGS = 3        # owner's structure (12 Nov 2026): Sure Odds tickets have 2-3 selections
+SURE_DAILY_MAX = 5       # at most 5 Sure Odds tickets per Africa/Lagos day
+SURE_SEARCH_POOL = 40    # most likely selections searched for 2-3 leg combinations
 
-    Every selection stays at least 80%. One match is used once. A single price
-    is not a ticket. No wager is placed.
+
+def pack_sure_tickets(candidates, day, limit=SURE_DAILY_MAX):
+    """Up to `limit` tickets of 2-3 selections whose combined price is 2.00-2.95.
+
+    Every selection is at least SELECTION_FLOOR likely; there is no minimum price per selection.
+    Each ticket is the 2- or 3-leg combination of different matches with the highest joint
+    probability inside the price range (every extra leg multiplies the chance of losing).
+    One match is used once. No wager is placed.
     """
+    from itertools import combinations
+    from ticket_diversity import event_keys
     pool = choose_one_per_fixture([
         row for row in candidates
         if float(row['probability']) >= SELECTION_FLOOR
@@ -304,29 +323,27 @@ def pack_sure_tickets(candidates, day):
     band = {'id': '2-2.95', 'odds_label': '2.00–2.95'}
     used = set()
     tickets = []
-    while len(tickets) < MAX_TICKETS_PER_BAND:
-        chosen = []
-        product = 1.0
-        joint = 1.0
-        for leg in ordered:
-            from ticket_diversity import event_keys, keys_for
-            if event_keys(leg) & used:
-                continue
-            odds = float(leg['decimal_odds'])
-            if product * odds > SURE_COMBINED_MAX:
-                continue
-            if not chosen:
-                partners = [
-                    float(other['decimal_odds']) for other in ordered
-                    if not event_keys(other) & used and other is not leg
-                ]
-                if not partners or odds * min(partners) > SURE_COMBINED_MAX:
+    while len(tickets) < max(0, limit):
+        free = [leg for leg in ordered if not event_keys(leg) & used][:SURE_SEARCH_POOL]
+        best = None
+        for size in range(2, SURE_MAX_LEGS + 1):
+            for combo in combinations(free, size):
+                keys = [event_keys(leg) for leg in combo]
+                if any(a & b for i, a in enumerate(keys) for b in keys[i + 1:]):
+                    continue  # two legs from the same match
+                product = 1.0
+                joint = 1.0
+                for leg in combo:
+                    product *= float(leg['decimal_odds'])
+                    joint *= float(leg['probability'])
+                if not SURE_COMBINED_MIN - 1e-9 <= product <= SURE_COMBINED_MAX + 1e-9:
                     continue
-            chosen.append(leg)
-            product *= odds
-            joint *= float(leg['probability'])
-        if len(chosen) < 2 or product < SURE_COMBINED_MIN:
+                rank = (joint, -size, -product)
+                if best is None or rank > best[0]:
+                    best = (rank, list(combo), product, joint)
+        if best is None:
             break
+        _, chosen, product, joint = best
         for leg in chosen:
             used.update(event_keys(leg))
         ticket = _ready_ticket(day, band, chosen, product, joint)

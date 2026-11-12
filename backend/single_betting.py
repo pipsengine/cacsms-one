@@ -36,7 +36,17 @@ DAILY_TARGET = (20, 25)
 DAILY_LIMIT = 25
 DAILY_STAKE_LIMIT = 2500.0
 MIN_EV = float(os.environ.get('SINGLE_MIN_EXPECTED_VALUE', '0.03'))
-MIN_ODDS = max(1.2, float(os.environ.get('SINGLE_MIN_ODDS', '1.2')))
+# Owner's structure (12 Nov 2026), objective 1:
+#   singles   one selection priced 1.60-1.99;
+#   combined  the day's Sure Odds tickets (objective 2, product 'sure_odds'), 2-3 legs, 2.00-2.95.
+# Settled data 3-10 Nov (basketball handicap prices corrected): 1.60-2.00 was the least-losing
+# band measured (-3.4%). Override with SINGLE_MIN_ODDS / SINGLE_MAX_ODDS.
+MIN_ODDS = max(1.2, float(os.environ.get('SINGLE_MIN_ODDS', '1.60')))
+MAX_ODDS = max(MIN_ODDS, float(os.environ.get('SINGLE_MAX_ODDS', '1.99')))
+COMBINED_MIN_ODDS, COMBINED_MAX_ODDS = 2.00, 2.95
+# The engine no longer builds its own combined selections from sub-minimum legs: combined bets
+# are the Sure Odds tickets, so every one carries a SportyBet booking code.
+ENGINE_COMBOS = False
 COMBO_MAX_LEGS = 3
 COMBO_MIN_PROBABILITY = float(os.environ.get('SINGLE_COMBO_MIN_PROBABILITY', '0.80'))
 # Favourites (no edge): strong favourites from favourites.py, used only while edge selections
@@ -49,10 +59,10 @@ FAVOURITE_NOTICE = 'Favourite (no edge) - expected to lose money over time.'
 # Only codes SportyBet displayed before the first kickoff, from this date (WAT) on, are imported.
 TICKET_IMPORT_FROM = '2026-11-11'
 TICKET_PREFIX = 'ticket:'
-# Only short low-odds tickets are followed (and, in LIVE mode, bet with real money). An allow-list,
-# so a new or untagged product never reaches the account: jackpots, the prize ladder and the
-# high-odds categories (odds in the hundreds to millions) are never bet.
-TICKET_PRODUCTS = ('favourites', 'sure_odds')
+# Only the Sure Odds tickets are followed (and, in LIVE mode, bet with real money). An allow-list,
+# so a new or untagged product never reaches the account: jackpots, the prize ladder, the
+# category cards and the retired favourites tickets are never bet.
+TICKET_PRODUCTS = ('sure_odds',)
 MIN_SECONDS_TO_START = 60
 PLACE_PER_TICK = 2
 TICK_SECONDS = 30
@@ -116,6 +126,8 @@ def evaluate(odds, probability, observed_at, starts_at, now=None, max_age_minute
         reasons.append('INVALID_ODDS')
     elif odds < odds_floor - 1e-9:
         reasons.append('BELOW_MIN_ODDS')
+    elif min_odds is None and odds > MAX_ODDS + 1e-9:
+        reasons.append('ABOVE_MAX_ODDS')  # a combined-selection leg (min_odds=0) is capped as a whole
     if not 0 < probability < 1:
         reasons.append('INVALID_PROBABILITY')
     observed, kickoff = _parse(observed_at), _parse(starts_at)
@@ -267,6 +279,10 @@ def load_candidates(connection, now=None):
         held = target.get(row['fixture_id'])
         if held is None or _chance_key(item) < _chance_key(held):
             target[row['fixture_id']] = item
+    if not ENGINE_COMBOS:
+        if legs:
+            rejected['BELOW_MIN_ODDS'] = rejected.get('BELOW_MIN_ODDS', 0) + len(legs)
+        legs = {}
     combos, singles, unused, replaced = choose(best, legs)
     if unused:
         rejected['BELOW_MIN_ODDS'] = rejected.get('BELOW_MIN_ODDS', 0) + unused
@@ -345,12 +361,12 @@ def import_coded_tickets(connection, now=None):
            FROM sports_ai_accumulator_tickets t
            JOIN sports_ai_booking_codes b ON b.accumulator_ticket_id=t.id
             AND b.verification_method='displayed' AND TRIM(COALESCE(b.code,''))<>''
-           WHERE b.created_at>=? AND t.combined_odds>1 AND t.joint_probability>0
+           WHERE b.created_at>=? AND t.combined_odds BETWEEN ? AND ? AND t.joint_probability>0
              AND json_extract(t.parameters_json,'$.product') IN ({','.join('?' * len(TICKET_PRODUCTS))})
              AND NOT EXISTS (SELECT 1 FROM sports_ai_single_bets s WHERE s.id=?||t.id)
            ORDER BY b.created_at""",
         (datetime.fromisoformat(TICKET_IMPORT_FROM).replace(tzinfo=WAT).astimezone(timezone.utc).isoformat(),
-         *TICKET_PRODUCTS, TICKET_PREFIX),
+         COMBINED_MIN_ODDS - 1e-9, COMBINED_MAX_ODDS + 1e-9, *TICKET_PRODUCTS, TICKET_PREFIX),
     ).fetchall()
     imported = 0
     for row in rows:
@@ -413,18 +429,19 @@ def import_coded_tickets(connection, now=None):
 
 def favourite_candidates(connection, now=None, exclude=()):
     """Favourites priced at or above MIN_ODDS on fixtures not already backed. No edge by design."""
-    from favourites import candidates, lane_of, DAILY_LIMIT, _today_count
+    from favourites import candidates, lane_of
     current = _now(now)
     taken = _active_fixtures(connection) | set(exclude) | _ticket_fixtures(connection)
     try:
         legs = candidates(connection, current)
-        tickets_full = _today_count(connection, current) >= DAILY_LIMIT
     except Exception:  # favourites are optional; the edge engine must keep running
         return []
+    # The favourites ticket lane is retired (owner's structure, 12 Nov), so singles use every favourite.
+    tickets_full = True
     # Each price batch is split with the ticket lane (favourites.lane_of); once the tickets' daily
     # cap is reached, singles may use the whole batch.
     return [_favourite_item(leg) for leg in legs
-            if leg['fixture_id'] not in taken and float(leg['decimal_odds']) >= MIN_ODDS - 1e-9
+            if leg['fixture_id'] not in taken and MIN_ODDS - 1e-9 <= float(leg['decimal_odds']) <= MAX_ODDS + 1e-9
             and (tickets_full or lane_of(leg) == 'single')]
 
 
@@ -483,7 +500,7 @@ def combine(legs):
 
 
 def combo_ok(combo):
-    return (combo['decimal_odds'] >= MIN_ODDS - 1e-9 and combo['probability'] >= COMBO_MIN_PROBABILITY
+    return (MIN_ODDS - 1e-9 <= combo['decimal_odds'] <= MAX_ODDS + 1e-9 and combo['probability'] >= COMBO_MIN_PROBABILITY
             and combo['expected_value'] >= MIN_EV)
 
 
@@ -620,8 +637,8 @@ def _recheck(connection, bet, current, max_age):
         leg = next(iter(candidates(connection, current, fixture_id=bet['fixture_id'], market=bet['market'])), None)
         if leg is None:
             return None, 'No longer a favourite with a fresh SportyBet price and every safety check passing.'
-        if float(leg['decimal_odds']) < MIN_ODDS - 1e-9:
-            return None, f"Price {leg['decimal_odds']:.2f} is below the {MIN_ODDS:.2f} single minimum."
+        if not MIN_ODDS - 1e-9 <= float(leg['decimal_odds']) <= MAX_ODDS + 1e-9:
+            return None, f"Price {leg['decimal_odds']:.2f} is outside the {MIN_ODDS:.2f}-{MAX_ODDS:.2f} range."
         return {'decimal_odds': float(leg['decimal_odds']), 'observed_at': leg['odds_observed_at'],
                 'ev': round(leg['probability'] * leg['decimal_odds'] - 1, 6), 'probability': leg['probability']}, ''
     if not selection_is_qualified(connection, bet['fixture_id'], bet['market']):
@@ -973,7 +990,7 @@ def dashboard(connection, now=None):
         'balance': _account_balance(connection, current),
         'rules': {'stake': STAKE, 'daily_target': list(DAILY_TARGET), 'daily_limit': DAILY_LIMIT,
                   'daily_stake_limit': DAILY_STAKE_LIMIT, 'min_ev': MIN_EV,
-                  'min_odds': MIN_ODDS, 'combo_max_legs': COMBO_MAX_LEGS, 'combo_min_probability': COMBO_MIN_PROBABILITY,
+                  'min_odds': MIN_ODDS, 'max_odds': MAX_ODDS, 'combined_min_odds': COMBINED_MIN_ODDS, 'combined_max_odds': COMBINED_MAX_ODDS, 'combo_max_legs': COMBO_MAX_LEGS, 'combo_min_probability': COMBO_MIN_PROBABILITY,
                   'favourite_daily_limit': FAVOURITE_DAILY_LIMIT, 'favourite_notice': FAVOURITE_NOTICE},
         'today': {
             'executed': len(today), 'wins': wins, 'losses': losses,
@@ -1055,7 +1072,7 @@ def engine_view(connection, now=None):
         'real_money_enabled': bool(live and live['execution']['submission_allowed']),
         'generated_at': current.isoformat(),
         'strategy': {'stake': STAKE, 'daily_target': list(DAILY_TARGET), 'daily_limit': DAILY_LIMIT,
-                     'daily_stake_limit': DAILY_STAKE_LIMIT, 'min_ev': MIN_EV, 'min_odds': MIN_ODDS,
+                     'daily_stake_limit': DAILY_STAKE_LIMIT, 'min_ev': MIN_EV, 'min_odds': MIN_ODDS, 'max_odds': MAX_ODDS, 'combined_min_odds': COMBINED_MIN_ODDS, 'combined_max_odds': COMBINED_MAX_ODDS,
                      'combo_max_legs': COMBO_MAX_LEGS, 'combo_min_probability': COMBO_MIN_PROBABILITY,
                      'favourite_daily_limit': FAVOURITE_DAILY_LIMIT, 'favourite_notice': FAVOURITE_NOTICE, 'place_per_tick': PLACE_PER_TICK,
                      'tick_seconds': TICK_SECONDS},

@@ -117,6 +117,12 @@ def _touch_heartbeat():
         return False
 
 
+# Owner's structure (12 Nov 2026): the system serves three objectives only (autonomous singles and
+# Sure Odds combined bets; Sure Odds codes; category-card codes). These features are switched off.
+RETIRED_TICKET_BUILDERS = True
+RETIRED_DRAWS_AND_ROLLOVER = True
+
+
 def _beat_until(stop):
     while not stop.wait(20):
         _touch_heartbeat()
@@ -211,10 +217,12 @@ def _run_cycle():
     _league_coverage_tick()
     _match_report_tick()
     _draw_tick()
-    _weekly_draw_tick()
+    if not RETIRED_DRAWS_AND_ROLLOVER:
+        _weekly_draw_tick()
     _reliability_tick()
     _learning_tick()
-    _rollover_tick()
+    if not RETIRED_DRAWS_AND_ROLLOVER:
+        _rollover_tick()
     _single_betting_tick()
     _publication_tick()
     _pipeline_snapshot_tick()
@@ -479,11 +487,18 @@ def _ticket_tick():
         current = datetime.now(timezone.utc)
         with connect() as connection:
             priced = price_quoted_board(connection, now=current, limit=60)
-            result = build_autonomous_tickets(connection, 'sports-ai-worker', _audit, now=current)
-            cross = build_bookable_cross_tickets(connection, 'sports-ai-worker', _audit, now=current)
-            coverage = build_high_probability_tickets(connection, 'sports-ai-worker', _audit, now=current)
-            from favourites import build_favourite_tickets
-            favourites = build_favourite_tickets(connection, 'sports-ai-worker', now=current)
+            if RETIRED_TICKET_BUILDERS:
+                # Owner's structure (12 Nov 2026): codes are made only for Sure Odds (objective 2) and
+                # the category cards (objective 3), both built in the high-odds lane. The autonomous,
+                # cross-market, high-probability and favourites tickets are no longer built or booked.
+                off = {'status': 'retired', 'created': 0, 'candidates': 0}
+                result, cross, coverage, favourites = {'status': 'retired', 'tickets_created': 0}, off, off, off
+            else:
+                result = build_autonomous_tickets(connection, 'sports-ai-worker', _audit, now=current)
+                cross = build_bookable_cross_tickets(connection, 'sports-ai-worker', _audit, now=current)
+                coverage = build_high_probability_tickets(connection, 'sports-ai-worker', _audit, now=current)
+                from favourites import build_favourite_tickets
+                favourites = build_favourite_tickets(connection, 'sports-ai-worker', now=current)
             from jackpot_stop import disabled_result
             jackpots = disabled_result()
         print(

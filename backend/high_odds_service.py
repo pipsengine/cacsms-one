@@ -32,6 +32,7 @@ JACKPOT_STAKE = 100
 DAILY_TARGET = 5
 # From these odds up, legs may come from any day Monday-Sunday and day spread breaks ties.
 MULTI_DAY_MIN_ODDS = 50
+CATEGORY_LEG_MIN_ODDS, CATEGORY_LEG_MAX_ODDS = 1.60, 2.95
 DEFAULTS = dict(min_legs=2, max_legs=16, min_leg_odds=1.01, max_per_competition=1, max_per_team=1,
                 min_probability=0.05, min_edge=0.01, min_completeness=0.5,
                 min_model_reliability=0.8, odds_max_age_minutes=15, min_lead_minutes=30,
@@ -243,6 +244,9 @@ def optimize(pool, category, settings):
     only after searching alternatives, so a failed category cannot stop others.
     """
     deadline = time.monotonic()+float(settings['timeout_seconds'])
+    # Owner's structure (12 Nov 2026), objective 3: every selection on a category ticket is priced
+    # 1.60-2.95; tickets reach a card's range by combining such legs. Fixed, not a stored setting.
+    pool = [l for l in pool if CATEGORY_LEG_MIN_ODDS - 1e-9 <= float(l['decimal_odds']) <= CATEGORY_LEG_MAX_ODDS + 1e-9]
     pool = sorted(pool,key=lambda l:(-l['probability'],-l['edge'],l['fixture_id'],l['market']))
     beam = [((),1.0,1.0,frozenset(),frozenset(),frozenset())]
     found = {}

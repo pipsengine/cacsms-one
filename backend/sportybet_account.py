@@ -763,7 +763,7 @@ async def _prepare_in_account(page, bet, test=False):
     """Open each needed sport page in the signed-in context, add exactly this bet's selection(s)
     (one for a single, every leg for a combined bet), set one ₦100 stake, and verify the slip."""
     from sportybet_booking import _open_sport, prepare_slip
-    from single_betting import COMBO_MIN_PROBABILITY, MIN_EV, MIN_ODDS
+    from single_betting import COMBINED_MAX_ODDS, COMBINED_MIN_ODDS, COMBO_MIN_PROBABILITY, MAX_ODDS, MIN_EV, MIN_ODDS
     local = BASE_URL.startswith(('http://127.0.0.1', 'http://localhost'))
     legs = _bet_legs(bet)
     combo = len(legs) > 1
@@ -794,8 +794,13 @@ async def _prepare_in_account(page, bet, test=False):
     for value in leg_odds:
         page_odds *= value
     page_odds = round(page_odds, 4)
-    if page_odds < MIN_ODDS - 1e-9 and not test:
-        return {'ok': False, 'code': 'EDGE_GONE', 'error': f'The displayed {page_odds:.2f} is below the {MIN_ODDS:.2f} minimum.', 'page_odds': page_odds}
+    # Singles 1.60-1.99; combined bets (Sure Odds tickets) 2.00-2.95 (owner's structure, 12 Nov).
+    low, high = (COMBINED_MIN_ODDS, COMBINED_MAX_ODDS) if len(legs) > 1 else (MIN_ODDS, MAX_ODDS)
+    if page_odds < low - 1e-9 and not test:
+        return {'ok': False, 'code': 'EDGE_GONE', 'error': f'The displayed {page_odds:.2f} is below the {low:.2f} minimum.', 'page_odds': page_odds}
+    if page_odds > high * (1 + MAX_PRICE_MOVE) + 1e-9 and not test:
+        # A price that drifted a little past a limit is still the selected bet; a big jump is not.
+        return {'ok': False, 'code': 'ABOVE_MAX_ODDS', 'error': f'The displayed {page_odds:.2f} is above the {high:.2f} maximum.', 'page_odds': page_odds}
     probability = float(bet['probability'])
     no_edge = bet.get('kind') in NO_EDGE_KINDS
     if combo:

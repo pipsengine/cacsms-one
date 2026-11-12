@@ -382,12 +382,21 @@ class OptimizationMathTests(unittest.TestCase):
         return leg
 
     def test_cap_boundaries_and_flexible_selection_counts(self):
+        # Legs are priced 1.60-2.95 (owner's structure, 12 Nov 2026), so 500-1,000 needs six of them.
         category={'min_odds':500,'max_odds':1000}
-        pool=[self.leg(i,10,.15) for i in range(4)]
+        pool=[self.leg(i,2.92,.5) for i in range(7)]
         candidates,_=service.optimize(pool,category,{**default_config(),**service.DEFAULTS})
         self.assertTrue(candidates)
-        self.assertTrue(all(t['combined_odds']==1000 and len(t['legs'])==3 for t in candidates))
+        self.assertTrue(all(500<=t['combined_odds']<=1000 and len(t['legs'])==6 for t in candidates))
         self.assertFalse(service.inside(1000.001,category))
+
+    def test_category_legs_are_priced_160_to_295(self):
+        category={'min_odds':25,'max_odds':49.99}
+        pool=[self.leg(i,odds,.6) for i,odds in enumerate([1.3,1.5,3.2,1.7,1.8,2.0,2.2,2.5,2.9,1.65,1.9,2.1,4.5])]
+        candidates,_=service.optimize(pool,category,{**default_config(),**service.DEFAULTS})
+        self.assertTrue(candidates)
+        for ticket in candidates:
+            self.assertTrue(all(1.60<=float(l['decimal_odds'])<=2.95 for l in ticket['legs']), ticket['legs'])
 
     def test_only_jackpot_can_exceed_regular_odds_cap(self):
         jackpot={'id':'jackpot','min_odds':2_000_000,'max_odds':2_200_000}
