@@ -1,0 +1,164 @@
+[
+  {
+    "seconds": 0.395,
+    "status": 200,
+    "queue": 0,
+    "execution": {
+      "state": "WAITING",
+      "reason": "Waiting for an eligible selection. No bet is currently being submitted.",
+      "last_placed_at": "2026-11-12T03:53:49.721122+00:00",
+      "last_attempt": {
+        "id": "0301b3ad-399c-459e-bbdf-c20b754344dd",
+        "bet_id": "ticket:31e5eb27-dd0f-44f0-ba2d-6a1f16700359",
+        "kind": "SUBMISSION",
+        "status": "PLACED",
+        "local_date": "2026-11-12",
+        "stake": 100.0,
+        "expected_odds": 1.5252,
+        "page_odds": 1.5252,
+        "bookmaker_ref": null,
+        "authorization_id": "55a43116-16c2-4360-90b4-025ef93fa15f",
+        "error": null,
+        "payout": null,
+        "created_at": "2026-11-12T03:53:22.385656+00:00",
+        "updated_at": "2026-11-12T03:53:53.715054+00:00",
+        "submitted_at": "2026-11-12T03:53:49.721122+00:00",
+        "reconciled_at": null,
+        "home": "Uzbekistan",
+        "away": "Russia",
+        "selection": "Favourites ticket (no edge) \u00b7 code ZGKPCF",
+        "sport": "football",
+        "checks": {
+          "all_legs_only": true,
+          "one_stake_input": true,
+          "stake_100": true,
+          "potential_win": true,
+          "teams_on_slip": true,
+          "real_mode": true,
+          "single_place_button": true,
+          "balance_covers_stake": true
+        },
+        "test": false,
+        "evidence": true
+      }
+    },
+    "health": {
+      "intelligence_feed": "Active",
+      "selection_engine": "Running",
+      "execution_worker": "Running",
+      "browser_session": "CONNECTED",
+      "data_sync": null,
+      "latest_price_at": "2026-11-12T12:03:24.347779+00:00",
+      "price_age_minutes": 26.5,
+      "last_update": "2026-11-12T12:29:14.807385+00:00"
+    }
+  },
+  {
+    "seconds": 0.192,
+    "status": 200,
+    "queue": 0,
+    "execution": {
+      "state": "WAITING",
+      "reason": "Waiting for an eligible selection. No bet is currently being submitted.",
+      "last_placed_at": "2026-11-12T03:53:49.721122+00:00",
+      "last_attempt": {
+        "id": "0301b3ad-399c-459e-bbdf-c20b754344dd",
+        "bet_id": "ticket:31e5eb27-dd0f-44f0-ba2d-6a1f16700359",
+        "kind": "SUBMISSION",
+        "status": "PLACED",
+        "local_date": "2026-11-12",
+        "stake": 100.0,
+        "expected_odds": 1.5252,
+        "page_odds": 1.5252,
+        "bookmaker_ref": null,
+        "authorization_id": "55a43116-16c2-4360-90b4-025ef93fa15f",
+        "error": null,
+        "payout": null,
+        "created_at": "2026-11-12T03:53:22.385656+00:00",
+        "updated_at": "2026-11-12T03:53:53.715054+00:00",
+        "submitted_at": "2026-11-12T03:53:49.721122+00:00",
+        "reconciled_at": null,
+        "home": "Uzbekistan",
+        "away": "Russia",
+        "selection": "Favourites ticket (no edge) \u00b7 code ZGKPCF",
+        "sport": "football",
+        "checks": {
+          "all_legs_only": true,
+          "one_stake_input": true,
+          "stake_100": true,
+          "potential_win": true,
+          "teams_on_slip": true,
+          "real_mode": true,
+          "single_place_button": true,
+          "balance_covers_stake": true
+        },
+        "test": false,
+        "evidence": true
+      }
+    },
+    "health": {
+      "intelligence_feed": "Active",
+      "selection_engine": "Running",
+      "execution_worker": "Running",
+      "browser_session": "CONNECTED",
+      "data_sync": null,
+      "latest_price_at": "2026-11-12T12:03:24.347779+00:00",
+      "price_age_minutes": 26.5,
+      "last_update": "2026-11-12T12:29:14.807385+00:00"
+    }
+  },
+  {
+    "seconds": 0.196,
+    "status": 200,
+    "queue": 0,
+    "execution": {
+      "state": "WAITING",
+      "reason": "Waiting for an eligible selection. No bet is currently being submitted.",
+      "last_placed_at": "2026-11-12T03:53:49.721122+00:00",
+      "last_attempt": {
+        "id": "0301b3ad-399c-459e-bbdf-c20b754344dd",
+        "bet_id": "ticket:31e5eb27-dd0f-44f0-ba2d-6a1f16700359",
+        "kind": "SUBMISSION",
+        "status": "PLACED",
+        "local_date": "2026-11-12",
+        "stake": 100.0,
+        "expected_odds": 1.5252,
+        "page_odds": 1.5252,
+        "bookmaker_ref": null,
+        "authorization_id": "55a43116-16c2-4360-90b4-025ef93fa15f",
+        "error": null,
+        "payout": null,
+        "created_at": "2026-11-12T03:53:22.385656+00:00",
+        "updated_at": "2026-11-12T03:53:53.715054+00:00",
+        "submitted_at": "2026-11-12T03:53:49.721122+00:00",
+        "reconciled_at": null,
+        "home": "Uzbekistan",
+        "away": "Russia",
+        "selection": "Favourites ticket (no edge) \u00b7 code ZGKPCF",
+        "sport": "football",
+        "checks": {
+          "all_legs_only": true,
+          "one_stake_input": true,
+          "stake_100": true,
+          "potential_win": true,
+          "teams_on_slip": true,
+          "real_mode": true,
+          "single_place_button": true,
+          "balance_covers_stake": true
+        },
+        "test": false,
+        "evidence": true
+      }
+    },
+    "health": {
+      "intelligence_feed": "Active",
+      "selection_engine": "Running",
+      "execution_worker": "Running",
+      "browser_session": "CONNECTED",
+      "data_sync": null,
+      "latest_price_at": "2026-11-12T12:03:24.347779+00:00",
+      "price_age_minutes": 26.5,
+      "last_update": "2026-11-12T12:29:14.807385+00:00"
+    }
+  }
+]

@@ -297,6 +297,12 @@ export function SingleBettingEngine(){
     <Loading error={error} loading={loading&&!data}/>
     {data&&<>
     <Pipeline stages={data.pipeline}/>
+    <section className="sb-card sb-execution-state" role="status">
+      <strong>{data.execution_status?.state==='WAITING'?'Waiting for an eligible selection':data.execution_status?.state==='BLOCKED'?'Execution blocked':'Execution queue ready'}</strong>
+      <p>{data.execution_status?.reason}</p>
+      <small>Last accepted bet: {data.execution_status?.last_placed_at?`${new Date(data.execution_status.last_placed_at).toLocaleString('en-GB',{timeZone:'Africa/Lagos',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})} WAT`:'None recorded'} · Latest relevant price: {h.latest_price_at?`${hhmm(h.latest_price_at)} WAT (${h.price_age_minutes} min old)`:'None stored'}</small>
+      {data.pipeline_updated_at&&<small>Pipeline snapshot: {new Date(data.pipeline_updated_at).toLocaleString('en-GB',{timeZone:'Africa/Lagos',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})} WAT. Stale stages are shown as waiting.</small>}
+    </section>
     <div className="sb-engine">
       <Card className="sb-strategy sb-a-strat">
         <span className="sb-strat-icon"><Bot size={36}/></span>
@@ -315,7 +321,7 @@ export function SingleBettingEngine(){
         <Check ok={h.selection_engine==='Running'} value={h.selection_engine==='Waiting for first cycle'?'Starting':h.selection_engine} tone={h.selection_engine==='Running'?'pos':'amber'}>Selection engine:</Check>
         <Check ok={h.execution_worker==='Running'} value={h.execution_worker} tone={h.execution_worker==='Running'?'pos':'red'}>Execution worker:</Check>
         <Check ok={h.browser_session==='CONNECTED'} value={h.browser_session==='CONNECTED'?'Connected':sportName(String(h.browser_session).toLowerCase())} tone={h.browser_session==='CONNECTED'?'pos':'amber'}>Browser session:</Check>
-        <Check ok={!!h.data_sync} value={h.data_sync?'Live':'No fresh price'} tone={h.data_sync?'pos':'amber'}>Data sync:</Check>
+        <Check ok={!!h.data_sync} value={h.data_sync?'Fresh prices':h.latest_price_at?`Stale (${h.price_age_minutes} min)`:'No stored price'} tone={h.data_sync?'pos':'amber'}>Data sync:</Check>
         <Check ok={!!h.last_update} value={h.last_update?new Date(h.last_update).toLocaleTimeString('en-GB',{timeZone:'Africa/Lagos'}):'—'}>Last update:</Check>
       </ul></Card>
       <ActivityLog events={data.events} refresh={refresh}/>

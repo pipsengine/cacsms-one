@@ -57,7 +57,10 @@ class LadderTests(unittest.TestCase):
         c = sqlite3.connect(':memory:')
         c.execute('CREATE TABLE sports_ai_accumulator_tickets(id, run_id, parameters_json, created_at)')
         c.execute("INSERT INTO sports_ai_accumulator_tickets VALUES('t','run-1',?,?)",
-                  (json.dumps({'product': 'prize_ladder'}), (NOW + timedelta(hours=1)).isoformat()))
+                  (json.dumps({'product': 'prize_ladder', 'ladder_version': ladder.LADDER_VERSION}), (NOW + timedelta(hours=1)).isoformat()))
+        # A ladder of the old 17-prize design built earlier this week does not use up the week's set.
+        c.execute("INSERT INTO sports_ai_accumulator_tickets VALUES('old','run-0',?,?)",
+                  (json.dumps({'product': 'prize_ladder'}), NOW.isoformat()))
         self.assertEqual(ladder._built_this_week(c, NOW + timedelta(days=3)), 1)   # Thursday: same week
         self.assertEqual(ladder._built_this_week(c, NOW + timedelta(days=7)), 0)   # next Monday: new week
 

@@ -82,11 +82,12 @@ class JackpotTests(unittest.TestCase):
                           (fid, fid, 't', 'basketball' if i % 3 else 'football', 'L', f'{fid}H', f'{fid}A',
                            (NOW + timedelta(hours=4)).isoformat(), 'scheduled', '{}', '{}', NOW.isoformat()))
                 selections.append({'fixture_id': fid, 'market': 'HOME', 'sport': 'football'})
-            with self.assertRaisesRegex(ValueError, 'disabled by the operator'):
-                jl.require_bookable(c, selections, NOW)
+            # The market booking gate is structural again (12 Nov 2026): valid legs pass, a repeated
+            # match or a started leg is refused.
+            self.assertFalse(jl.require_bookable(c, selections, NOW)['positive_edge'])
             with self.assertRaises(ValueError):
                 jl.require_bookable(c, selections + selections[:6], NOW)
-            with self.assertRaisesRegex(ValueError, 'disabled by the operator'):
+            with self.assertRaisesRegex(ValueError, 'started'):
                 jl.require_bookable(c, selections, NOW + timedelta(hours=5))
             c.execute("""INSERT INTO sports_ai_accumulator_tickets(id,run_id,family_id,version,signature,tier,sport_mode,status,
                          combined_odds,joint_probability,estimated_edge,leg_count,probability_basis,uncertainty,explanation,

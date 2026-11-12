@@ -1,0 +1,11 @@
+{
+  "seconds_to_state": 2.073,
+  "state_text": "Waiting for an eligible selection\n\nWaiting for an eligible selection. No bet is currently being submitted.\n\nLast accepted bet: 12 Nov, 04:53 WAT \u00b7 Latest relevant price: 13:03 WAT (26.5 min old)\nPipeline snapshot: 12 Nov, 10:11 WAT. Stale stages are shown as waiting.",
+  "api_paths": [
+    "/single-betting/engine",
+    "/single-betting/engine",
+    "/single-betting/account/evidence/latest",
+    "/single-betting/account/evidence/latest"
+  ],
+  "unrelated_dashboard_requests": []
+}

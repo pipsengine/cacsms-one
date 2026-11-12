@@ -82,6 +82,37 @@ class SingleBettingTests(unittest.TestCase):
     def conn(self):
         return db.connect()
 
+    def test_engine_read_uses_relevant_prices_without_global_history_counts(self):
+        with self.conn() as c:
+            c.execute('PRAGMA foreign_keys=OFF')
+            seed(c, 'fresh', observed=NOW-timedelta(minutes=2))
+            seed(c, 'started', observed=NOW, kickoff=NOW-timedelta(hours=1))
+            queries=[]
+            c.set_trace_callback(queries.append)
+            with patch('workflow_status.workflow_board', side_effect=AssertionError('Full history scan')):
+                view=sb.engine_view(c,NOW)
+            self.assertEqual(view['health']['price_age_minutes'],2.0)
+            self.assertIsNotNone(view['health']['data_sync'])
+            self.assertIsNone(view['focus'])
+            self.assertFalse(any('COUNT(*)' in q.upper() and 'SPORTS_AI_ODDS_SNAPSHOTS' in q.upper() for q in queries))
+
+    def test_price_health_marks_stale_price_even_when_engine_cycle_is_recent(self):
+        with self.conn() as c:
+            c.execute('PRAGMA foreign_keys=OFF')
+            seed(c,'old',observed=NOW-timedelta(minutes=30))
+            view=sb.engine_view(c,NOW)
+            self.assertEqual(view['health']['price_age_minutes'],30.0)
+            self.assertIsNone(view['health']['data_sync'])
+            self.assertEqual(view['pipeline'][1]['status'],'Attention')
+
+    def test_old_pipeline_snapshot_never_appears_completed(self):
+        with self.conn() as c:
+            c.execute('INSERT INTO sports_ai_pipeline_snapshots(id,created_at,stages_json,blockers_json) VALUES(?,?,?,?)',
+                      ('old',(NOW-timedelta(hours=2)).isoformat(),json.dumps([{'stage':'PREDICTED','count':100}]),'[]'))
+            stages,at=sb._execution_pipeline(c,NOW,{'fresh':False})
+            self.assertEqual(stages[3]['status'],'Waiting')
+            self.assertEqual(at,(NOW-timedelta(hours=2)).isoformat())
+
     def test_policy_rejects_stale_close_and_negative_edge(self):
         ok = sb.evaluate(1.72, 0.645, NOW - timedelta(minutes=1), NOW + timedelta(hours=1), NOW)
         self.assertTrue(ok['eligible'])

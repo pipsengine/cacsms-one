@@ -1017,15 +1017,53 @@ def dashboard(connection, now=None):
     }
 
 
+def _execution_price_health(connection, current):
+    """Read the latest relevant quotes through the fixture/time index, not all price history."""
+    row = connection.execute(
+        """SELECT MAX((SELECT q.observed_at FROM sports_ai_odds_snapshots q
+                        WHERE q.fixture_id=f.id AND q.bookmaker='SportyBet'
+                        ORDER BY q.observed_at DESC LIMIT 1)) AS latest
+           FROM sports_ai_fixtures f
+           WHERE f.status IN ('scheduled','not_started') AND f.starts_at>?
+             AND f.starts_at<?""",
+        (current.isoformat(), (current + timedelta(hours=30)).isoformat()),
+    ).fetchone()
+    latest = _parse(row['latest']) if row else None
+    age = None if latest is None else (current - latest).total_seconds() / 60
+    return {'latest': None if latest is None else latest.isoformat(),
+            'age_minutes': None if age is None else round(age, 1),
+            'fresh': age is not None and 0 <= age <= _max_odds_age(connection)}
+
+
+def _execution_pipeline(connection, current, price):
+    """Use the worker's stored snapshot; a dashboard refresh never recounts price history."""
+    row = connection.execute(
+        'SELECT created_at,stages_json FROM sports_ai_pipeline_snapshots ORDER BY created_at DESC LIMIT 1',
+    ).fetchone()
+    observed = _parse(row['created_at']) if row else None
+    fresh = bool(observed and 0 <= (current - observed).total_seconds() <= 900)
+    counts = {s['stage']: s['count'] for s in json.loads(row['stages_json'])} if row else {}
+    specs = [('Discover', 'DISCOVERED'), ('Collect Odds', 'ODDS_AVAILABLE'), ('Validate', 'DATA_READY'),
+             ('Analyse', 'PREDICTED'), ('Qualify', 'QUALIFIED'), ('Tickets & Booking Codes', 'TICKET_READY'),
+             ('Settle', None), ('Learn', None), ('Optimize', None)]
+    stages = [{'name': name, 'count': counts.get(key, 0) if fresh else 'Snapshot not current',
+               'status': ('Completed' if counts.get(key) else 'Waiting') if fresh else 'Waiting'}
+              for name, key in specs]
+    stages[1].update(status='Completed' if price['fresh'] else 'Attention',
+                     count='Fresh prices' if price['fresh'] else 'Prices need refreshing')
+    qualification = _setting(connection, 'qualification_status', {})
+    evaluated = _parse(qualification.get('evaluated_at'))
+    if evaluated and 0 <= (current - evaluated).total_seconds() <= 900:
+        qualified = int((qualification.get('counts') or {}).get('QUALIFIED', 0))
+        stages[4].update(status='Completed' if qualified else 'Waiting', count=f'{qualified} in latest check')
+    return stages, None if observed is None else observed.isoformat()
+
+
 def engine_view(connection, now=None):
     current = _now(now)
     day = local_date(current)
-    from workflow_status import workflow_board
-    try:
-        board = workflow_board(connection, current)
-        stages = [{'name': s['name'], 'status': s['status'], 'count': s['count']} for s in board['stages']]
-    except Exception as error:  # the board is advisory; the engine view must still load
-        stages, board = [], {'worker': f'unavailable: {error}'}
+    price = _execution_price_health(connection, current)
+    stages, pipeline_at = _execution_pipeline(connection, current, price)
     status = _setting(connection, STATUS_KEY, {})
     state = runtime(connection)
     beat = _heartbeat(connection, current)
@@ -1065,12 +1103,20 @@ def engine_view(connection, now=None):
         'SELECT action, detail, created_at FROM sports_ai_single_events ORDER BY created_at DESC LIMIT 50',
     ).fetchall()]
     eligible = int(status.get('eligible') or 0)
-    focus = queue[0] if queue else (recent[0] if recent else None)
+    focus = queue[0] if queue else None
     try:
         from sportybet_account import status_view
         live = status_view(connection, current)
     except Exception:
         live = None
+    blocked = (live or {}).get('execution', {}).get('blocked_by') or []
+    last_order = next((order for order in (live or {}).get('orders', []) if order['kind'] == 'SUBMISSION'), None)
+    last_placed = connection.execute(
+        "SELECT MAX(submitted_at) FROM sports_ai_single_live_orders WHERE kind='SUBMISSION' AND status IN ('PLACED','SETTLED_WON','SETTLED_LOST','SETTLED_VOID')",
+    ).fetchone()[0]
+    reason = ('Execution is paused.' if state.get('paused') else '; '.join(blocked) if blocked
+              else 'Waiting for an eligible selection. No bet is currently being submitted.' if not queue
+              else 'Eligible selections are queued for the execution worker.')
     return {
         'mode': 'PAPER' if not live else live['execution']['mode'],
         'places_wager': bool(live and live['execution']['submission_allowed']),
@@ -1084,6 +1130,10 @@ def engine_view(connection, now=None):
         'autonomous': {'running': beat['fresh'] and not state.get('paused'), 'paused': bool(state.get('paused')),
                        'changed_by': state.get('changed_by'), 'changed_at': state.get('changed_at')},
         'pipeline': stages,
+        'pipeline_updated_at': pipeline_at,
+        'execution_status': {'state': 'BLOCKED' if blocked or state.get('paused') else 'WAITING' if not queue else 'QUEUED',
+                             'reason': reason, 'last_placed_at': last_placed,
+                             'last_attempt': last_order},
         'cards': {'ready': eligible, 'in_execution': len(queue), 'executed': executed,
                   'remaining': capacity(count, staked), 'exceptions': exceptions},
         'queue': queue,
@@ -1096,7 +1146,8 @@ def engine_view(connection, now=None):
             'selection_engine': 'Paused' if state.get('paused') else ('Running' if last else 'Waiting for first cycle'),
             'execution_worker': 'Running' if beat['fresh'] else 'Heartbeat stale',
             'browser_session': (live or {}).get('account', {}).get('status', 'NOT_CONNECTED'),
-            'data_sync': status.get('freshest_price'),
+            'data_sync': price['latest'] if price['fresh'] else None,
+            'latest_price_at': price['latest'], 'price_age_minutes': price['age_minutes'],
             'last_update': status.get('last_run'),
         },
         'automation': {

@@ -380,6 +380,8 @@ def _sure_tickets(board, now):
                 'joint_probability': ticket.get('joint_probability'),
                 'confidence': ticket.get('confidence'),
                 'code': ticket.get('booking_code'),
+                'probability_source': ticket.get('leg_source', 'model'),
+                'booking_note': ticket.get('booking_note'),
                 'selections': [
                     {
                         'fixture': leg.get('fixture'),

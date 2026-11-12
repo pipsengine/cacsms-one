@@ -430,6 +430,8 @@ def _process_browser_queue():
         from browser_jobs import process_browser_queue
         result = process_browser_queue()
         print('browser queue', result.get('status'), result.get('job_id', ''), result.get('error', ''))
+        if _PRICE_LANE and _PRICE_LANE.is_alive():
+            return  # Price freshness has its own lane; training cannot delay it.
         from sportybet_feed import collect_displayed_odds
         collected = collect_displayed_odds()
         print('sportybet feed', collected.get('status'), 'imported', collected.get('imported', 0), collected.get('error', ''))
@@ -506,6 +508,16 @@ def _ticket_tick():
             healed = prize_ladder.heal(connection, 'sports-ai-worker', now=current)
             if healed:
                 print('jackpot ladder repaired', healed)
+            # Objective 3: the eight category cards, from SportyBet prices (legs 1.60-2.95), up to 5 a card a day.
+            import category_market
+            try:
+                cards = category_market.build(connection, 'sports-ai-worker', now=current)
+                print('category cards', cards.get('status'), 'created', cards.get('created'), 'skipped', cards.get('skipped'))
+                _observed('category_cards', cards)
+            except Exception as error:  # a card failure never stops the ladder or the other stages
+                _observed('category_cards', {'status': 'failed'}, failed=True, error=error)
+                _report('category cards failed', error)
+            _observed('jackpot_ladder', jackpots)
         print(
             'tickets', result.get('status'),
             'created', result.get('tickets_created', result.get('ticket_count', 0)),
@@ -690,6 +702,40 @@ def _account_lane(stop):
 
 
 _ACCOUNT_LANE = None
+_PRICE_LANE = None
+
+
+def _price_tick():
+    from sportybet_feed import collect_displayed_odds
+    with connect() as connection:
+        leader = connection.execute(
+            "SELECT owner,expires_at FROM sports_ai_worker_leases WHERE id='scheduler-leader'",
+        ).fetchone()
+    current = datetime.now(timezone.utc)
+    if not leader or leader['owner'] != _leader_name() or datetime.fromisoformat(leader['expires_at']) <= current:
+        return {'status': 'standby'}
+    result = collect_displayed_odds()
+    if result.get('imported'):
+        _odds_refresh_tick()
+    _observed('price_feed', result)
+    return result
+
+
+def _price_lane(stop):
+    while not stop.wait(60):
+        try:
+            _price_tick()
+        except Exception as error:
+            _observed('price_feed', {'status': 'failed'}, failed=True, error=error)
+            _report('price feed failed', error)
+
+
+def start_price_lane():
+    global _PRICE_LANE
+    if not _PRICE_LANE or not _PRICE_LANE.is_alive():
+        _PRICE_LANE = threading.Thread(target=_price_lane, args=(threading.Event(),), name='price-lane', daemon=True)
+        _PRICE_LANE.start()
+    return _PRICE_LANE
 
 
 def start_account_lane():
@@ -950,6 +996,7 @@ if __name__=='__main__':
         start_background(_leader_name())
         start_booking_lane()
         start_account_lane()
+        start_price_lane()
     if args.once:
         tick()
     else:

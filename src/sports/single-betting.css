@@ -292,3 +292,6 @@ button.sb-card{text-align:left;color:inherit;font:inherit}
 .sb-unclear h4{color:#b42318;margin:0 0 6px}
 .sb-unclear-row{display:grid;gap:8px;padding:8px 0;border-top:1px solid #f5c2c0}
 .sb-unclear-row small{display:block;color:#7a4a05;margin-top:3px}
+.sb-execution-state{padding:14px 20px;margin-bottom:16px;border-left:4px solid #8b5cf6}
+.sb-execution-state p{margin:6px 0}
+.sb-execution-state small{display:block;line-height:1.5;color:#526481}

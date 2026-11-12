@@ -28,6 +28,7 @@ PRIZES = (1_000_000, 10_000_000, 20_000_000, 50_000_000, 100_000_000, 200_000_00
 LEG_MIN, LEG_MAX = 1.60, 2.95
 LEG_AIM = 1.95            # preferred per-leg odds: the ticket length follows from it
 WEEKLY_RUNS = 1
+LADDER_VERSION = 2       # the six-prize, 1.60-2.95 design of 12 Nov 2026
 # Sports whose results the system collects and settles; the league record filter applies on top.
 LADDER_SPORTS = ('football', 'basketball', 'ice_hockey', 'tennis')
 MAX_LEGS = 45             # SportyBet accepts 50; 45 leaves room
@@ -136,12 +137,17 @@ def _days_ahead(leg, now):
 def pick(pool, prize, uses, now=None):
     """Legs for one prize: odds near the required per-leg average, landing in the build band."""
     target = prize_odds(prize)
-    low, high, aim = target * BUILD_LOW, target * BUILD_HIGH, target * BUILD_AIM
-    slots = max(MIN_LEGS, min(MAX_LEGS - 3, round(math.log(aim) / math.log(LEG_AIM))))
+    return pick_range(pool, target * BUILD_LOW, target * BUILD_HIGH, target * BUILD_AIM, uses, now)
+
+
+def pick_range(pool, low, high, aim, uses, now=None, min_legs=MIN_LEGS):
+    """Legs whose combined odds land in [low, high], close to `aim`. Used by the jackpot ladder and,
+    with min_legs=2, by the category cards (category_market.py)."""
+    slots = max(min_legs, min(MAX_LEGS - 3, round(math.log(aim) / math.log(LEG_AIM))))
     chosen, odds, teams, leagues, sports = [], 1.0, set(), {}, {}
     sport_cap = max(2, math.ceil(MAX_SPORT_SHARE * slots))
     available = [leg for leg in pool if uses.get(leg['fixture_id'], 0) < MAX_SHARE]
-    while odds < low and len(chosen) < MAX_LEGS:
+    while (odds < low or len(chosen) < min_legs) and len(chosen) < MAX_LEGS:
         left = max(1, slots - len(chosen))
         want = (aim / odds) ** (1 / left)
         best, score = None, None
@@ -155,7 +161,8 @@ def pick(pool, prize, uses, now=None):
             reach = odds * leg['decimal_odds']
             # A leg that completes the ticket inside the band beats one that does not; among those,
             # the one closest to BUILD_AIM x the prize.
-            finishing = reach >= low
+            # Only a leg that also reaches the minimum number of legs can finish the ticket.
+            finishing = reach >= low and len(chosen) + 1 >= min_legs
             distance = abs(math.log(reach / aim)) if finishing else abs(math.log(leg['decimal_odds']) - math.log(want))
             if leg['sport'] in FOOTBALL:
                 distance = max(0.0, distance - FOOTBALL_BONUS)
@@ -174,7 +181,7 @@ def pick(pool, prize, uses, now=None):
         key = (best['sport'], best['competition'])
         leagues[key] = leagues.get(key, 0) + 1
         sports[best['sport']] = sports.get(best['sport'], 0) + 1
-    if odds < low or len(chosen) < MIN_LEGS:
+    if odds < low or len(chosen) < min_legs:
         return None
     return chosen
 
@@ -260,9 +267,12 @@ def heal(connection, actor='sports-ai-worker', now=None):
 def _built_this_week(connection, current):
     local = current.astimezone(WAT)
     start = (local - timedelta(days=local.weekday())).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    # Only ladders of the current design count: the 17-prize, 1.10-2.20 ladders built before
+    # 12 Nov 2026 must not use up this week's set.
     return connection.execute(
-        "SELECT COUNT(DISTINCT run_id) FROM sports_ai_accumulator_tickets WHERE json_extract(parameters_json,'$.product')=? AND created_at>=?",
-        (PRODUCT, start.isoformat()),
+        """SELECT COUNT(DISTINCT run_id) FROM sports_ai_accumulator_tickets WHERE json_extract(parameters_json,'$.product')=?
+           AND json_extract(parameters_json,'$.ladder_version')=? AND created_at>=?""",
+        (PRODUCT, LADDER_VERSION, start.isoformat()),
     ).fetchone()[0]
 
 
@@ -344,7 +354,8 @@ def build(connection, actor='sports-ai-worker', now=None, force=False, prizes=No
         ticket_id = _insert_ticket(connection, run_id, ticket, config, current, 'created', f'Prize ladder {_naira(prize)}')
         row = connection.execute('SELECT parameters_json FROM sports_ai_accumulator_tickets WHERE id=?', (ticket_id,)).fetchone()
         parameters = json.loads(row['parameters_json'] or '{}')
-        parameters.update(product=PRODUCT, prize=prize, stake=STAKE, min_odds=prize_odds(prize), positive_edge=False,
+        parameters.update(product=PRODUCT, ladder_version=LADDER_VERSION, prize=prize, stake=STAKE,
+                          min_odds=prize_odds(prize), positive_edge=False,
                           reserve=reserves(pool, legs, rates))
         connection.execute('UPDATE sports_ai_accumulator_tickets SET parameters_json=?, finalized=1 WHERE id=?',
                            (json.dumps(parameters), ticket_id))

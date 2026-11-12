@@ -224,7 +224,8 @@ def create_job(connection, selections, high_odds=False):
     from qualification_engine import require_current_qualification
     product = _ticket_product(connection, selections[0]['ticket_id']) if selections and selections[0].get('ticket_id') else None
     # Low-odds jackpots use SportyBet's own price, not the (quarantined) basketball model.
-    guarded = [] if product in ('jackpot_low', 'prize_ladder') else (
+    market = bool(selections) and _market_priced(connection, selections[0].get('ticket_id'))
+    guarded = [] if market else (
         selections if high_odds else [item for item in selections if item.get('sport') == 'basketball'])
     if guarded:
         require_current_qualification(connection, guarded, _now())
@@ -236,13 +237,13 @@ def create_job(connection, selections, high_odds=False):
     if product == 'favourites' and not high_odds:
         from favourites import require_bookable as require_favourite
         integrity = require_favourite(connection, selections, _now())
-    elif product in ('jackpot_low', 'prize_ladder') and not high_odds:
+    elif market:  # market-priced, including Sure Odds built from SportyBet favourites (queued with high_odds=True)
         from jackpot_low import require_bookable as require_jackpot
         integrity = require_jackpot(connection, selections, _now())
     else:
         from prediction_integrity import require_bookable as require_integrity
         integrity = require_integrity(connection, selections, _now())
-    limit = 50 if product in ('jackpot_low', 'prize_ladder') else 30 if high_odds else 25
+    limit = 50 if market else 30 if high_odds else 25
     if not selections or len(selections) > limit:
         raise ValueError(f'A booking needs 1 to {limit} selections')
     sports = {item['sport'] for item in selections}
@@ -572,7 +573,7 @@ def next_ticket_id(connection, now):
              -- Owner's structure (12 Nov 2026): codes only for Sure Odds (objective 2), the category
              -- cards (objective 3; registered in sports_ai_high_odds_tickets, no product tag) and the
              -- weekly jackpot ladder (objective 3; product prize_ladder).
-             AND (json_extract(t.parameters_json, '$.product') IN ('sure_odds','prize_ladder')
+             AND (json_extract(t.parameters_json, '$.product') IN ('sure_odds','prize_ladder','category_market')
                   OR EXISTS (SELECT 1 FROM sports_ai_high_odds_tickets h WHERE h.ticket_id=t.id))
              AND t.probability_basis='independent' AND t.joint_probability>0
              AND (SELECT COUNT(*) FROM sports_ai_booking_jobs j WHERE j.ticket_id=t.id
@@ -678,19 +679,23 @@ def _sure_odds_ticket(connection, ticket_id):
         'SELECT sport, market, decimal_odds, probability, bookmaker FROM sports_ai_accumulator_legs WHERE ticket_id=?',
         (ticket_id,),
     ).fetchall()
-    if len(legs) < 2:
+    if not 2 <= len(legs) <= 3:   # owner's structure (12 Nov 2026): 2-3 selections
         return False
     from market_registry import holdout_ready
+    # Model-priced legs need a calibrated market and an 80% model chance; SportyBet-favourite legs
+    # (leg_source 'market', high_odds_board._market_sure_pool) carry the margin-removed price, floor 70%.
+    market_priced = parameters.get('leg_source') == 'market'
+    floor = 0.70 if market_priced else 0.80
     product = 1.0
     for leg in legs:
-        if not holdout_ready(connection, leg['sport'], leg['market']):
+        if not market_priced and not holdout_ready(connection, leg['sport'], leg['market']):
             return False
         try:
             odds = float(leg['decimal_odds'])
             probability = float(leg['probability'])
         except (TypeError, ValueError):
             return False
-        if probability < 0.80 or leg['bookmaker'] != 'SportyBet' or not (1 < odds <= 2.95):
+        if probability < floor or leg['bookmaker'] != 'SportyBet' or not (1 < odds <= 2.95):
             return False
         product *= odds
     return 2 <= product <= 2.95
@@ -718,7 +723,24 @@ def create_sure_odds_job(connection, ticket_id):
 
 def _selection_limit(connection, ticket_id):
     """Selections a stored ticket may carry: SportyBet takes 50; long products use that room."""
-    return 50 if _ticket_product(connection, ticket_id) in ('jackpot_low', 'prize_ladder') else 25
+    return 50 if _market_priced(connection, ticket_id) else 25
+
+
+MARKET_PRODUCTS = ('jackpot_low', 'prize_ladder', 'category_market')
+
+
+def _market_priced(connection, ticket_id):
+    """Tickets priced by SportyBet itself (margin removed), not by a model: the jackpot ladder, the
+    category cards and Sure Odds built from SportyBet favourites. They pass the structural market gate
+    (jackpot_low.require_bookable) instead of model qualification, which they cannot have."""
+    if not ticket_id:
+        return False
+    row = connection.execute('SELECT parameters_json FROM sports_ai_accumulator_tickets WHERE id=?', (ticket_id,)).fetchone()
+    try:
+        params = json.loads(row['parameters_json'] or '{}') if row else {}
+    except (TypeError, ValueError):
+        return False
+    return params.get('product') in MARKET_PRODUCTS or (params.get('product') == 'sure_odds' and params.get('leg_source') == 'market')
 
 
 def _ticket_product(connection, ticket_id):
@@ -740,7 +762,7 @@ def _store_displayed_code(connection, ticket_id, code, evidence):
     from qualification_engine import require_current_qualification
     selections = ticket_selections(connection, ticket_id)
     stored_product = _ticket_product(connection, ticket_id)
-    guarded = [] if stored_product in ('jackpot_low', 'prize_ladder') else selections if stored_product in ('high_odds', 'sure_odds') else [
+    guarded = [] if _market_priced(connection, ticket_id) else selections if stored_product in ('high_odds', 'sure_odds') else [
         item for item in selections if item.get('sport') == 'basketball'
     ]
     if guarded:
@@ -1697,7 +1719,7 @@ async def _execute_job(job_id, page_url=None):
             return {'id': job_id, 'status': 'FAILED', 'error': 'Retry limit reached', 'places_wager': False}
         selections = json.loads(job['selections_json'])
         from qualification_engine import require_current_qualification
-        market_priced = any(_ticket_product(connection, item.get('ticket_id')) in ('jackpot_low', 'prize_ladder')
+        market_priced = any(_market_priced(connection, item.get('ticket_id'))
                             for item in selections if item.get('ticket_id'))
         # Jackpot and prize-ladder legs are priced by SportyBet itself, not by the quarantined basketball model.
         guarded = [] if market_priced else [item for item in selections if item.get('sport') == 'basketball'

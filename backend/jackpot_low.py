@@ -185,6 +185,35 @@ def build(connection, actor='sports-ai-worker', now=None, force=False):
 
 
 def require_bookable(connection, selections, now=None):
-    """Reject every jackpot booking request after the operator stop."""
-    from jackpot_stop import REASON
-    raise ValueError(REASON)
+    """Booking gate for market-priced tickets (jackpot ladder, category cards, Sure Odds from SportyBet
+    favourites) instead of the positive-EV gate they cannot meet: known scheduled matches before
+    kickoff, no shared match or team, no simulated game. Restored 12 Nov 2026 (the operator stop had
+    replaced it with a refusal; retired products are still refused by jackpot_stop)."""
+    from accumulator_engine import _simulated_competition
+    current = _now(now)
+    if not selections or len(selections) > 50:
+        raise ValueError('A market-priced booking needs 1 to 50 selections')
+    fixtures, teams = set(), set()
+    for item in selections:
+        fixture_id = item.get('fixture_id')
+        if fixture_id in fixtures:
+            raise ValueError('Two legs share a fixture')
+        fixtures.add(fixture_id)
+        row = connection.execute('SELECT sport,competition,home,away,starts_at,status FROM sports_ai_fixtures WHERE id=?',
+                                 (fixture_id,)).fetchone()
+        if row is None:
+            raise ValueError('A leg refers to an unknown fixture')
+        if row['sport'] in SIMULATED_SPORTS or _simulated_competition(row['competition']):
+            raise ValueError('Simulated games are not allowed on this ticket')
+        for team in (row['home'], row['away']):
+            key = str(team or '').strip().casefold()
+            if key and key in teams:
+                raise ValueError(f'{team} appears in two legs')
+            teams.add(key)
+        try:
+            kickoff = datetime.fromisoformat(str(row['starts_at']).replace('Z', '+00:00'))
+        except ValueError:
+            kickoff = None
+        if kickoff is None or kickoff.astimezone(timezone.utc) <= current or row['status'] not in ('scheduled', 'not_started'):
+            raise ValueError('A leg has started or is not scheduled')
+    return {'legs': {}, 'product': 'market_priced', 'positive_edge': False}

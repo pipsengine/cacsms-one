@@ -6,6 +6,7 @@ does not guess a number from page text, and does not place a wager.
 
 import json
 import re
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -305,8 +306,20 @@ def publish_quotes(connection, rows, source_url, actor='sports-ai-worker', now=N
 
 from browser_slots import holds_browser_slot
 
+_COLLECT_LOCK = threading.Lock()
+
 
 def collect_displayed_odds():
+    """One feed collection at a time, including scheduler and manual calls."""
+    if not _COLLECT_LOCK.acquire(blocking=False):
+        return {'status': 'waiting', 'reason': 'Price collection is already running.', 'imported': 0}
+    try:
+        return _collect_if_due()
+    finally:
+        _COLLECT_LOCK.release()
+
+
+def _collect_if_due():
     """Open the public sports pages and store the prices they display."""
     if not _due():
         return {'status': 'waiting', 'imported': 0}
@@ -333,17 +346,22 @@ def _collect_displayed_odds():
         try:
             page = browser.new_page()
             for sport, url in _discover_sections(page):
+                def publish_batch(rows):
+                    nonlocal imported
+                    if not rows:
+                        return
+                    with connect() as connection:
+                        published = publish_quotes(connection, rows, url)
+                    imported += published['imported']
                 try:
-                    result = _read_section(page, sport, url)
+                    result = _read_section(page, sport, url, on_rows=publish_batch)
                 except Exception as error:
                     errors.append({'sport': sport, 'error': str(error)[:300]})
                     continue
                 if result.get('blocked'):
                     blocked.append(sport)
                     continue
-                with connect() as connection:
-                    published = publish_quotes(connection, result['rows'], url)
-                imported += published['imported']
+                publish_batch(result['rows'])
         finally:
             browser.close()
     status = 'blocked' if blocked and not imported else 'collected' if imported else 'empty'
@@ -351,7 +369,7 @@ def _collect_displayed_odds():
     return {'status': status, 'imported': imported, 'blocked': blocked, 'errors': errors}
 
 
-def _read_section(page, sport, url):
+def _read_section(page, sport, url, on_rows=None):
     from source_permissions import require
     require(url, 'odds-feed')
     captured = {}
@@ -379,9 +397,15 @@ def _read_section(page, sport, url):
         if not payload:
             return {'blocked': None, 'rows': []}
         rows = []
+        def accept(body):
+            chunk = quotes_from_payload(body, sport, url)
+            if on_rows is not None:
+                on_rows(chunk)
+            else:
+                rows.extend(chunk)
         seen_ids = set()
         for body in _pages(page, captured.get('url'), payload):
-            rows.extend(quotes_from_payload(body, sport, url))
+            accept(body)
             for item in tournaments_from_events(body):
                 if item.get('id'):
                     seen_ids.add(item['id'])
@@ -393,13 +417,13 @@ def _read_section(page, sport, url):
                 if not item.get('id') or item['id'] in seen_ids or int(item.get('events') or 0) <= 0:
                     continue
                 for body in _pages(page, _tournament_url(captured.get('url') or url, item['id']), None):
-                    rows.extend(quotes_from_payload(body, sport, url))
+                    accept(body)
             sample = captured.get('url') or url
             with connect() as connection:
                 extra_ids = _analysed_tournament_ids(connection)
             for tournament_id in extra_ids:
                 for body in _pages(page, _tournament_url(sample, tournament_id, ANALYSED_MARKET_IDS), None):
-                    rows.extend(quotes_from_payload(body, sport, url))
+                    accept(body)
         return {'blocked': None, 'rows': rows}
     finally:
         page.remove_listener('response', remember)
@@ -416,11 +440,13 @@ def page_count(total, page_size):
 def _pages(page, first_url, first_payload):
     """Read every page of the feed. A lower division on a later page is kept."""
     if not first_url:
-        return [first_payload] if first_payload else []
+        if first_payload:
+            yield first_payload
+        return
     parts = urlsplit(first_url)
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
     query['pageSize'] = '100'
-    bodies = []
+    yielded = False
     total = int((((first_payload or {}).get('data') or {}).get('totalNum')) or 0)
     last = page_count(total, 100)
     for number in range(1, last + 1):
@@ -439,16 +465,16 @@ def _pages(page, first_url, first_payload):
         tournaments = (body.get('data') or {}).get('tournaments') or []
         if not tournaments:
             break
-        bodies.append(body)
+        yielded = True
+        yield body
         reported = int((body.get('data') or {}).get('totalNum') or 0)
         if reported:
             total = reported
             last = page_count(total, 100)
         if total and number * 100 >= total:
             break
-    if bodies:
-        return bodies
-    return [first_payload] if first_payload else []
+    if not yielded and first_payload:
+        yield first_payload
 
 
 def _due():

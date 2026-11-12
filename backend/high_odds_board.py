@@ -136,7 +136,7 @@ def _sure_today(connection, day, now, candidates=None):
     Without this, the same selections were packed again as a fresh preview next to
     the stored ticket and both showed the same booking code.
     """
-    stored = _stored_slips(connection, day, 'sure_odds')
+    stored = _stored_slips(connection, day, 'sure_odds', now=now)
     used = {leg['fixture_id'] for ticket in stored for leg in ticket.get('legs') or []}
     # Matches on a sure ticket that already got a code (or was retired as its duplicate) are never re-packed,
     # even if that ticket was later expired; SportyBet would only return the same code again.
@@ -160,7 +160,48 @@ def _sure_today(connection, day, now, candidates=None):
     pool = _sure_pool(connection, _candidates(connection, day, now), now) if candidates is None else candidates
     from league_quality import filter_legs
     pool = filter_legs(connection, pool)  # only sports and leagues with an acceptable record
-    return stored + pack_sure_tickets([leg for leg in pool if leg['fixture_id'] not in used], day, limit=room)
+    made = pack_sure_tickets([leg for leg in pool if leg['fixture_id'] not in used], day, limit=room)
+    if candidates is None and len(made) < room:
+        # Too few model picks today (12 Nov 2026: 10 of 107 matches had an 80% prediction, most of them
+        # stale-priced): fill the day with SportyBet's own strong favourites, margin removed.
+        taken = used | {leg['fixture_id'] for ticket in made for leg in ticket['legs']}
+        from ticket_diversity import unallocated
+        # Matches on another active ticket (e.g. this week's jackpot ladder) stay out, or storing is refused.
+        market = [leg for leg in unallocated(connection, _market_sure_pool(connection, day, now), now)
+                  if leg['fixture_id'] not in taken]
+        import prize_ladder
+        # Booking already handles tennis and ice hockey (the jackpot ladder books them), so SportyBet
+        # favourites may come from every sport whose results are settled.
+        for ticket in pack_sure_tickets(market, day, limit=room - len(made), floor=SURE_MARKET_FLOOR,
+                                        sports=prize_ladder.LADDER_SPORTS):
+            ticket['leg_source'] = 'market'
+            made.append(ticket)
+    return stored + made
+
+
+SURE_MARKET_FLOOR = 0.70          # market-implied chance (margin removed) for a market-priced Sure Odds leg
+SURE_MARKET_ODDS = (1.15, 1.60)   # the favourites band: 1.20-1.40 was the best band measured (+5.9%, 3-10 Nov)
+SURE_MARKET_LEAD_MINUTES = 60
+
+
+def _market_sure_pool(connection, day, now):
+    """Strong SportyBet favourites for today's Sure Odds, from the market scan the jackpots use:
+    reliable markets (result / double chance / winner), allowed sports and leagues, kickoff at
+    least SURE_MARKET_LEAD_MINUTES away. Probability = SportyBet price with the margin removed."""
+    import jackpot_low
+    import prize_ladder
+    from league_quality import filter_legs
+    hours = max(1.0, (day['end'] - now.astimezone(WAT)).total_seconds() / 3600)
+    saved = (jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS)
+    jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS = SURE_MARKET_ODDS
+    try:
+        scanned = jackpot_low.scan(connection, now, horizon_hours=hours)
+    finally:
+        jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS = saved
+    earliest = (now + timedelta(minutes=SURE_MARKET_LEAD_MINUTES)).astimezone(timezone.utc).isoformat()
+    legs = prize_ladder.reliable(filter_legs(connection, scanned), prize_ladder.hit_rates(connection))
+    return [{**leg, 'confidence': None, 'preferred': False, 'model_id': leg.get('model_id') or 'market-price'}
+            for leg in legs if str(leg['starts_at']) >= earliest and str(leg['starts_at']) < day['end'].astimezone(timezone.utc).isoformat()]
 
 
 def _today_window(now):
@@ -180,11 +221,12 @@ def _preferred(row):
     )
 
 
-def choose_one_per_fixture(rows):
+def choose_one_per_fixture(rows, floor=None):
     """Keep the strongest stored market on a fixture. A second market on the same match is not an independent selection."""
+    floor = SELECTION_FLOOR if floor is None else floor
     chosen = {}
     for row in rows:
-        if row['probability'] < SELECTION_FLOOR or row['decimal_odds'] <= 1:
+        if row['probability'] < floor or row['decimal_odds'] <= 1:
             continue
         row = dict(row)
         row['preferred'] = _preferred(row)
@@ -305,7 +347,7 @@ SURE_DAILY_MAX = 5       # at most 5 Sure Odds tickets per Africa/Lagos day
 SURE_SEARCH_POOL = 40    # most likely selections searched for 2-3 leg combinations
 
 
-def pack_sure_tickets(candidates, day, limit=SURE_DAILY_MAX):
+def pack_sure_tickets(candidates, day, limit=SURE_DAILY_MAX, floor=None, sports=None):
     """Up to `limit` tickets of 2-3 selections whose combined price is 2.00-2.95.
 
     Every selection is at least SELECTION_FLOOR likely; there is no minimum price per selection.
@@ -315,18 +357,23 @@ def pack_sure_tickets(candidates, day, limit=SURE_DAILY_MAX):
     """
     from itertools import combinations
     from ticket_diversity import event_keys
+    floor = SELECTION_FLOOR if floor is None else floor
     pool = choose_one_per_fixture([
         row for row in candidates
-        if float(row['probability']) >= SELECTION_FLOOR
-        and row.get('sport') in BOOKABLE_SPORTS
+        if float(row['probability']) >= floor
+        and row.get('sport') in (sports or BOOKABLE_SPORTS)
         and 1 < float(row['decimal_odds']) <= SURE_COMBINED_MAX
-    ])
+    ], floor=floor)
     ordered = sorted(pool, key=lambda leg: (-float(leg['probability']), float(leg['decimal_odds']), leg.get('starts_at') or ''))
     band = {'id': '2-2.95', 'odds_label': '2.00–2.95'}
     used = set()
     tickets = []
     while len(tickets) < max(0, limit):
-        free = [leg for leg in ordered if not event_keys(leg) & used][:SURE_SEARCH_POOL]
+        open_legs = [leg for leg in ordered if not event_keys(leg) & used]
+        # The likeliest selections are often all priced ~1.15, and three of those reach only ~1.6, so the
+        # search also takes the likeliest legs priced >= 1.26 (three of them reach 2.00).
+        free = open_legs[:SURE_SEARCH_POOL]
+        free += [leg for leg in open_legs if float(leg['decimal_odds']) >= 1.26 and leg not in free][:SURE_SEARCH_POOL]
         best = None
         for size in range(2, SURE_MAX_LEGS + 1):
             for combo in combinations(free, size):
@@ -559,7 +606,10 @@ def _rows(connection, start, end, now=None):
            JOIN sports_ai_model_registry m ON m.id=p.model_id
            WHERE julianday(d.expires_at)>julianday(?)
              AND o.odds_id IS NOT NULL AND o.prediction_id IN ({marks})
-             AND d.state='QUALIFIED'
+             -- Sure Odds are about likelihood, not value (owner's structure, 12 Nov 2026): a validated
+             -- model's selection held back only on price or edge still qualifies when its market-anchored
+             -- chance is SELECTION_FLOOR or more (checked below). Missing/stale prices or data never do.
+             AND (d.state='QUALIFIED' OR d.reason_code IN ('EDGE_BELOW_MARKET','CONSERVATIVE_EV_NOT_POSITIVE','MARKET_DISAGREEMENT'))
              AND m.active=1 AND m.lifecycle='active' AND m.calibration_status='validated'
              AND (m.sport!='basketball' OR EXISTS(SELECT 1 FROM sports_ai_feature_snapshots fs
                   WHERE fs.id=p.feature_id AND json_extract(fs.features_json,'$.home_games')>=10
@@ -772,7 +822,7 @@ def _prefer_coded_ticket(connection, day, built):
             built['tickets'][index] = coded
 
 
-def _stored_slips(connection, day, product):
+def _stored_slips(connection, day, product, now=None):
     """Read existing allocations without rebuilding or copying a coded slip."""
     rows = connection.execute(
         """SELECT t.id,t.signature,t.parameters_json FROM sports_ai_accumulator_tickets t
@@ -796,15 +846,29 @@ def _stored_slips(connection, day, product):
         legs = [dict(item) for item in connection.execute('SELECT * FROM sports_ai_accumulator_legs WHERE ticket_id=?', (row['id'],))]
         if not legs:
             continue
-        if not _qualified_slip(connection, legs):
+        market_priced = product == 'sure_odds' and parameters.get('leg_source') == 'market'
+        if market_priced:
+            # This product already has a separate booking gate. Requiring model
+            # qualification here hid every stored market ticket, so the daily
+            # cap also prevented the booking worker from ever finding it again.
+            from sportybet_booking import _sure_odds_ticket
+            from jackpot_low import require_bookable
+            if not _sure_odds_ticket(connection, row['id']):
+                continue
+            try:
+                require_bookable(connection, legs, now or datetime.now(timezone.utc))
+            except ValueError:
+                continue
+        elif not _qualified_slip(connection, legs):
             continue
         odds = joint = 1.0
         for leg in legs:
-            leg.update({'confidence': leg.get('reliability'), 'preferred': False})
+            leg.update({'confidence': None if market_priced else leg.get('reliability'), 'preferred': False})
             odds *= float(leg['decimal_odds'])
             joint *= float(leg['probability'] or 0)
         payload = _ready_ticket(day, band, legs, odds, joint)
-        payload.update({'id': row['id'], 'signature': row['signature']})
+        payload.update({'id': row['id'], 'signature': row['signature'],
+                        'leg_source': 'market' if market_priced else 'model'})
         payloads.append(payload)
     return payloads
 
@@ -903,7 +967,10 @@ def _upsert_ticket(connection, day, ticket, now, product='high_odds'):
         except TicketExposureConflict:
             return None
     sports = {leg['sport'] for leg in ticket['legs']}
-    sport_mode = next(iter(sports)) if len(sports) == 1 else 'mixed'
+    # The tickets table allows football, basketball or mixed: a tennis-only or ice-hockey-only
+    # SportyBet-favourites ticket is stored as 'mixed' (an all-tennis ticket failed the CHECK on 12 Nov).
+    only = next(iter(sports)) if len(sports) == 1 else None
+    sport_mode = only if only in ('football', 'basketball') else 'mixed'
     ticket_id = str(uuid.uuid4())
     moment = now.astimezone(timezone.utc).isoformat()
     day_name = day.get('name') or day.get('day')
@@ -915,6 +982,7 @@ def _upsert_ticket(connection, day, ticket, now, product='high_odds'):
         'band': ticket['band'],
         'leg_count': len(ticket['legs']),
         'odds_band': ticket['odds_band'],
+        'leg_source': ticket.get('leg_source', 'model'),
         'places_wager': False,
     }
     connection.execute(
@@ -927,6 +995,9 @@ def _upsert_ticket(connection, day, ticket, now, product='high_odds'):
             ticket['combined_odds'], (ticket['joint_probability'] or 0) / 100,
             None, len(ticket['legs']),
             (
+                ('Sure-odds ticket from SportyBet favourites. Each selection is at least 70% by the SportyBet price '
+                 '(margin removed). Combined odds are from 2.00 to 2.95. No wager is placed.')
+                if product == 'sure_odds' and ticket.get('leg_source') == 'market' else
                 'Sure-odds ticket. Each selection is at least 80%. Combined odds are from 2.00 to 2.95. No wager is placed.'
                 if product == 'sure_odds' else
                 f'High-odds ticket. Each selection is at least 80% and priced {ticket["odds_band"]}. No wager is placed.'

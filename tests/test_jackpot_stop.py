@@ -74,6 +74,10 @@ class JackpotStopTests(unittest.TestCase):
         self.assertIsNone(fresh)
         self.assertIn('disabled by the operator', reason)
 
-    def test_jackpot_booking_gate_is_closed(self):
-        with self.assertRaisesRegex(ValueError, 'disabled by the operator'):
+    def test_market_booking_gate_is_structural_and_retired_products_stay_refused(self):
+        # The market gate (jackpot ladder, category cards, Sure Odds from favourites) checks structure
+        # again since 12 Nov 2026; retired products are refused by require_enabled on every job and code.
+        with self.assertRaisesRegex(ValueError, '1 to 50 selections'):
             jackpot_low.require_bookable(None, [])
+        with self.assertRaisesRegex(ValueError, 'disabled by the operator'):
+            require_enabled(self.c, 'jackpot_low')
