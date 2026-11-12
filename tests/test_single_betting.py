@@ -160,6 +160,23 @@ class SingleBettingTests(unittest.TestCase):
             self.assertEqual(sb._day_usage(c, day), (1, 100.0))  # only the real submission
             self.assertEqual(sb._favourites_today(c, day), 1)
 
+    def test_match_not_found_on_sportybet_is_not_requeued(self):
+        with self.conn() as c:
+            c.execute('PRAGMA foreign_keys=OFF')
+            seed(c, 'fx-missing')
+            self.assertEqual(sb.run_cycle(c, NOW)['queued'], 1)
+            bet = c.execute('SELECT id FROM sports_ai_single_bets').fetchone()['id']
+            c.execute("UPDATE sports_ai_single_bets SET status='CANCELLED'")
+            moment = datetime.now(timezone.utc).isoformat()
+            c.execute("""INSERT INTO sports_ai_single_live_orders(id,bet_id,kind,status,local_date,stake,expected_odds,error,created_at,updated_at)
+                         VALUES('o1',?,'SUBMISSION','FAILED','2026-11-10',100,1.72,
+                                'Selection control missing or ambiguous: fx-missing-H vs fx-missing-A (league control: none)',?,?)""",
+                      (bet, moment, moment))
+            self.assertIn('fx-missing', sb._active_fixtures(c))
+            pool = sb.load_candidates(c, NOW)
+            self.assertEqual(pool['eligible'], [])
+            self.assertEqual(pool['rejected'].get('NOT_FOUND_ON_SPORTYBET'), 1)
+
     def test_single_below_min_odds_is_rejected(self):
         self.assertIn('BELOW_MIN_ODDS', sb.evaluate(1.15, 0.95, NOW, NOW + timedelta(hours=1), NOW)['reasons'])
         self.assertTrue(sb.evaluate(1.20, 0.90, NOW, NOW + timedelta(hours=1), NOW)['eligible'])

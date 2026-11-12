@@ -231,8 +231,12 @@ def load_candidates(connection, now=None):
             "SELECT COUNT(DISTINCT fixture_id) FROM sports_ai_qualification_decisions WHERE starts_at>?",
             (current.isoformat(),),
         ).fetchone()[0] or 1
+    unbookable = _unbookable_fixtures(connection)
     for row in rows:
         if row['fixture_status'] not in OPEN_FIXTURE:
+            continue
+        if row['fixture_id'] in unbookable:
+            rejected['NOT_FOUND_ON_SPORTYBET'] = rejected.get('NOT_FOUND_ON_SPORTYBET', 0) + 1
             continue
         quote = _latest_quote(connection, row['fixture_id'], row['market'])
         try:
@@ -274,13 +278,34 @@ def load_candidates(connection, now=None):
             'rejected': rejected, 'max_odds_age_minutes': max_age}
 
 
+UNBOOKABLE_HOURS = 24
+
+
+def _unbookable_fixtures(connection):
+    """Matches the account could not find on SportyBet's page in the last day. Re-queuing them only
+    repeats the same failure (one match was retried five times in seven minutes), so they are skipped."""
+    try:
+        rows = connection.execute(
+            """SELECT b.fixture_id FROM sports_ai_single_live_orders o JOIN sports_ai_single_bets b ON b.id=o.bet_id
+               WHERE o.status='FAILED' AND o.error LIKE 'Selection control missing%'
+                 AND julianday(o.created_at) > julianday('now') - ?
+               UNION SELECT l.fixture_id FROM sports_ai_single_live_orders o JOIN sports_ai_single_bet_legs l ON l.bet_id=o.bet_id
+               WHERE o.status='FAILED' AND o.error LIKE 'Selection control missing%'
+                 AND julianday(o.created_at) > julianday('now') - ?""",
+            (UNBOOKABLE_HOURS / 24, UNBOOKABLE_HOURS / 24),
+        ).fetchall()
+    except Exception:  # account tables missing on an old database
+        return set()
+    return {row[0] for row in rows}
+
+
 def _active_fixtures(connection):
     rows = connection.execute(
         """SELECT fixture_id FROM sports_ai_single_bets WHERE status!='CANCELLED'
            UNION SELECT l.fixture_id FROM sports_ai_single_bet_legs l
            JOIN sports_ai_single_bets b ON b.id=l.bet_id WHERE b.status!='CANCELLED'""",
     ).fetchall()
-    return {row[0] for row in rows}
+    return {row[0] for row in rows} | _unbookable_fixtures(connection)
 
 
 def _favourite_item(leg):
@@ -1008,7 +1033,10 @@ def engine_view(connection, now=None):
         item['eta_seconds'] = max(0, int((base + timedelta(seconds=wait) - current).total_seconds()))
         queue.append(item)
     recent = [_bet_public(connection, r) for r in connection.execute(
-        "SELECT * FROM sports_ai_single_bets WHERE local_date=? AND status!='QUEUED' ORDER BY COALESCE(placed_at,created_at) DESC LIMIT 15",
+        # Placed bets only: a cancelled attempt (e.g. a match SportyBet's page could not show) was never
+        # placed. It stays in the activity log and the SportyBet executions tab with its reason.
+        "SELECT * FROM sports_ai_single_bets WHERE local_date=? AND status IN ('PLACED','WON','LOST','VOID') "
+        "ORDER BY COALESCE(placed_at,created_at) DESC LIMIT 15",
         (day,),
     ).fetchall()]
     events = [dict(r) for r in connection.execute(

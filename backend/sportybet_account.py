@@ -55,6 +55,13 @@ MAX_PRICE_MOVE = 0.05
 # Worker jobs can hold the SQLite write lock for 40 s (measured 2026-11-11); an operator's
 # Authorize / mode / Revoke click waits that out instead of failing with "database is locked".
 OPERATOR_WRITE_WAIT_MS = 90000
+
+
+def _connect():
+    """Account-lane connection: waits out a long worker write instead of failing a bet with 'database is locked'."""
+    return connect(busy_timeout_ms=OPERATOR_WRITE_WAIT_MS)
+
+
 ACKNOWLEDGEMENT = 'I AUTHORIZE REAL MONEY BETTING ON MY SPORTYBET ACCOUNT'
 MODES = ('PAPER', 'LIVE_REHEARSAL', 'LIVE')
 WAT = timezone(timedelta(hours=1), 'WAT')
@@ -350,13 +357,13 @@ def _interactive_login():
                     if state and state.get('logged_in'):
                         break
                 if not state or not state.get('logged_in'):
-                    with connect() as connection:
+                    with _connect() as connection:
                         _set_account(connection, 'NOT_CONNECTED', 'The login window closed or timed out before a signed-in page was seen.')
                     return
                 page.wait_for_timeout(2000)
                 save_session(context.storage_state())
                 now = _now()
-                with connect() as connection:
+                with _connect() as connection:
                     _set_account(connection, 'CONNECTED', 'Signed in by the operator. Session cookies saved encrypted.',
                                  now, session_saved_at=now.isoformat(), last_check_at=now.isoformat(), last_ok_at=now.isoformat(),
                                  balance=state.get('balance'), balance_currency=state.get('currency'),
@@ -365,7 +372,7 @@ def _interactive_login():
             finally:
                 browser.close()
     except Exception as error:
-        with connect() as connection:
+        with _connect() as connection:
             _set_account(connection, 'ERROR', f'Login window failed: {error}')
 
 
@@ -374,7 +381,7 @@ def start_login():
     with _LOGIN_LOCK:
         if _LOGIN_THREAD and _LOGIN_THREAD.is_alive():
             return {'status': 'AWAITING_LOGIN', 'started': False}
-        with connect() as connection:
+        with _connect() as connection:
             _set_account(connection, 'AWAITING_LOGIN',
                          f'A Chromium window is open on the server machine. Sign in to SportyBet there within {LOGIN_WAIT_SECONDS // 60} minutes. '
                          'Tick "Keep me signed in" so the session lasts.')
@@ -385,7 +392,7 @@ def start_login():
 
 def disconnect(actor):
     forget_session()
-    with connect() as connection:
+    with _connect() as connection:
         _set_account(connection, 'NOT_CONNECTED', f'Session removed by {actor}.', balance=None,
                      balance_currency=None, balance_observed_at=None)
         _event(connection, None, 'ACCOUNT_DISCONNECTED', f'SportyBet session removed by {actor}')
@@ -415,19 +422,19 @@ async def check_session_async(capture_history=False):
             finally:
                 await browser.close()
     except SessionMissing as error:
-        with connect() as connection:
+        with _connect() as connection:
             _set_account(connection, 'NOT_CONNECTED', str(error), now, last_check_at=now.isoformat())
         return {'status': 'NOT_CONNECTED', 'detail': str(error)}
     except SessionExpired as error:
-        with connect() as connection:
+        with _connect() as connection:
             _set_account(connection, 'EXPIRED', str(error), now, last_check_at=now.isoformat())
             _event(connection, None, 'SESSION_EXPIRED', 'SportyBet session expired. Live execution waits for a new login.', now)
         return {'status': 'EXPIRED', 'detail': str(error)}
     except Exception as error:
-        with connect() as connection:
+        with _connect() as connection:
             _set_account(connection, 'ERROR', f'Session check failed: {error}', now, last_check_at=now.isoformat())
         return {'status': 'ERROR', 'detail': str(error)}
-    with connect() as connection:
+    with _connect() as connection:
         fields = {'last_check_at': now.isoformat(), 'last_ok_at': now.isoformat()}
         if state.get('balance') is not None:
             fields.update(balance=state['balance'], balance_currency=state.get('currency') or 'NGN',
@@ -713,7 +720,7 @@ def _finish_order(order_id, status, now=None, **fields):
     columns = {'status': status, 'updated_at': moment, **fields}
     if 'checks_json' in columns and not isinstance(columns['checks_json'], str):
         columns['checks_json'] = json.dumps(columns['checks_json'], default=str)
-    with connect() as connection:
+    with _connect() as connection:
         connection.execute(
             f"UPDATE sports_ai_single_live_orders SET {', '.join(f'{k}=?' for k in columns)} WHERE id=?",
             (*columns.values(), order_id),
@@ -822,7 +829,7 @@ async def execute_async(bet, kind, now=None, test=False):
     grant_id = None
     if test and kind != 'REHEARSAL':
         raise ValueError('A test can only rehearse')
-    with connect() as connection:
+    with _connect() as connection:
         if kind == 'SUBMISSION':
             reasons, grant = submission_gate(connection, current)
             if reasons:
@@ -859,7 +866,7 @@ async def execute_async(bet, kind, now=None, test=False):
                     _finish_order(order_id, 'REHEARSED', checks_json=ready, page_odds=ready['page_odds'], evidence_path=str(shot))
                     return 'PAPER_PLACED', 'REHEARSED', f"Rehearsed in account at {ready['page_odds']:.2f}; Place Bet not clicked"
                 # ---- real money: last gate, mark SUBMITTING, click once
-                with connect() as connection:
+                with _connect() as connection:
                     reasons, _grant = submission_gate(connection, _now())
                 if reasons:
                     _finish_order(order_id, 'FAILED', checks_json=ready, error='; '.join(reasons), evidence_path=str(shot))
@@ -896,7 +903,7 @@ async def execute_async(bet, kind, now=None, test=False):
                 await browser.close()
     except SessionExpired as error:
         _finish_order(order_id, 'UNKNOWN' if clicked else 'FAILED', error=str(error), evidence_path=str(shot) if shot.exists() else None)
-        with connect() as connection:
+        with _connect() as connection:
             _set_account(connection, 'EXPIRED', str(error))
         return ('UNKNOWN' if clicked else 'WAIT'), 'SESSION_EXPIRED', str(error)
     except Exception as error:
@@ -935,7 +942,7 @@ def run_once(now=None):
     """One live-lane step: recover, keep the session checked, then execute the head of the queue."""
     from single_betting import next_for_execution, apply_execution
     current = _now(now)
-    with connect() as connection:
+    with _connect() as connection:
         # The worker lane can start while the API process is still applying migration 051
         # (it backs up the database first). Wait quietly instead of failing every 30 seconds.
         if not connection.execute(
@@ -953,7 +960,7 @@ def run_once(now=None):
         checked = check_session(capture_history=True)
         if checked['status'] != 'CONNECTED':
             return {'status': 'session_' + checked['status'].lower()}
-    with connect() as connection:
+    with _connect() as connection:
         bet = next_for_execution(connection, current)
         if not bet:
             return {'status': 'idle'}
@@ -967,7 +974,7 @@ def run_once(now=None):
             else:
                 return {'status': 'gated', 'reasons': reasons}
     outcome, order_status, detail = asyncio.run(execute_async(bet, kind, current))
-    with connect() as connection:
+    with _connect() as connection:
         apply_execution(connection, bet, outcome, order_status, detail, kind)
     return {'status': outcome.lower(), 'kind': kind, 'detail': detail}
 
@@ -1002,7 +1009,7 @@ def pick_test_selection(connection, now=None):
 
 def run_test_rehearsal(now=None):
     current = _now(now)
-    with connect() as connection:
+    with _connect() as connection:
         row = account(connection)
         if row['status'] != 'CONNECTED':
             raise ValueError('Connect the SportyBet account first')
@@ -1010,7 +1017,7 @@ def run_test_rehearsal(now=None):
     if not bet:
         raise ValueError('No football match has a fresh SportyBet price right now. Try again in a few minutes.')
     outcome, status, detail = asyncio.run(execute_async(bet, 'REHEARSAL', current, test=True))
-    with connect() as connection:
+    with _connect() as connection:
         _event(connection, None, 'TEST_REHEARSAL',
                f"Test rehearsal {bet['home']} vs {bet['away']}: {status or outcome} – {detail}", current)
     return {'status': status or outcome, 'detail': detail, 'fixture': f"{bet['home']} vs {bet['away']}",
@@ -1094,7 +1101,7 @@ def build_account_router(auth, require_admin_key):
 
     @router.get('')
     def get_status(actor: str = Depends(auth)):
-        with connect() as connection:
+        with _connect() as connection:
             return status_view(connection)
 
     @router.post('/connect')
@@ -1106,7 +1113,7 @@ def build_account_router(auth, require_admin_key):
     def post_disconnect(actor: str = Depends(auth), x_sports_admin_key: str | None = Header(default=None)):
         admin(x_sports_admin_key)
         disconnect(actor)
-        with connect() as connection:
+        with _connect() as connection:
             revoke_authorization(connection, actor)
             set_execution_mode(connection, 'PAPER', actor)
         return {'status': 'NOT_CONNECTED'}
@@ -1120,7 +1127,7 @@ def build_account_router(auth, require_admin_key):
         """Newest betslip screenshot taken in the account, for the Automation card thumbnail."""
         from fastapi.responses import FileResponse
         root = evidence_dir().resolve()
-        with connect() as connection:
+        with _connect() as connection:
             rows = connection.execute(
                 """SELECT evidence_path, status, created_at FROM sports_ai_single_live_orders
                    WHERE evidence_path IS NOT NULL ORDER BY created_at DESC LIMIT 10""",
@@ -1173,7 +1180,7 @@ def build_account_router(auth, require_admin_key):
         admin(x_sports_admin_key)
         if body.outcome not in ('PLACED', 'NOT_PLACED'):
             raise HTTPException(422, 'outcome must be PLACED or NOT_PLACED')
-        with connect() as connection:
+        with _connect() as connection:
             order = connection.execute("SELECT * FROM sports_ai_single_live_orders WHERE id=? AND status IN ('UNKNOWN','SUBMITTING')",
                                        (body.order_id,)).fetchone()
             if not order:
