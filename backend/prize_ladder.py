@@ -125,6 +125,12 @@ def reliable(legs, rates):
     return kept
 
 
+def reliable_keep(connection):
+    """reliable() as a per-leg predicate for jackpot_low.scan(keep=...)."""
+    rates = hit_rates(connection)
+    return lambda leg: bool(reliable([leg], rates))
+
+
 def _days_ahead(leg, now):
     from datetime import datetime
     try:
@@ -293,7 +299,8 @@ def build(connection, actor='sports-ai-worker', now=None, force=False, prizes=No
     saved = (jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS)
     jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS = LEG_MIN, LEG_MAX
     try:
-        pool = jackpot_low.scan(connection, current, horizon_hours=_hours_to_sunday(current))
+        pool = jackpot_low.scan(connection, current, horizon_hours=_hours_to_sunday(current),
+                                    keep=reliable_keep(connection))
     finally:
         jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS = saved
     rates = hit_rates(connection)

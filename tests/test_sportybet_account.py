@@ -188,6 +188,20 @@ class AccountTests(unittest.TestCase):
                :expected_value,:stake,'PAPER','QUEUED',:local_date,:starts_at,:odds_observed_at,:odds_observed_at)""", bet)
         return bet
 
+    def test_submission_order_reused_only_when_never_clicked(self):
+        now = datetime.now(timezone.utc)
+        with db.connect() as c:
+            bet = self._bet(c, now)
+            first = acct._order(c, bet, 'SUBMISSION', None, now)
+            c.execute("UPDATE sports_ai_single_live_orders SET status='FAILED', error='Daily live limit reached' WHERE id=?", (first,))
+            again = acct._order(c, bet, 'SUBMISSION', None, now)  # gate refused before the click: same row
+            self.assertEqual(again, first)
+            row = c.execute('SELECT status, error FROM sports_ai_single_live_orders WHERE id=?', (first,)).fetchone()
+            self.assertEqual((row[0], row[1]), ('PENDING', None))
+            c.execute("UPDATE sports_ai_single_live_orders SET status='UNKNOWN', submitted_at=? WHERE id=?", (now.isoformat(), first))
+            with self.assertRaises(Exception):  # clicked: never a second submission for the bet
+                acct._order(c, bet, 'SUBMISSION', None, now)
+
     def _combo(self, connection, now):
         kickoff = (now + timedelta(hours=3)).isoformat()
         legs = [
@@ -388,7 +402,7 @@ Total Return
             self.assertTrue(all(json.loads(order['checks_json'])['checks'].values()))
             self.assertEqual(acct.grant_authorization.__module__, 'sportybet_account')
             reasons, grant = acct.submission_gate(c, now)
-            self.assertEqual(grant['daily_count'], 10)
+            self.assertEqual(grant['daily_count'], 15)
 
     def test_combined_bet_on_singles_tab_is_never_placed(self):
         now = datetime.now(timezone.utc)

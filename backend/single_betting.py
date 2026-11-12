@@ -32,9 +32,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from db import connect
 
 STAKE = 100.0
-DAILY_TARGET = (20, 25)
-DAILY_LIMIT = 25
-DAILY_STAKE_LIMIT = 2500.0
+DAILY_TARGET = (10, 15)
+DAILY_LIMIT = 15            # 10 singles + 5 Sure Odds combined bets (owner, 12 Nov 2026)
+DAILY_STAKE_LIMIT = 1500.0
 MIN_EV = float(os.environ.get('SINGLE_MIN_EXPECTED_VALUE', '0.03'))
 # Owner's structure (12 Nov 2026), objective 1:
 #   singles   one selection priced 1.60-1.99;
@@ -52,7 +52,7 @@ COMBO_MIN_PROBABILITY = float(os.environ.get('SINGLE_COMBO_MIN_PROBABILITY', '0.
 # Favourites (no edge): strong favourites from favourites.py, used only while edge selections
 # do not fill the day. They follow the execution mode like every bet: paper in PAPER, rehearsed
 # in LIVE_REHEARSAL, and real money in LIVE under authorization (owner's decision, 2026-11-11).
-# Real-money bets of every kind are capped at sportybet_account.DAILY_COUNT (10) a day.
+# Real-money bets: SINGLES_DAILY singles + COMBINED_DAILY combined, within sportybet_account.DAILY_COUNT.
 FAVOURITE_DAILY_LIMIT = 10
 FAVOURITE_NOTICE = 'Favourite (no edge) - expected to lose money over time.'
 # Coded accumulator tickets are followed as ₦100 paper bets (kind TICKET), the same way as singles.
@@ -151,6 +151,92 @@ def capacity(today_count, today_staked):
     by_count = DAILY_LIMIT - int(today_count)
     by_stake = int((DAILY_STAKE_LIMIT - float(today_staked)) // STAKE)
     return max(0, min(by_count, by_stake))
+
+
+def day_limits(connection):
+    """(bets, stake) allowed today. In LIVE mode the real-money limits of the account lane apply
+    (10 bets / ₦1,000, or less if the authorization says so), not the paper limits: otherwise the
+    queue kept filling with bets the live gate could never place (12 Nov 2026)."""
+    if not _live(connection):
+        return DAILY_LIMIT, DAILY_STAKE_LIMIT
+    from sportybet_account import DAILY_COUNT, DAILY_STAKE, active_authorization
+    grant = active_authorization(connection) or {}
+    return (min(DAILY_LIMIT, DAILY_COUNT, grant.get('daily_count') or DAILY_COUNT),
+            min(DAILY_STAKE_LIMIT, DAILY_STAKE, grant.get('daily_stake') or DAILY_STAKE))
+
+
+SINGLES_DAILY = 10            # owner's structure (12 Nov 2026): 10 singles at 1.60-1.99 ...
+COMBINED_DAILY = 5            # ... plus the day's 5 Sure Odds combined bets at 2.00-2.95 = 15 a day
+COMBINED_KINDS = ('TICKET', 'COMBO')
+
+
+def _group(kind):
+    return 'combined' if (kind or 'SINGLE') in COMBINED_KINDS else 'single'
+
+
+def _group_sql(group):
+    return ("COALESCE(b.kind,'SINGLE') IN ('TICKET','COMBO')" if group == 'combined'
+            else "COALESCE(b.kind,'SINGLE') NOT IN ('TICKET','COMBO')")
+
+
+def _group_quota(group):
+    return COMBINED_DAILY if group == 'combined' else SINGLES_DAILY
+
+
+def _group_usage(connection, day, group):
+    """(real-money orders sent, bets placed or queued) today for one product group."""
+    sent = 0
+    if _live(connection):
+        sent = connection.execute(
+            f"""SELECT COUNT(*) FROM sports_ai_single_live_orders o JOIN sports_ai_single_bets b ON b.id=o.bet_id
+                WHERE o.kind='SUBMISSION' AND o.local_date=? AND o.status NOT IN ('REJECTED','FAILED','PENDING')
+                  AND {_group_sql(group)}""", (day,)).fetchone()[0]
+    engine = connection.execute(
+        f"""SELECT COUNT(*) FROM sports_ai_single_bets b WHERE b.local_date=? AND {_group_sql(group)}
+              AND b.status IN ({','.join('?' * (len(COUNTED) + 1))})"""
+        + (_LIVE_ONLY.replace('sports_ai_single_bets.id', 'b.id') if _live(connection) else ''),
+        (day, *COUNTED, 'QUEUED')).fetchone()[0]
+    queued = connection.execute(
+        f"SELECT COUNT(*) FROM sports_ai_single_bets b WHERE b.status='QUEUED' AND b.local_date=? AND {_group_sql(group)}",
+        (day,)).fetchone()[0]
+    return int(sent), max(int(engine), int(sent) + int(queued))
+
+
+def room_today(connection, day, group=None):
+    """Bets that may still be queued today. The day's total (15 / ₦1,500, or the authorization's
+    lower limits in LIVE mode) and, with `group`, that product's own quota (10 singles, 5 combined)
+    must both have room. In LIVE mode real-money orders already sent count as well as the queue."""
+    count_limit, stake_limit = day_limits(connection)
+    count, staked = _day_usage(connection, day)
+    if _live(connection):
+        from sportybet_account import live_usage
+        live_n, live_staked = live_usage(connection, day)
+        queued = connection.execute(
+            "SELECT COUNT(*) FROM sports_ai_single_bets WHERE status='QUEUED' AND local_date=?", (day,)).fetchone()[0]
+        count, staked = max(count, live_n + queued), max(staked, live_staked + queued * STAKE)
+    room = max(0, min(count_limit - int(count), int((stake_limit - float(staked)) // STAKE)))
+    if group:
+        room = min(room, max(0, _group_quota(group) - _group_usage(connection, day, group)[1]))
+    return room
+
+
+def live_limit_reached(connection, day, group=None):
+    """True when real-money orders already sent use up the day's total, or (with `group`) that
+    product's quota. LIVE mode only."""
+    if not _live(connection):
+        return False
+    from sportybet_account import live_usage
+    count_limit, stake_limit = day_limits(connection)
+    live_n, live_staked = live_usage(connection, day)
+    if live_n >= count_limit or live_staked + STAKE > stake_limit:
+        return True
+    return bool(group) and _group_usage(connection, day, group)[0] >= _group_quota(group)
+
+
+def _target(connection):
+    """Daily target shown on the page, never above the day's limit."""
+    limit = day_limits(connection)[0]
+    return [min(DAILY_TARGET[0], limit), min(DAILY_TARGET[1], limit)]
 
 
 # ---------------------------------------------------------------- settings
@@ -387,8 +473,7 @@ def import_coded_tickets(connection, now=None):
         if not legs:
             continue
         day = local_date(current if live_mode else coded)
-        count, staked = _day_usage(connection, day)
-        if capacity(count, staked) <= 0:
+        if room_today(connection, day, 'combined') <= 0:
             continue
         taken = _active_fixtures(connection)
         if any(leg['fixture_id'] in taken for leg in legs):
@@ -474,7 +559,8 @@ def market_favourites(connection, now=None):
     saved = (jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS)
     jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS = MIN_ODDS, MAX_ODDS
     try:
-        scanned = jackpot_low.scan(connection, current, horizon_hours=MARKET_SINGLE_HORIZON_HOURS)
+        scanned = jackpot_low.scan(connection, current, horizon_hours=MARKET_SINGLE_HORIZON_HOURS,
+                                   keep=prize_ladder.reliable_keep(connection))
     finally:
         jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS = saved
     earliest = (current + timedelta(minutes=MARKET_SINGLE_LEAD_MINUTES)).isoformat()
@@ -834,8 +920,7 @@ def run_cycle(connection, now=None, candidates=None):
         # In a live mode the account lane places (or rehearses) the head of the queue.
         if live_mode or result['placed'] >= PLACE_PER_TICK:
             continue
-        count, staked = _day_usage(connection, day)
-        if bet['local_date'] != day and capacity(count, staked) <= 0:
+        if bet['local_date'] != day and room_today(connection, day, _group(_kind(bet))) <= 0:
             continue
         connection.execute(
             """UPDATE sports_ai_single_bets
@@ -856,8 +941,20 @@ def run_cycle(connection, now=None, candidates=None):
 
     # Refill the queue within the daily caps.
     pool = load_candidates(connection, current) if candidates is None else candidates
-    count, staked = _day_usage(connection, day)
-    room = capacity(count, staked)
+    full = {group: live_limit_reached(connection, day, group) for group in ('single', 'combined')}
+    if any(full.values()):
+        # Today's real money (in total, or for one product) is used up: those queued bets cannot be placed.
+        for bet in connection.execute(
+            "SELECT * FROM sports_ai_single_bets WHERE status='QUEUED' AND local_date=?", (day,),
+        ).fetchall():
+            if not full[_group(_kind(bet))]:
+                continue
+            connection.execute(
+                "UPDATE sports_ai_single_bets SET status='CANCELLED', reason=? WHERE id=? AND status='QUEUED'",
+                ('Daily real-money limit reached', bet['id']))
+            _event(connection, bet['id'], 'CANCELLED', f'Removed from queue – {_fixture(bet)}: daily real-money limit reached', current)
+            result['cancelled'] = result.get('cancelled', 0) + 1
+    room = room_today(connection, day, 'single')
     picks = list(pool['eligible'][:room])
     favourite_room = min(room - len(picks), FAVOURITE_DAILY_LIMIT - _favourites_today(connection, day))
     if favourite_room > 0:
@@ -907,8 +1004,10 @@ def next_for_execution(connection, now=None):
     """Head of the queue after re-validation, within today's caps. Failing entries are cancelled."""
     current = _now(now)
     max_age = _max_odds_age(connection)
+    # Combined bets (the day's Sure Odds tickets, at most 5) go before singles, so the last
+    # slots of a day are not all taken by favourites.
     for bet in connection.execute(
-        "SELECT * FROM sports_ai_single_bets WHERE status='QUEUED' ORDER BY created_at, id",
+        "SELECT * FROM sports_ai_single_bets WHERE status='QUEUED' ORDER BY kind IN ('TICKET','COMBO') DESC, created_at, id",
     ).fetchall():
         fresh, reason = _recheck(connection, bet, current, max_age)
         if fresh is None:
@@ -919,8 +1018,7 @@ def next_for_execution(connection, now=None):
             _event(connection, bet['id'], 'CANCELLED', f'Removed from queue – {_fixture(bet)}: {reason}', current)
             continue
         day = local_date(current)
-        count, staked = _day_usage(connection, day)
-        if bet['local_date'] != day and capacity(count, staked) <= 0:
+        if bet['local_date'] != day and room_today(connection, day, _group(_kind(bet))) <= 0:
             return None
         item = dict(bet)
         item.update(decimal_odds=fresh['decimal_odds'], odds_observed_at=fresh['observed_at'], expected_value=fresh['ev'],
@@ -1056,15 +1154,15 @@ def dashboard(connection, now=None):
     status = _setting(connection, STATUS_KEY, {})
     beat = _heartbeat(connection, current)
     state = runtime(connection)
-    risk = staked_today / DAILY_STAKE_LIMIT
+    risk = staked_today / day_limits(connection)[1]
     return {
         'mode': state.get('execution_mode') or 'PAPER', 'places_wager': False, 'real_money_enabled': False,
         'generated_at': current.isoformat(), 'local_date': day, 'timezone': 'Africa/Lagos',
         'autonomous': {'running': beat['fresh'] and not state.get('paused'), 'paused': bool(state.get('paused')),
                        'worker_fresh': beat['fresh'], 'last_cycle': status.get('last_run')},
         'balance': _account_balance(connection, current),
-        'rules': {'stake': STAKE, 'daily_target': list(DAILY_TARGET), 'daily_limit': DAILY_LIMIT,
-                  'daily_stake_limit': DAILY_STAKE_LIMIT, 'min_ev': MIN_EV,
+        'rules': {'stake': STAKE, 'daily_target': _target(connection), 'daily_limit': day_limits(connection)[0],
+                  'daily_stake_limit': day_limits(connection)[1], 'min_ev': MIN_EV,
                   'min_odds': MIN_ODDS, 'max_odds': MAX_ODDS, 'combined_min_odds': COMBINED_MIN_ODDS, 'combined_max_odds': COMBINED_MAX_ODDS, 'combo_max_legs': COMBO_MAX_LEGS, 'combo_min_probability': COMBO_MIN_PROBABILITY,
                   'favourite_daily_limit': FAVOURITE_DAILY_LIMIT, 'favourite_notice': FAVOURITE_NOTICE},
         'today': {
@@ -1080,7 +1178,7 @@ def dashboard(connection, now=None):
         'thirty_day': {'profit': round(running, 2), 'wins': w30, 'losses': l30,
                        'win_rate': None if not (w30 + l30) else round(w30 / (w30 + l30), 4)},
         'insights': {
-            'on_target': len(today) >= DAILY_TARGET[0],
+            'on_target': len(today) >= _target(connection)[0],
             'within_risk': risk <= 1,
             'system_healthy': beat['fresh'] and not status.get('error'),
         },
@@ -1192,8 +1290,8 @@ def engine_view(connection, now=None):
         'places_wager': bool(live and live['execution']['submission_allowed']),
         'real_money_enabled': bool(live and live['execution']['submission_allowed']),
         'generated_at': current.isoformat(),
-        'strategy': {'stake': STAKE, 'daily_target': list(DAILY_TARGET), 'daily_limit': DAILY_LIMIT,
-                     'daily_stake_limit': DAILY_STAKE_LIMIT, 'min_ev': MIN_EV, 'min_odds': MIN_ODDS, 'max_odds': MAX_ODDS, 'combined_min_odds': COMBINED_MIN_ODDS, 'combined_max_odds': COMBINED_MAX_ODDS,
+        'strategy': {'stake': STAKE, 'daily_target': _target(connection), 'daily_limit': day_limits(connection)[0],
+                     'daily_stake_limit': day_limits(connection)[1], 'min_ev': MIN_EV, 'min_odds': MIN_ODDS, 'max_odds': MAX_ODDS, 'combined_min_odds': COMBINED_MIN_ODDS, 'combined_max_odds': COMBINED_MAX_ODDS,
                      'combo_max_legs': COMBO_MAX_LEGS, 'combo_min_probability': COMBO_MIN_PROBABILITY,
                      'favourite_daily_limit': FAVOURITE_DAILY_LIMIT, 'favourite_notice': FAVOURITE_NOTICE, 'place_per_tick': PLACE_PER_TICK,
                      'tick_seconds': TICK_SECONDS},
@@ -1205,7 +1303,7 @@ def engine_view(connection, now=None):
                              'reason': reason, 'last_placed_at': last_placed,
                              'last_attempt': last_order},
         'cards': {'ready': eligible, 'in_execution': len(queue), 'executed': executed,
-                  'remaining': capacity(count, staked), 'exceptions': exceptions},
+                  'remaining': room_today(connection, day), 'exceptions': exceptions},
         'queue': queue,
         'recent': recent,
         'focus': focus,

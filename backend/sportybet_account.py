@@ -44,8 +44,8 @@ HOME_PATH = '/ng/'
 HISTORY_PATH = '/ng/my_accounts/bet_history/sport_bets?isSettled=10'
 STAKE = 100.0
 # Owner's limit (2026-11-11): at most 10 real-money bets a day, combined bets and tickets included.
-DAILY_COUNT = 10
-DAILY_STAKE = 1000.0
+DAILY_COUNT = 15        # 10 singles + 5 Sure Odds combined bets (owner, 12 Nov 2026)
+DAILY_STAKE = 1500.0
 # Kinds that are favourites by design (no positive edge): their live checks are price and kickoff,
 # not expected value. They exist only because the owner explicitly chose real money on favourites.
 NO_EDGE_KINDS = ('FAVOURITE', 'TICKET')
@@ -738,7 +738,9 @@ def set_execution_mode(connection, mode, actor, now=None):
 def live_usage(connection, day):
     row = connection.execute(
         """SELECT COUNT(*) n, COALESCE(SUM(stake),0) staked FROM sports_ai_single_live_orders
-           WHERE kind='SUBMISSION' AND local_date=? AND status NOT IN ('REJECTED','FAILED')""",
+           WHERE kind='SUBMISSION' AND local_date=? AND status NOT IN ('REJECTED','FAILED','PENDING')""",
+        # PENDING = nothing sent yet. Counting it made the last-second gate count the bet's own order,
+        # so the 10th bet of a day always failed with "Daily live limit reached (10/10)" (12 Nov 2026).
         (day,),
     ).fetchone()
     return int(row['n']), float(row['staked'])
@@ -787,6 +789,22 @@ def _bet_name(bet):
 
 
 def _order(connection, bet, kind, grant_id, now):
+    if kind == 'SUBMISSION':
+        # One submission per bet (unique index). An earlier attempt that stopped before Place Bet was
+        # clicked (e.g. the last-second gate hit the daily limit) is reused; without this every retry
+        # failed with "UNIQUE constraint failed" and blocked the queue. A clicked order is never reused.
+        earlier = connection.execute(
+            """SELECT id FROM sports_ai_single_live_orders WHERE bet_id=? AND kind='SUBMISSION'
+               AND submitted_at IS NULL AND status IN ('FAILED','PENDING','REJECTED')""",
+            (bet['id'],),
+        ).fetchone()
+        if earlier:
+            connection.execute(
+                """UPDATE sports_ai_single_live_orders SET status='PENDING', local_date=?, expected_odds=?, authorization_id=?,
+                          error=NULL, page_odds=NULL, evidence_path=NULL, updated_at=? WHERE id=?""",
+                (local_date(now), bet['decimal_odds'], grant_id, now.isoformat(), earlier['id']),
+            )
+            return earlier['id']
     order_id = str(uuid.uuid4())
     connection.execute(
         """INSERT INTO sports_ai_single_live_orders
@@ -1303,9 +1321,17 @@ def build_account_router(auth, require_admin_key):
                 (status, body.bookmaker_ref, now, now, f'Resolved by {actor} from SportyBet Bet History', body.order_id),
             )
             if status == 'REJECTED':
-                connection.execute("UPDATE sports_ai_single_bets SET status='CANCELLED', reason=? WHERE id=? AND status='PLACED'",
+                connection.execute("UPDATE sports_ai_single_bets SET status='CANCELLED', reason=? WHERE id=? AND status IN ('PLACED','QUEUED')",
                                    ('Operator confirmed SportyBet did not accept the submission.', order['bet_id']))
+            else:
+                # The bet row is still QUEUED when the process failed before recording the result.
+                connection.execute(
+                    """UPDATE sports_ai_single_bets SET status='PLACED', placed_at=COALESCE(placed_at, ?),
+                              decimal_odds=COALESCE(?, decimal_odds), reason=? WHERE id=? AND status='QUEUED'""",
+                    (order['submitted_at'] or now, order['page_odds'], f'Confirmed by {actor} from SportyBet Bet History', order['bet_id']))
             _event(connection, order['bet_id'], 'RECONCILED', f'Unclear submission resolved as {body.outcome} by {actor}')
-        return {'status': status}
+            # Every unclear order explained: lift the engine's own pause (never an operator pause).
+            resumed = _resume_after_reconcile(connection, _now())
+        return {'status': status, 'resumed': resumed}
 
     return router

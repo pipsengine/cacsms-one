@@ -83,8 +83,12 @@ def _margins(rows):
     return margins
 
 
-def scan(connection, now=None, horizon_hours=None):
-    """Best low-odds selection per match across every sport, most likely first."""
+def scan(connection, now=None, horizon_hours=None, keep=None):
+    """Best low-odds selection per match across every sport, most likely first.
+
+    keep(leg) -> bool filters BEFORE the one-per-match choice. Filtering afterwards (12 Nov 2026)
+    dropped whole matches: a basketball match's likeliest leg was a points total, which the
+    reliable-market filter then removed, so its match-winner price was never considered."""
     from accumulator_engine import _simulated_competition
     from prediction_engine import normalize_quote_market
     current = _now(now)
@@ -135,6 +139,8 @@ def scan(connection, now=None, horizon_hours=None):
             'model_id': 'market-price', 'model_version': 'sportybet-fair-price', 'completeness': None,
             'reliability': None, 'settlement_kind': 'binary',
         }
+        if keep is not None and not keep(leg):
+            continue
         held = best.get(row['fixture_id'])
         if held is None or (leg['probability'], -leg['decimal_odds']) > (held['probability'], -held['decimal_odds']):
             best[row['fixture_id']] = leg

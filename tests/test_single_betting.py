@@ -122,10 +122,11 @@ class SingleBettingTests(unittest.TestCase):
         self.assertIn('INSUFFICIENT_EDGE', sb.evaluate(1.50, 0.60, NOW, NOW + timedelta(hours=1), NOW)['reasons'])
 
     def test_capacity_respects_count_and_stake_caps(self):
-        self.assertEqual(sb.capacity(0, 0), 25)
-        self.assertEqual(sb.capacity(24, 2400), 1)
-        self.assertEqual(sb.capacity(25, 2500), 0)
-        self.assertEqual(sb.capacity(3, 2450), 0)
+        # 15 a day / ₦1,500 (10 singles + 5 Sure Odds combined bets, owner 12 Nov 2026)
+        self.assertEqual(sb.capacity(0, 0), 15)
+        self.assertEqual(sb.capacity(14, 1400), 1)
+        self.assertEqual(sb.capacity(15, 1500), 0)
+        self.assertEqual(sb.capacity(3, 1450), 0)
 
     def test_queue_then_paced_placement_then_settlement(self):
         with self.conn() as c:
@@ -177,7 +178,7 @@ class SingleBettingTests(unittest.TestCase):
             for i in range(30):
                 seed(c, f'fx{i}')
             out = sb.run_cycle(c, NOW)
-            self.assertEqual(out['queued'], sb.DAILY_LIMIT)
+            self.assertEqual(out['queued'], sb.SINGLES_DAILY)  # singles quota; the other 5 are combined bets
 
     def test_rehearsed_bets_do_not_use_up_live_capacity(self):
         day = sb.local_date(NOW)

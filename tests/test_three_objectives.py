@@ -39,6 +39,41 @@ class ObjectiveOne(unittest.TestCase):
         self.assertFalse(sb.ENGINE_COMBOS)
 
 
+class DailyQuotas(unittest.TestCase):
+    """15 a day: 10 singles + 5 Sure Odds combined bets, each product within its own quota."""
+
+    def setUp(self):
+        import tempfile
+        import db
+        self.temp = tempfile.TemporaryDirectory()
+        self.previous = db.DB
+        db.DB = Path(self.temp.name) / 'q.sqlite3'
+        db.initialize()
+
+    def tearDown(self):
+        import db
+        db.DB = self.previous
+        self.temp.cleanup()
+
+    def _bets(self, c, kind, n, status='PLACED'):
+        for i in range(n):
+            c.execute("""INSERT INTO sports_ai_single_bets(id,fixture_id,sport,competition,home,away,market,selection,
+                         decimal_odds,probability,expected_value,stake,mode,status,local_date,starts_at,created_at,kind)
+                         VALUES(?,?, 'football','L','H','A','HOME','Home',1.7,0.6,0,100,'PAPER',?,'2026-11-12',?,?,?)""",
+                      (f'{kind}{i}', f'fx-{kind}{i}', status, NOW.isoformat(), NOW.isoformat(), kind))
+
+    def test_totals_and_split(self):
+        import db
+        self.assertEqual((sb.DAILY_LIMIT, sb.DAILY_STAKE_LIMIT, sb.SINGLES_DAILY, sb.COMBINED_DAILY), (15, 1500.0, 10, 5))
+        with db.connect() as c:
+            self._bets(c, 'FAVOURITE', 10)
+            self.assertEqual(sb.room_today(c, '2026-11-12', 'single'), 0)     # singles full ...
+            self.assertEqual(sb.room_today(c, '2026-11-12', 'combined'), 5)   # ... combined keep their 5
+            self._bets(c, 'TICKET', 2, status='QUEUED')
+            self.assertEqual(sb.room_today(c, '2026-11-12', 'combined'), 3)
+            self.assertEqual(sb.room_today(c, '2026-11-12'), 3)
+
+
 class ObjectiveTwo(unittest.TestCase):
     def test_tickets_have_two_or_three_legs_in_range_and_at_most_five(self):
         pool = [leg(i, odds) for i, odds in enumerate([1.15, 1.18, 1.2, 1.25, 1.3, 1.35, 1.4, 1.45, 1.5, 1.55,

@@ -198,7 +198,7 @@ def _market_sure_pool(connection, day, now):
     saved = (jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS)
     jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS = SURE_MARKET_ODDS
     try:
-        scanned = jackpot_low.scan(connection, now, horizon_hours=hours)
+        scanned = jackpot_low.scan(connection, now, horizon_hours=hours, keep=prize_ladder.reliable_keep(connection))
     finally:
         jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS = saved
     earliest = (now + timedelta(minutes=SURE_MARKET_LEAD_MINUTES)).astimezone(timezone.utc).isoformat()

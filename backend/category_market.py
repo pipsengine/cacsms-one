@@ -53,7 +53,8 @@ def market_pool(connection, current):
     saved = (jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS)
     jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS = LEG_MIN, LEG_MAX
     try:
-        scanned = jackpot_low.scan(connection, current, horizon_hours=HORIZON_HOURS)
+        scanned = jackpot_low.scan(connection, current, horizon_hours=HORIZON_HOURS,
+                                   keep=prize_ladder.reliable_keep(connection))
     finally:
         jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS = saved
     if connection.in_transaction:

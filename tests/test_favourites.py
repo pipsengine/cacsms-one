@@ -178,9 +178,9 @@ class FavouriteSinglesTests(unittest.TestCase):
             self.assertEqual(settled['status'], 'WON')
             self.assertAlmostEqual(settled['profit'], round(100 * (SINGLE_ODDS - 1), 2))
 
-    def test_real_money_cap_is_ten_a_day_including_combined(self):
+    def test_real_money_cap_is_fifteen_a_day_including_combined(self):
         import sportybet_account as acct
-        self.assertEqual((acct.DAILY_COUNT, acct.DAILY_STAKE), (10, 1000.0))
+        self.assertEqual((acct.DAILY_COUNT, acct.DAILY_STAKE), (15, 1500.0))
         self.assertIn('TICKET', acct.NO_EDGE_KINDS)
         legs = [{'home': 'A', 'away': 'B'}, {'home': 'C', 'away': 'D'}]
         self.assertEqual(len(acct._bet_legs({'kind': 'TICKET', 'legs': legs})), 2)
