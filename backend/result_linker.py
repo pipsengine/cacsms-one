@@ -43,6 +43,13 @@ SIDE_MARKER = re.compile(r'\b(u\d{2}|w|women|womens|ladies|fem|femenino|feminin|
                          r'|srl|virtual|esports|cyber|simulated)\b')
 SPORT_FAMILY = {'frauenfussball': 'football'}
 KICKOFF_PASS_MINUTES = 20
+# A result from another fixture record is only the same game when its kickoff is within this window
+# (covers providers storing the kickoff in a different time zone). 24 h linked back-to-back games:
+# 12 Nov 2026, Trail Blazers v Thunder of 12 Nov got the 11 Nov game's 123-103 (real score 118-108).
+LINK_WINDOW_HOURS = 12
+DATE_ONLY_WINDOW_HOURS = 24
+# ...and a result recorded this long before the fixture's kickoff belongs to an earlier game.
+EARLY_RESULT_HOURS = 3
 
 
 def _plain(name):
@@ -195,7 +202,13 @@ def _candidates(index, fixture):
     for offset in (-1, 0, 1):
         rows += index.get((_family(fixture['sport']), (kickoff + timedelta(days=offset)).date()), [])
     return [r for r in rows if r['id'] != fixture['id']
-            and abs((_parse(r['starts_at']) - kickoff).total_seconds()) <= 86400]
+            and abs((_parse(r['starts_at']) - kickoff).total_seconds())
+            <= max(_window_hours(kickoff), _window_hours(_parse(r['starts_at']))) * 3600]
+
+
+def _window_hours(kickoff):
+    # Some feeds store only the date (00:00): the real kickoff is any time that day, so the old 24 h.
+    return DATE_ONLY_WINDOW_HOURS if (kickoff.hour, kickoff.minute, kickoff.second) == (0, 0, 0) else LINK_WINDOW_HOURS
 
 
 def link_results(connection, now=None, limit=1500, days=45):
@@ -211,6 +224,9 @@ def link_results(connection, now=None, limit=1500, days=45):
             continue
         kickoff = _parse(fixture['starts_at'])
         settled = _parse(source['settled_at'])
+        if kickoff and settled and _window_hours(kickoff) == LINK_WINDOW_HOURS                 and settled < kickoff - timedelta(hours=EARLY_RESULT_HOURS):
+            counts['ambiguous'] += 1  # recorded before this game started: an earlier meeting of the teams
+            continue
         if kickoff and (not settled or settled < kickoff):
             settled = current  # a result is only usable for scoring when stored after kickoff
         connection.execute(

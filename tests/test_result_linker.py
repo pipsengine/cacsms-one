@@ -63,6 +63,29 @@ class MatchTests(unittest.TestCase):
         self.assertEqual(rl.find_match(fx('Porto', 'Napoli'), [res('FC Porto', 'Napoli'), res('Napoli', 'Porto')])[1], 'ambiguous')
 
 
+class BackToBackTests(unittest.TestCase):
+    def test_same_teams_a_day_earlier_are_a_different_game(self):
+        # 12 Nov 2026: Trail Blazers v Thunder played 11 Nov 04:00 and 12 Nov 03:00 UTC (23 h apart).
+        earlier = {**res('Trail Blazers', 'Thunder', 123, 103, starts='2026-11-11T04:00:00+00:00', id_='old'),
+                   'sport': 'basketball'}
+        index = {('basketball', datetime(2026, 11, 11).date()): [earlier]}
+        fixture = {**fx('Trail Blazers', 'Thunder', starts='2026-11-12T03:00:00+00:00'), 'sport': 'basketball'}
+        self.assertEqual(rl._candidates(index, fixture), [])
+        same_game = {**earlier, 'starts_at': '2026-11-12T05:00:00+00:00', 'id': 'tz'}  # time-zone shifted copy
+        index = {('basketball', datetime(2026, 11, 12).date()): [same_game]}
+        self.assertEqual([c['id'] for c in rl._candidates(index, fixture)], ['tz'])
+
+    def test_date_only_fixture_keeps_the_whole_day(self):
+        played = {**res('Arsenal FC', 'Hull City AFC', 1, 0, starts='2026-11-07T15:00:00+00:00', id_='day'), 'sport': 'football'}
+        index = {('football', datetime(2026, 11, 7).date()): [played]}
+        fixture = {**fx('Arsenal FC', 'Hull City AFC', starts='2026-11-07T00:00:00+00:00'), 'sport': 'football'}
+        self.assertEqual([c['id'] for c in rl._candidates(index, fixture)], ['day'])
+        dated = {**played, 'starts_at': '2026-11-07T00:00:00+00:00', 'id': 'src-day'}  # the source is the date-only one
+        index = {('football', datetime(2026, 11, 7).date()): [dated]}
+        timed = {**fx('Arsenal FC', 'Hull City AFC', starts='2026-11-07T17:30:00+00:00'), 'sport': 'football'}
+        self.assertEqual([c['id'] for c in rl._candidates(index, timed)], ['src-day'])
+
+
 class StaleSeasonTests(unittest.TestCase):
     def test_old_season_redated_into_the_future_is_history(self):
         kickoff = datetime(2026, 11, 23, tzinfo=timezone.utc)
