@@ -28,6 +28,7 @@ import json
 import os
 import re
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -103,18 +104,35 @@ def _session_file():
 
 
 def save_session(state):
-    _session_file().write_bytes(_cipher().encrypt(json.dumps(state).encode()))
+    """Write atomically. The API and the worker both save after every browser visit; an in-place
+    write let the other process read a half-written file, which decrypted as "no session saved"
+    and cancelled a real bet (12 Nov)."""
+    path = _session_file()
+    temp = path.with_name(f'{path.name}.{os.getpid()}.{threading.get_ident()}.tmp')
+    temp.write_bytes(_cipher().encrypt(json.dumps(state).encode()))
+    for attempt in range(5):
+        try:
+            os.replace(temp, path)
+            return
+        except PermissionError:  # Windows: the other process is reading the file this instant
+            if attempt == 4:
+                temp.unlink(missing_ok=True)
+                raise
+            time.sleep(0.2)
 
 
 def load_session():
     path = _session_file()
-    if not path.exists():
-        return None
     from cryptography.fernet import InvalidToken
-    try:
-        return json.loads(_cipher().decrypt(path.read_bytes()))
-    except (InvalidToken, ValueError):
-        return None
+    for attempt in range(3):
+        if not path.exists():
+            return None
+        try:
+            return json.loads(_cipher().decrypt(path.read_bytes()))
+        except (InvalidToken, ValueError, PermissionError):
+            if attempt == 2:
+                return None
+            time.sleep(0.3)  # caught mid-replace by the other process; read again
 
 
 def forget_session():
@@ -260,8 +278,19 @@ MARK_PLACE = r'''() => {
 }'''
 
 POPUP_STATE = r'''() => {
+  const visible = node => { const r = node.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
   const pops = [...document.querySelectorAll('.m-pop-main, .m-dialog, [role="dialog"], .es-dialog, .m-confirm, .af-dialog')]
-    .filter(node => { const r = node.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+    .filter(visible);
+  // SportyBet's payment step ("About to pay NGN 100.00 · Cancel · Confirm") opens inside the betslip,
+  // not as a dialog (seen 12 Nov 2026). Its smallest visible container with a Confirm button is read too.
+  const slip = document.querySelector('.m-betslip-wrapper, .m-betslips, .m-betslip');
+  if (slip) {
+    const panels = [...slip.querySelectorAll('div, section, form')]
+      .filter(node => visible(node) && /about to pay/i.test(node.innerText || '')
+        && [...node.querySelectorAll('button, [role="button"]')].some(b => /^confirm$/i.test((b.innerText || '').trim())))
+      .sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
+    if (panels.length && !pops.includes(panels[0])) pops.push(panels[0]);
+  }
   const text = pops.map(node => node.innerText || '').join(' ').replace(/\s+/g, ' ').trim();
   document.querySelectorAll('[data-sports-ai-confirm]').forEach(node => node.removeAttribute('data-sports-ai-confirm'));
   const confirms = pops.flatMap(node => [...node.querySelectorAll('button, [role="button"]')])
@@ -272,7 +301,10 @@ POPUP_STATE = r'''() => {
   return {
     text: text.slice(0, 600),
     confirm_buttons: confirms.length,
-    shows_stake: /(?:^|[^\d])100(?:\.00)?(?![\d])/.test(text),
+    // A payment step must state exactly NGN 100 to be confirmed.
+    shows_stake: /about to pay/i.test(text)
+      ? /about to pay\s*(?:NGN|₦)?\s*100(?:\.00)?(?![\d.,])/i.test(text)
+      : /(?:^|[^\d])100(?:\.00)?(?![\d])/.test(text),
     success: /submission successful|bet (?:was )?(?:placed|successful)|successfully placed|bet successful/i.test(text),
     odds_changed: /odds (?:have )?changed|accept (?:odds )?changes|price changed/i.test(text),
     insufficient: /insufficient (?:balance|funds)/i.test(text),
@@ -1070,7 +1102,14 @@ def status_view(connection, now=None):
         },
         'reconciliation': {'last_history_capture': history['captured_at'] if history else None,
                            'unclear': connection.execute(
-                               "SELECT COUNT(*) FROM sports_ai_single_live_orders WHERE status IN ('UNKNOWN','SUBMITTING')").fetchone()[0]},
+                               "SELECT COUNT(*) FROM sports_ai_single_live_orders WHERE status IN ('UNKNOWN','SUBMITTING')").fetchone()[0],
+                           # Listed so the operator can resolve each one from the account panel after
+                           # checking SportyBet Bet History (the engine stays paused until then).
+                           'unclear_orders': [dict(r) for r in connection.execute(
+                               """SELECT o.id, o.submitted_at, o.created_at, o.error, o.expected_odds,
+                                         b.home || ' vs ' || b.away AS fixture, b.selection
+                                  FROM sports_ai_single_live_orders o JOIN sports_ai_single_bets b ON b.id=o.bet_id
+                                  WHERE o.kind='SUBMISSION' AND o.status IN ('UNKNOWN','SUBMITTING') ORDER BY o.created_at""")]},
         'exceptions_today': exceptions,
         'orders': orders,
     }

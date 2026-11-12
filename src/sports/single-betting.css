@@ -288,3 +288,7 @@ button.sb-card{text-align:left;color:inherit;font:inherit}
 @media (max-width:1560px){.sb-engine{grid-template-areas:"strat right" "kpis right" "main right" "mid mid" "rules rules"}.sb-a-mid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:980px){.sb-engine{grid-template-areas:"strat" "kpis" "main" "mid" "rules" "right"}.sb-a-mid,.sb-a-rules{grid-template-columns:1fr}}
 .sb-engine>.sb-a-main{align-self:stretch}.sb-a-main>.sb-queue{flex:1}
+.sb-unclear{border:1px solid #f5c2c0;background:#fff5f4;border-radius:10px;padding:12px;margin:12px 0}
+.sb-unclear h4{color:#b42318;margin:0 0 6px}
+.sb-unclear-row{display:grid;gap:8px;padding:8px 0;border-top:1px solid #f5c2c0}
+.sb-unclear-row small{display:block;color:#7a4a05;margin-top:3px}

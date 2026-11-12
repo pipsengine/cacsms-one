@@ -243,6 +243,15 @@ function AccountDrawer({live,open,onClose,refresh}){
         <h4>Execution mode</h4>
         <div className="sb-seg">{ex.modes.map(m=><button key={m} className={ex.mode===m?'on '+m.toLowerCase():''} disabled={!key||!!busy||ex.mode===m} onClick={()=>act('Mode '+m,'/mode',{mode:m})}>{MODE_LABEL[m]}</button>)}</div>
         {!key&&<p className="sb-note">Type the admin key above to change the execution mode.</p>}
+        {rec?.unclear_orders?.length>0&&<div className="sb-unclear">
+          <h4>Unclear submission{rec.unclear_orders.length>1?'s':''} – betting paused</h4>
+          <p className="sb-note">Place Bet was clicked but SportyBet's reply was not clear. Check <b>My Account → Bet History</b> on SportyBet, then record what it shows. Betting stays paused until every one is resolved; resume it afterwards with the kill switch.</p>
+          {rec.unclear_orders.map(o=><div key={o.id} className="sb-unclear-row">
+            <div><b>{o.fixture}</b> · {o.selection} @ {Number(o.expected_odds||0).toFixed(2)} · ₦100<small>{new Date(o.submitted_at||o.created_at).toLocaleString('en-GB',{timeZone:'Africa/Lagos'})} WAT · {(o.error||'').slice(0,140)}</small></div>
+            <div className="sb-btn-row"><button className="sb-btn sm" disabled={!key||!!busy} title="Bet History does NOT list this ₦100 bet" onClick={()=>act('Resolved','/resolve',{order_id:o.id,outcome:'NOT_PLACED'})}>Not in Bet History</button>
+            <button className="sb-btn sm danger" disabled={!key||!!busy} title="Bet History lists this ₦100 bet" onClick={()=>act('Resolved','/resolve',{order_id:o.id,outcome:'PLACED'})}>It was placed</button></div>
+          </div>)}
+        </div>}
         <h4>Real-money authorization</h4>
         {ex.authorization?<div className="sb-auth-on"><CheckCircle2 size={16}/><span>Active until {new Date(ex.authorization.expires_at).toLocaleString('en-GB',{timeZone:'Africa/Lagos'})} WAT · ₦100 × max {ex.authorization.daily_count}/day · ₦{ex.authorization.daily_stake.toLocaleString()} ceiling</span><button className="sb-btn sm danger" disabled={!key||!!busy} onClick={()=>act('Revoke','/revoke')}>Revoke</button></div>
         :<><p className="sb-note">Rehearsals passed: <b>{ex.rehearsals_passed}/{ex.rehearsals_required}</b> in the last 7 days (test rehearsals excluded). A balance never grants authorization. Type exactly:</p><code className="sb-code">{ex.acknowledgement}</code>
@@ -294,7 +303,7 @@ export function SingleBettingEngine(){
         <div className="sb-strat-text"><b>Single Betting Execution Engine</b>
           <span>Strategy: Single Selection (1 per bet)<i>|</i>Stake: {naira(s.stake)} (Fixed)<i>|</i>Daily Target: {s.daily_target[0]} – {s.daily_target[1]}<i>|</i>Max Bets: {s.daily_limit}</span></div>
         <span className={'sb-pill '+(auto.paused?'amber':auto.running?'green':'grey')}><i/>{auto.paused?'Paused':auto.running?'Autonomous Operation':'Waiting for worker'}</span>
-        <span className="sb-info" tabIndex={0} aria-label="Engine rules"><Info size={22}/><span className="sb-tip">Fixed ₦{s.stake} single per bet, at most {s.daily_limit} a day and ₦{s.daily_stake_limit.toLocaleString()} staked. Only QUALIFIED selections with a fresh SportyBet price, odds ≥ {(s.min_odds??1.2).toFixed(2)} and EV ≥ +{s.min_ev.toFixed(2)} are queued; each is re-validated before placement. High-probability selections priced below {(s.min_odds??1.2).toFixed(2)} may be combined ({s.combo_max_legs??3} legs max, combined probability ≥ {Math.round((s.combo_min_probability??0.8)*100)}%) to reach the minimum, and replace a single whenever they are more likely to win. Selections are ranked by chance of winning, then EV. When no edge selection is available, up to {s.favourite_daily_limit??10} strong favourites a day are placed as paper bets only (no edge; never submitted to SportyBet).</span></span>
+        <span className="sb-info" tabIndex={0} aria-label="Engine rules"><Info size={22}/><span className="sb-tip">Fixed ₦{s.stake} single per bet, at most {s.daily_limit} a day and ₦{s.daily_stake_limit.toLocaleString()} staked. Only QUALIFIED selections with a fresh SportyBet price, odds ≥ {(s.min_odds??1.2).toFixed(2)} and EV ≥ +{s.min_ev.toFixed(2)} are queued; each is re-validated before placement. High-probability selections priced below {(s.min_odds??1.2).toFixed(2)} may be combined ({s.combo_max_legs??3} legs max, combined probability ≥ {Math.round((s.combo_min_probability??0.8)*100)}%) to reach the minimum, and replace a single whenever they are more likely to win. Selections are ranked by chance of winning, then EV. When no edge selection is available, up to {s.favourite_daily_limit??10} strong favourites a day are bet (no edge) – with real money in Live mode under your authorization, as paper bets in other modes.</span></span>
         <KillSwitch paused={auto.paused} onDone={refresh}/>
       </Card>
       <div className="sb-a-right">

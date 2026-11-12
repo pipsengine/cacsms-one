@@ -397,6 +397,11 @@ def sure_odds(user=Depends(auth)):
 
 @router.get('/dashboard')
 def dashboard(user=Depends(auth)):
+    # ~12 s to build on the live database; served from a 30 s background-refreshed copy (view_cache).
+    from view_cache import cached_view
+    return cached_view('dashboard', lambda: _build_dashboard(user), ttl=30)
+
+def _build_dashboard(user):
     with connect() as c:
         counts={}
         for key,table in [('fixtures','fixtures'),('tickets','tickets'),('booking_codes','booking_codes')]:counts[key]=c.execute('SELECT COUNT(*) FROM sports_ai_'+table).fetchone()[0]
@@ -1999,9 +2004,14 @@ class AutonomousControl(BaseModel):
 
 @router.get('/autonomous/overview')
 def autonomous_overview(user=Depends(auth)):
+    # 27-45 s to build (several scans of the 4.6M-row price table); served from a background-refreshed copy.
     from autonomous_engine import build_overview
-    with connect() as c:
-        return build_overview(c)
+    from view_cache import cached_view
+
+    def build():
+        with connect() as c:
+            return build_overview(c)
+    return cached_view('autonomous_overview', build, ttl=60)
 
 @router.post('/bookings/diagnostic')
 def booking_diagnostic(request:Request, x_sports_admin_key:str|None=Header(default=None), user=Depends(auth)):
@@ -2052,3 +2062,16 @@ from sportybet_account import build_account_router
 app.include_router(build_account_router(auth, require_admin_key))
 from league_coverage import build_coverage_router
 app.include_router(build_coverage_router(auth))
+
+
+@app.on_event('startup')
+def _warm_slow_views():
+    """Build the two slow page payloads in the background at start, so the first visitor does not wait."""
+    def warm():
+        for name, build in (('dashboard', lambda: dashboard(user='startup-warmup')),
+                            ('autonomous_overview', lambda: autonomous_overview(user='startup-warmup'))):
+            try:
+                build()
+            except Exception as error:
+                print('view warm-up failed', name, error)
+    threading.Thread(target=warm, daemon=True, name='view-cache-warmup').start()
