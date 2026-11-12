@@ -9,6 +9,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 
 import db
 import single_betting as sb
+from unittest.mock import patch
+
+# The engine's own combined selections are retired (owner's structure, 12 Nov 2026: combined bets
+# are the Sure Odds tickets). The code stays to settle combined bets already placed, so its tests
+# run under the settings it was built for.
+LEGACY_ENGINE_COMBOS = patch.multiple(sb, ENGINE_COMBOS=True, MIN_ODDS=1.2, MAX_ODDS=1000.0)
 
 NOW = datetime(2026, 11, 10, 14, 0, tzinfo=timezone.utc)
 
@@ -178,8 +184,9 @@ class SingleBettingTests(unittest.TestCase):
             self.assertEqual(pool['rejected'].get('NOT_FOUND_ON_SPORTYBET'), 1)
 
     def test_single_below_min_odds_is_rejected(self):
-        self.assertIn('BELOW_MIN_ODDS', sb.evaluate(1.15, 0.95, NOW, NOW + timedelta(hours=1), NOW)['reasons'])
-        self.assertTrue(sb.evaluate(1.20, 0.90, NOW, NOW + timedelta(hours=1), NOW)['eligible'])
+        self.assertIn('BELOW_MIN_ODDS', sb.evaluate(1.59, 0.95, NOW, NOW + timedelta(hours=1), NOW)['reasons'])
+        self.assertTrue(sb.evaluate(1.60, 0.90, NOW, NOW + timedelta(hours=1), NOW)['eligible'])
+        self.assertIn('ABOVE_MAX_ODDS', sb.evaluate(2.00, 0.90, NOW, NOW + timedelta(hours=1), NOW)['reasons'])
         with self.conn() as c:
             c.execute('PRAGMA foreign_keys=OFF')
             seed(c, 'lonely', odds=1.12, probability=0.95)  # no partner leg: nothing is bet
@@ -188,6 +195,7 @@ class SingleBettingTests(unittest.TestCase):
             status = json.loads(c.execute("SELECT value_json FROM sports_ai_settings WHERE key=?", (sb.STATUS_KEY,)).fetchone()[0])
             self.assertEqual(status['rejected'].get('BELOW_MIN_ODDS'), 1)
 
+    @LEGACY_ENGINE_COMBOS
     def test_low_odds_legs_combine_and_settle(self):
         with self.conn() as c:
             c.execute('PRAGMA foreign_keys=OFF')
@@ -217,6 +225,7 @@ class SingleBettingTests(unittest.TestCase):
             self.assertEqual(row['status'], 'WON')
             self.assertAlmostEqual(row['payout'], round(100 * 1.12 * 1.14, 2))
 
+    @LEGACY_ENGINE_COMBOS
     def test_combo_loses_on_any_leg_and_needs_high_probability(self):
         with self.conn() as c:
             c.execute('PRAGMA foreign_keys=OFF')
@@ -249,6 +258,7 @@ class SingleBettingTests(unittest.TestCase):
                   (f'd-{fixture_id}-{market}', prediction, fixture_id, 'football', 'Primeira Liga', market, 'QUALIFIED', 'OK', 'ok',
                    json.dumps({'probability': probability}), json.dumps(['booking']), 1.0, 1, 1, 'fp', kickoff, NOW.isoformat(), NOW.isoformat()))
 
+    @LEGACY_ENGINE_COMBOS
     def test_combined_replaces_single_when_more_likely_to_win(self):
         with self.conn() as c:
             c.execute('PRAGMA foreign_keys=OFF')
@@ -261,6 +271,7 @@ class SingleBettingTests(unittest.TestCase):
             self.assertEqual({(l['fixture_id'], l['market']) for l in combo['legs']}, {('x', 'HOME_OR_DRAW'), ('y', 'HOME')})
             self.assertEqual(pool['rejected'].get('SINGLE_REPLACED_BY_COMBINED'), 1)
 
+    @LEGACY_ENGINE_COMBOS
     def test_single_kept_when_it_is_more_likely_than_the_combination(self):
         with self.conn() as c:
             c.execute('PRAGMA foreign_keys=OFF')
@@ -274,8 +285,8 @@ class SingleBettingTests(unittest.TestCase):
     def test_candidates_ranked_by_chance_of_winning(self):
         with self.conn() as c:
             c.execute('PRAGMA foreign_keys=OFF')
-            seed(c, 'value', odds=2.40, probability=0.50)       # EV +0.20, 50%
-            seed(c, 'safe', odds=1.30, probability=0.82)        # EV +0.066, 82%
+            seed(c, 'value', odds=1.95, probability=0.58)       # EV +0.131, 58%
+            seed(c, 'safe', odds=1.65, probability=0.70)        # EV +0.155, 70%
             ranked = [i['fixture_id'] for i in sb.load_candidates(c, NOW)['eligible']]
             self.assertEqual(ranked, ['safe', 'value'])
 

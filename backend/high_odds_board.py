@@ -158,6 +158,8 @@ def _sure_today(connection, day, now, candidates=None):
     if not room:
         return stored
     pool = _sure_pool(connection, _candidates(connection, day, now), now) if candidates is None else candidates
+    from league_quality import filter_legs
+    pool = filter_legs(connection, pool)  # only sports and leagues with an acceptable record
     return stored + pack_sure_tickets([leg for leg in pool if leg['fixture_id'] not in used], day, limit=room)
 
 

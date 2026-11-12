@@ -22,10 +22,14 @@ from datetime import timedelta, timezone
 
 PRODUCT = 'prize_ladder'
 STAKE = 100
-PRIZES = (100_000, 500_000, 800_000, 1_000_000, 2_000_000, 5_000_000, 8_000_000, 10_000_000, 18_000_000,
-          25_000_000, 50_000_000, 75_000_000, 100_000_000, 125_000_000, 150_000_000, 175_000_000, 200_000_000)
-LEG_MIN, LEG_MAX = 1.10, 2.20
-LEG_AIM = 1.38            # preferred per-leg odds: the ticket length follows from it
+# Owner's structure (12 Nov 2026), objective 3: six jackpots on a ₦100 stake, every selection priced
+# 1.60-2.95, matches from Monday to Sunday of the current week, one set per week.
+PRIZES = (1_000_000, 10_000_000, 20_000_000, 50_000_000, 100_000_000, 200_000_000)
+LEG_MIN, LEG_MAX = 1.60, 2.95
+LEG_AIM = 1.95            # preferred per-leg odds: the ticket length follows from it
+WEEKLY_RUNS = 1
+# Sports whose results the system collects and settles; the league record filter applies on top.
+LADDER_SPORTS = ('football', 'basketball', 'ice_hockey', 'tennis')
 MAX_LEGS = 45             # SportyBet accepts 50; 45 leaves room
 MIN_LEGS = 6
 MAX_PER_LEAGUE = 3
@@ -36,7 +40,9 @@ RESERVES = 30            # spare legs tried on the page when SportyBet does not 
 RESERVE_KEYS = ('opportunity_id', 'fixture_id', 'sport', 'competition', 'home', 'away', 'starts_at', 'market',
                 'selection', 'decimal_odds', 'probability', 'edge', 'bookmaker', 'odds_observed_at',
                 'quote_market', 'quote_outcome', 'quote_line', 'model_id', 'model_version', 'settlement_kind')
-MAX_SPORT_SHARE = 0.30
+# Football has the best settled record (12 Nov 2026), so it may fill up to 60% of a ticket; the long
+# ₦200M ticket (~22 legs at 1.60-2.95) still needs a second sport.
+MAX_SPORT_SHARE = 0.60
 MAX_HOURS_AHEAD = 48      # pages list near matches; hit rate fell to 60% beyond 24 h
 # Every leg must start at least this long after the ticket is built: booking a long ladder takes
 # time, and the owner needs time to stake the code. (2026-11-11: 15 of 17 codes had a leg kick off
@@ -181,9 +187,27 @@ def _hours_to_sunday(current):
 
 
 def rebuild(connection, actor='operator', now=None):
-    """Rebuilding the prize ladder is stopped by the operator."""
-    from jackpot_stop import disabled_result
-    return disabled_result()
+    """Replace this week's ladder tickets that have no displayed code yet, then build again."""
+    import jackpot_low
+    current = jackpot_low._now(now)
+    retired = 0
+    for row in connection.execute(
+        """SELECT t.id FROM sports_ai_accumulator_tickets t
+           WHERE json_extract(t.parameters_json,'$.product')=? AND t.status='qualified'
+             AND NOT EXISTS (SELECT 1 FROM sports_ai_booking_codes b WHERE b.accumulator_ticket_id=t.id
+                             AND b.verification_method='displayed' AND TRIM(COALESCE(b.code,''))<>'')
+             AND NOT EXISTS (SELECT 1 FROM sports_ai_booking_jobs j WHERE j.ticket_id=t.id AND j.status='PREPARING')""",
+        (PRODUCT,),
+    ).fetchall():
+        connection.execute("UPDATE sports_ai_accumulator_tickets SET status='expired' WHERE id=?", (row['id'],))
+        connection.execute("UPDATE sports_ai_booking_jobs SET status='SUPERSEDED', updated_at=? WHERE ticket_id=? AND status='QUEUED'",
+                           (current.isoformat(), row['id']))
+        retired += 1
+    if connection.in_transaction:
+        connection.commit()   # release the write lock before the long market scan
+    result = build(connection, actor, current, force=True)
+    result['retired'] = retired
+    return result
 
 
 HEAL_REASONS = ('PRIZE_SHORT', 'LEGS_NOT_OFFERED', 'QUALIFICATION_LAPSED', 'FIXTURE_NOT_FOUND', 'ODDS_CHANGED',
@@ -192,13 +216,50 @@ MAX_HEALS = 3
 
 
 def heal(connection, actor='sports-ai-worker', now=None):
-    """Automatic prize-ladder repairs are stopped by the operator."""
-    from jackpot_stop import disabled_result
-    return disabled_result()
+    """Rebuild each prize whose booking SportyBet refused, with fresh legs and without the matches
+    the page did not show. At most MAX_HEALS rebuilds per prize per WAT day."""
+    import jackpot_low
+    current = jackpot_low._now(now)
+    _release(connection)
+    start = current.astimezone(WAT).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
+    healed = []
+    for ticket in connection.execute(
+        """SELECT t.id, json_extract(t.parameters_json,'$.prize') AS prize FROM sports_ai_accumulator_tickets t
+           WHERE json_extract(t.parameters_json,'$.product')=? AND t.status='qualified'
+             AND NOT EXISTS (SELECT 1 FROM sports_ai_booking_codes b WHERE b.accumulator_ticket_id=t.id
+                             AND b.verification_method='displayed' AND TRIM(COALESCE(b.code,''))<>'')""",
+        (PRODUCT,),
+    ).fetchall():
+        job = connection.execute(
+            """SELECT status, reason_code, selections_json, odds_json FROM sports_ai_booking_jobs
+               WHERE ticket_id=? ORDER BY updated_at DESC LIMIT 1""", (ticket['id'],),
+        ).fetchone()
+        if not job or job['status'] != 'FAILED' or job['reason_code'] not in HEAL_REASONS:
+            continue
+        rebuilt = connection.execute(
+            """SELECT COUNT(*) FROM sports_ai_accumulator_tickets WHERE json_extract(parameters_json,'$.product')=?
+               AND json_extract(parameters_json,'$.prize')=? AND status='expired' AND created_at>=?""",
+            (PRODUCT, ticket['prize'], start),
+        ).fetchone()[0]
+        if rebuilt >= MAX_HEALS:
+            continue
+        try:
+            shown = {item.get('fixture_id') for item in json.loads(job['odds_json'] or '[]') if item.get('page_odds')}
+            missing = [item.get('fixture_id') for item in json.loads(job['selections_json'] or '[]')
+                       if item.get('fixture_id') not in shown]
+        except (TypeError, ValueError):
+            missing = []
+        connection.execute("UPDATE sports_ai_accumulator_tickets SET status='expired' WHERE id=?", (ticket['id'],))
+        if connection.in_transaction:
+            connection.commit()
+        result = build(connection, actor, current, force=True, prizes=[int(ticket['prize'])], exclude=missing)
+        healed.append({'prize': int(ticket['prize']), 'created': result['created'], 'excluded': len(missing)})
+    return healed
 
 
-def _built_today(connection, current):
-    start = current.astimezone(WAT).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+def _built_this_week(connection, current):
+    local = current.astimezone(WAT)
+    start = (local - timedelta(days=local.weekday())).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
     return connection.execute(
         "SELECT COUNT(DISTINCT run_id) FROM sports_ai_accumulator_tickets WHERE json_extract(parameters_json,'$.product')=? AND created_at>=?",
         (PRODUCT, start.isoformat()),
@@ -210,9 +271,93 @@ def _naira(value):
 
 
 def build(connection, actor='sports-ai-worker', now=None, force=False, prizes=None, exclude=()):
-    """Prize-ladder generation is stopped, including forced requests."""
-    from jackpot_stop import disabled_result
-    return disabled_result()
+    """Store this week's jackpot ladder (one ticket per prize) for the booking lane. Never places a wager.
+    With `prizes`, only those prize tickets are built; `exclude` lists matches to leave out."""
+    import jackpot_low
+    from accumulator_engine import CONFIG_ID, combine_ticket, default_config, _insert_ticket
+    from ticket_diversity import unallocated
+    current = jackpot_low._now(now)
+    if not force and _built_this_week(connection, current) >= WEEKLY_RUNS:
+        return {'status': 'already_built', 'created': 0, 'places_wager': False}
+    _release(connection)
+    saved = (jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS)
+    jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS = LEG_MIN, LEG_MAX
+    try:
+        pool = jackpot_low.scan(connection, current, horizon_hours=_hours_to_sunday(current))
+    finally:
+        jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS = saved
+    rates = hit_rates(connection)
+    earliest = (current + timedelta(hours=MIN_LEAD_HOURS)).isoformat()
+    from league_quality import filter_legs
+    pool = filter_legs(connection, [leg for leg in pool if leg['sport'] in LADDER_SPORTS])
+    candidates = [leg for leg in reliable(pool, rates)
+                  if leg['fixture_id'] not in set(exclude) and str(leg['starts_at']) >= earliest]
+    # Matches on other products' active tickets stay out; matches on ladder tickets may be shared
+    # (up to MAX_SHARE), so offer those back.
+    ladder_matches = {row[0] for row in connection.execute(
+        """SELECT l.fixture_id FROM sports_ai_accumulator_legs l JOIN sports_ai_accumulator_tickets t ON t.id=l.ticket_id
+           WHERE json_extract(t.parameters_json,'$.product')=? AND t.status='qualified'""", (PRODUCT,))}
+    free = {leg['fixture_id'] for leg in unallocated(connection, candidates, current)}
+    pool = [leg for leg in candidates if leg['fixture_id'] in free or leg['fixture_id'] in ladder_matches]
+    config = default_config()
+    config.update(max_per_competition=MAX_PER_LEAGUE, max_legs=MAX_LEGS)
+    uses, created, skipped, run_id = {}, [], [], None
+    if prizes:
+        # Matches already on the other active ladder tickets count toward MAX_SHARE.
+        for row in connection.execute(
+            """SELECT l.fixture_id FROM sports_ai_accumulator_legs l JOIN sports_ai_accumulator_tickets t ON t.id=l.ticket_id
+               WHERE json_extract(t.parameters_json,'$.product')=? AND t.status='qualified'""", (PRODUCT,),
+        ).fetchall():
+            uses[row['fixture_id']] = uses.get(row['fixture_id'], 0) + 1
+    for prize in sorted(prizes or PRIZES, reverse=True):          # longest tickets first
+        legs = pick(pool, prize, uses, current)
+        if not legs:
+            skipped.append(prize)
+            continue
+        if run_id is None:
+            run_id = str(uuid.uuid4())
+            connection.execute(
+                """INSERT INTO sports_ai_accumulator_runs
+                   (id,config_id,sport_mode,status,trigger,idempotency_key,parameters_json,actor,started_at)
+                   VALUES(?,?,'mixed','running','prize_ladder',?,'{}',?,?)""",
+                (run_id, CONFIG_ID, f"prize-ladder:{current.strftime('%Y%m%dT%H%M%S%f')}", actor, current.isoformat()),
+            )
+        for leg in legs:
+            uses[leg['fixture_id']] = uses.get(leg['fixture_id'], 0) + 1
+        odds = math.prod(leg['decimal_odds'] for leg in legs)
+        joint = math.prod(leg['probability'] for leg in legs)
+        combined = combine_ticket(legs, config)
+        one_in = f"1 in {1 / joint:,.0f}" if joint > 0 else 'negligible'
+        ticket = {
+            'tier': 2, 'tier_label': f'Prize {_naira(prize)}', 'tier_mode': 'standard', 'shared_matches': True,
+            'coverage': PRODUCT, 'coverage_sport': 'mixed', 'legs': legs,
+            'signature': '|'.join(sorted(f"{l['fixture_id']}:{l['market']}" for l in legs)),
+            'score': joint, 'components': {}, **combined,
+            'combined_odds': odds, 'joint_probability': joint, 'estimated_edge': joint * odds - 1,
+            'probability_basis': 'independent', 'sport_mode': 'mixed',
+            'explanation': (f"Prize ladder: ₦{STAKE} pays at least {_naira(prize)} (built at {odds:,.0f}x, "
+                            f"{_naira(odds * STAKE)}). {len(legs)} legs across "
+                            f"{len({l['competition'] for l in legs})} leagues; estimated chance {one_in}. "
+                            'Probabilities are SportyBet prices with the margin removed. A booking code, not a wager.'),
+            'status': 'qualified',
+        }
+        ticket_id = _insert_ticket(connection, run_id, ticket, config, current, 'created', f'Prize ladder {_naira(prize)}')
+        row = connection.execute('SELECT parameters_json FROM sports_ai_accumulator_tickets WHERE id=?', (ticket_id,)).fetchone()
+        parameters = json.loads(row['parameters_json'] or '{}')
+        parameters.update(product=PRODUCT, prize=prize, stake=STAKE, min_odds=prize_odds(prize), positive_edge=False,
+                          reserve=reserves(pool, legs, rates))
+        connection.execute('UPDATE sports_ai_accumulator_tickets SET parameters_json=?, finalized=1 WHERE id=?',
+                           (json.dumps(parameters), ticket_id))
+        created.append({'prize': prize, 'legs': len(legs), 'odds': round(odds, 1), 'chance': one_in})
+    if run_id:
+        connection.execute(
+            "UPDATE sports_ai_accumulator_runs SET status='complete', summary_json=?, finished_at=? WHERE id=?",
+            (json.dumps({'tickets': created, 'skipped': skipped, 'pool': len(pool), 'places_wager': False}),
+             current.isoformat(), run_id),
+        )
+    _release(connection)
+    return {'status': 'complete' if created else 'insufficient', 'created': len(created), 'tickets': created,
+            'skipped': skipped, 'pool': len(pool), 'places_wager': False}
 
 
 RESERVE_PER_SPORT = 8
@@ -230,7 +375,7 @@ def reserves(pool, legs, rates=None):
     teams = set().union(*(_teams(leg) for leg in legs))
     used = {leg['fixture_id'] for leg in legs}
     spare = [leg for leg in pool if leg['fixture_id'] not in used and not (_teams(leg) & teams)
-             and 1.15 <= leg['decimal_odds'] <= 1.90]
+             and LEG_MIN <= leg['decimal_odds'] <= LEG_MAX]
     spare.sort(key=lambda leg: (-round(_rate(rates, leg), 2), leg['starts_at'], -leg['probability']))
     picked, seen_teams, per_sport = [], set(), {}
     for leg in spare:

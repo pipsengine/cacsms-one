@@ -19,3 +19,12 @@
 @container(max-width:600px){.bcd-embedded .bcd-page{padding:12px}.bcd-embedded .bcd-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.bcd-embedded .bcd-metrics article{height:auto;min-height:89px;padding:10px 8px;gap:7px}.bcd-embedded .bcd-metrics article div>span,.bcd-embedded .bcd-metrics small{white-space:normal}.bcd-embedded .bcd-metrics small{font-size:9px}.bcd-embedded .bcd-category-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.bcd-embedded .bcd-jackpot{grid-column:span 2}.bcd-embedded .bcd-title h1{font-size:20px}.bcd-embedded .bcd-title>svg{width:25px}.bcd-embedded .bcd-heading-copy>p{margin-left:0;font-size:10px}.bcd-embedded .bcd-daily-progress{padding:0;border:0;min-width:180px}.bcd-embedded .bcd-category{padding:12px}.bcd-embedded .bcd-odds{font-size:17px}.bcd-embedded .bcd-category-count{font-size:10px}.bcd-embedded .bcd-filters{flex-wrap:wrap}.bcd-embedded .bcd-search{flex-basis:100%;width:100%}.bcd-embedded .bcd-health>span{padding:0;border:0}.bcd-embedded .bcd-mode{font-size:9px}.bcd-embedded .bcd-open-workspace{font-size:10px}.bcd-embedded .bcd-date{flex-basis:100%;max-width:215px}.bcd-embedded .bcd-workers{grid-template-columns:1fr}.bcd-embedded .bcd-category-title{font-size:10px;gap:6px}.bcd-embedded .bcd-category-count{white-space:normal}.bcd-embedded .bcd-jackpot-body{flex-wrap:wrap}.bcd-embedded .bcd-jackpot-head strong{font-size:12px}.bcd-embedded .bcd-jackpot-head{gap:6px}.bcd-embedded .bcd-metric-icon{width:32px;height:32px}}
 .bcd-jackpot-warn{display:block;margin-top:6px;font-size:11px;line-height:1.4;font-weight:700;color:#b42318;white-space:normal}
 .bcd-jackpot-body .bcd-jackpot-warn{max-width:340px}
+.bcd-ladder-body{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;padding:10px 14px}
+.bcd-ladder-tier{display:grid;gap:3px;background:#fffaf0;border:1px solid #f3dca6;border-radius:10px;padding:8px}
+.bcd-ladder-tier b{font-size:16px;color:#7a4a05}
+.bcd-ladder-tier span{font-size:11px;color:#8a6a2a}
+.bcd-ladder-tier code{font-weight:800;font-size:14px;letter-spacing:.04em;color:#b42318}
+.bcd-ladder-tier small{font-size:10.5px;color:#7a5a1a}
+.bcd-ladder-tier small.muted{color:#a08a5a}
+.bcd-ladder .bcd-jackpot-warn{padding:0 14px 10px}
+@media(max-width:900px){.bcd-ladder-body{grid-template-columns:repeat(3,minmax(0,1fr))}}

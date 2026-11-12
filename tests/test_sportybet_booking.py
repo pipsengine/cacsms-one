@@ -540,8 +540,11 @@ class BookingTests(unittest.TestCase):
                           0.8,'test','{}',?)""",
                 (evening.isoformat(),),
             )
+            from category_support import register_category_card, unregister_category_card
+            register_category_card(connection, 'current-ticket', '2-4.99', evening)
             chosen = select_booking(connection, evening)
             status = connection.execute("SELECT status FROM sports_ai_booking_jobs WHERE id='old-job'").fetchone()['status']
+            unregister_category_card(connection, 'current-ticket')
             connection.execute("DELETE FROM sports_ai_accumulator_tickets WHERE id='current-ticket'")
             connection.execute("DELETE FROM sports_ai_accumulator_runs WHERE id='run'")
             connection.execute("DELETE FROM sports_ai_booking_jobs WHERE id='old-job'")

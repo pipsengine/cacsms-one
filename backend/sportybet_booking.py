@@ -30,6 +30,21 @@ OFFER_HOURS = 24
 MAX_DAILY_FAILURES = 3
 # Tests redirect this (tests/conftest.py); a test page must never land in production evidence.
 EVIDENCE = Path(os.environ.get('SPORTS_BOOKING_EVIDENCE_DIR') or Path(__file__).resolve().parent / 'booking_evidence')
+_PRODUCTION_EVIDENCE = EVIDENCE
+_PRODUCTION_DB = Path(__file__).resolve().parent / 'sports_demo.sqlite3'
+
+
+def _evidence_dir():
+    """Where a booking screenshot goes. A run against any other database (every test, whatever the
+    runner) writes next to that database, so a test page can never appear as live evidence
+    (12 Nov 2026: unittest runs skipped the pytest-only redirect and left mock pages here)."""
+    import db
+    if EVIDENCE != _PRODUCTION_EVIDENCE or os.environ.get('SPORTS_BOOKING_EVIDENCE_DIR'):
+        return EVIDENCE
+    current = Path(db.DB).resolve()
+    if current != _PRODUCTION_DB.resolve():
+        return current.parent / 'booking_evidence'
+    return EVIDENCE
 
 FIND_ODDS = '''(args) => {
   const fold = value => (value || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').replace(/ä/g, 'a').replace(/ö/g, 'o').replace(/ü/g, 'u').replace(/ß/g, 'ss').replace(/ł/g, 'l').replace(/[^a-z0-9.]+/g, ' ');
@@ -554,8 +569,11 @@ def next_ticket_id(connection, now):
                  AND (j.status IN ('QUEUED','PREPARING','CODE_GENERATED') OR j.updated_at>?)
              )
              AND COALESCE(json_extract(t.parameters_json, '$.tier_mode'), 'standard')!='simulation'
-             -- Owner's structure (12 Nov 2026): codes only for Sure Odds and the category cards.
-             AND json_extract(t.parameters_json, '$.product') IN ('sure_odds','high_odds')
+             -- Owner's structure (12 Nov 2026): codes only for Sure Odds (objective 2), the category
+             -- cards (objective 3; registered in sports_ai_high_odds_tickets, no product tag) and the
+             -- weekly jackpot ladder (objective 3; product prize_ladder).
+             AND (json_extract(t.parameters_json, '$.product') IN ('sure_odds','prize_ladder')
+                  OR EXISTS (SELECT 1 FROM sports_ai_high_odds_tickets h WHERE h.ticket_id=t.id))
              AND t.probability_basis='independent' AND t.joint_probability>0
              AND (SELECT COUNT(*) FROM sports_ai_booking_jobs j WHERE j.ticket_id=t.id
                   AND j.status IN ('FAILED','ODDS_CHANGED') AND j.updated_at>?) < ?
@@ -1842,14 +1860,16 @@ async def _execute_job(job_id, page_url=None):
                             check_displayed_prices(optimized_id, booked, seen)
                         result = await request_displayed_code(page, booked, seen)
                         result['skipped'] = [item for item in selections if item.get('fixture_id') not in clicked]
-                EVIDENCE.mkdir(parents=True, exist_ok=True)
-                shot = EVIDENCE / f'{job_id}.png'
+                evidence = _evidence_dir()
+                evidence.mkdir(parents=True, exist_ok=True)
+                shot = evidence / f'{job_id}.png'
                 await page.screenshot(path=str(shot), full_page=False)
                 await context.close()
             except Exception:
-                EVIDENCE.mkdir(parents=True, exist_ok=True)
+                evidence = _evidence_dir()
+                evidence.mkdir(parents=True, exist_ok=True)
                 try:
-                    await page.screenshot(path=str(EVIDENCE / f'{job_id}.png'), full_page=False)
+                    await page.screenshot(path=str(evidence / f'{job_id}.png'), full_page=False)
                 except Exception:
                     pass
                 raise

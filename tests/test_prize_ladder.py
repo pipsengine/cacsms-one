@@ -11,7 +11,7 @@ import prize_ladder as pl
 def pool(n=600):
     legs = []
     for i in range(n):
-        odds = 1.15 + (i % 30) * 0.03            # 1.15 .. 2.02
+        odds = pl.LEG_MIN + (i % 28) * 0.05     # 1.60 .. 2.95: the range the market scan returns
         legs.append({'fixture_id': f'f{i}', 'home': f'H{i}', 'away': f'A{i}',
                      'sport': ('football', 'basketball', 'tennis', 'ice_hockey', 'handball')[i % 5],
                      'competition': f'L{i % 120}', 'decimal_odds': round(odds, 2), 'probability': 0.95 / odds,
@@ -32,7 +32,8 @@ class PrizeLadderTests(unittest.TestCase):
             self.assertGreaterEqual(odds, target * pl.BUILD_LOW, prize)
             self.assertLessEqual(odds, target * pl.BUILD_HIGH, prize)
             self.assertLessEqual(len(chosen), pl.MAX_LEGS)
-            self.assertLess(odds ** (1 / len(chosen)), 1.6)   # legs stay modest
+            # Owner's structure (12 Nov 2026): every jackpot leg is priced 1.60-2.95.
+            self.assertTrue(all(pl.LEG_MIN - 1e-9 <= l['decimal_odds'] <= pl.LEG_MAX + 1e-9 for l in chosen))
             self.assertEqual(len({l['fixture_id'] for l in chosen}), len(chosen))
             share = max(sum(1 for l in chosen if l['sport'] == s) for s in {l['sport'] for l in chosen})
             self.assertLessEqual(share, math.ceil(pl.MAX_SPORT_SHARE * pl.MAX_LEGS))   # no sport dominates

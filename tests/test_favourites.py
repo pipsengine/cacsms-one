@@ -13,12 +13,17 @@ import favourites as fv
 NOW = datetime(2026, 11, 11, 9, 0, tzinfo=timezone.utc)
 
 
-def ids(prefix, lane, n):
-    """Fixture ids that favourites.lane_of sends to `lane` (for legs priced at 1.20 or more)."""
+SINGLE_ODDS = 1.65  # inside the single range 1.60-1.99 (owner's structure, 12 Nov 2026)
+
+
+def ids(prefix, lane, n, odds=SINGLE_ODDS):
+    """Fixture ids that favourites.lane_of sends to `lane` (for legs priced at the single minimum or more)."""
     out, i = [], 0
     while len(out) < n:
+        if i > 10000:
+            raise AssertionError(f'no fixture id goes to the {lane} lane at {odds}')
         fid = f'{prefix}{i}'
-        if fv.lane_of({'fixture_id': fid, 'decimal_odds': 1.25}) == lane:
+        if fv.lane_of({'fixture_id': fid, 'decimal_odds': odds}) == lane:
             out.append(fid)
         i += 1
     return out
@@ -154,8 +159,8 @@ class FavouriteSinglesTests(unittest.TestCase):
             c.execute('PRAGMA foreign_keys=OFF')
             model(c)
             fav1 = ids('fav', 'single', 1)[0]
-            leg(c, fav1, odds=1.25, probability=0.86)
-            leg(c, 'cheap', odds=1.16, probability=0.90)   # below the 1.20 single minimum
+            leg(c, fav1, odds=SINGLE_ODDS, probability=0.86)
+            leg(c, 'cheap', odds=1.16, probability=0.90)   # below the 1.60 single minimum
             self._live(c)
             self.assertEqual(sb.run_cycle(c, NOW)['queued'], 1)
             row = c.execute('SELECT * FROM sports_ai_single_bets').fetchone()
@@ -171,7 +176,7 @@ class FavouriteSinglesTests(unittest.TestCase):
             sb.run_cycle(c, NOW + timedelta(hours=6))
             settled = c.execute('SELECT status, profit FROM sports_ai_single_bets').fetchone()
             self.assertEqual(settled['status'], 'WON')
-            self.assertAlmostEqual(settled['profit'], 25.0)
+            self.assertAlmostEqual(settled['profit'], round(100 * (SINGLE_ODDS - 1), 2))
 
     def test_real_money_cap_is_ten_a_day_including_combined(self):
         import sportybet_account as acct
@@ -187,7 +192,7 @@ class FavouriteSinglesTests(unittest.TestCase):
             model(c)
             singles = ids('f', 'single', sb.FAVOURITE_DAILY_LIMIT + 3)
             for fid in singles:
-                leg(c, fid, odds=1.25, probability=0.86)
+                leg(c, fid, odds=SINGLE_ODDS, probability=0.86)
             self.assertEqual(sb.run_cycle(c, NOW)['queued'], sb.FAVOURITE_DAILY_LIMIT)
             # A favourite whose price went stale is cancelled before placement.
             first = c.execute("SELECT fixture_id FROM sports_ai_single_bets ORDER BY created_at, id LIMIT 1").fetchone()[0]
@@ -209,31 +214,22 @@ class SplitTests(unittest.TestCase):
         db.DB = self.previous
         self.temp.cleanup()
 
-    def test_each_batch_is_split_and_never_shared(self):
+    def test_ticket_lane_is_retired_and_singles_take_every_favourite_in_range(self):
         import single_betting as sb
         with db.connect() as c:
             c.execute('PRAGMA foreign_keys=OFF')
             model(c)
-            single_ids, ticket_ids = ids('s', 'single', 3), ids('t', 'ticket', 4)
-            for fid in single_ids + ticket_ids:
-                leg(c, fid, odds=1.21, probability=0.88)
-            self.assertEqual(fv.lane_of({'fixture_id': single_ids[0], 'decimal_odds': 1.10}), 'ticket')  # too short for a single
-            built = fv.build_favourite_tickets(c, now=NOW)
-            self.assertEqual(built['created'], 1)
-            used = {r[0] for r in c.execute('SELECT fixture_id FROM sports_ai_accumulator_legs')}
-            self.assertTrue(used <= set(ticket_ids))
+            in_range = ids('s', 'single', 2) + ids('t', 'ticket', 2)
+            for fid in in_range:
+                leg(c, fid, odds=SINGLE_ODDS, probability=0.88)
+            leg(c, 'short', odds=1.21, probability=0.90)   # below the 1.60 single minimum
             singles = {i['fixture_id'] for i in sb.favourite_candidates(c, NOW)}
-            self.assertEqual(singles, set(single_ids))
-            sb.run_cycle(c, NOW)
-            backed = {r[0] for r in c.execute("SELECT fixture_id FROM sports_ai_single_bets WHERE kind='FAVOURITE'")}
-            self.assertFalse(backed & used)
-            # Matches already backed as singles are never put on a later ticket.
-            self.assertFalse(backed & {l['fixture_id'] for l in fv.candidates(c, NOW) if l['fixture_id'] in
-                                       {r[0] for r in c.execute('SELECT fixture_id FROM sports_ai_accumulator_legs')}})
+            self.assertEqual(singles, set(in_range))
+            self.assertEqual(fv.lane_of({'fixture_id': 'short', 'decimal_odds': 1.21}), 'ticket')
 
 
 class TicketFollowTests(unittest.TestCase):
-    """Booked accumulator tickets are followed in single betting as ₦100 paper bets."""
+    """Coded Sure Odds tickets are followed in single betting as ₦100 combined bets."""
 
     def setUp(self):
         self.previous = db.DB
@@ -246,10 +242,15 @@ class TicketFollowTests(unittest.TestCase):
         self.temp.cleanup()
 
     def _coded_ticket(self, c, code, coded_at):
+        """A coded ticket tagged as Sure Odds and priced 2.00-2.95: the only kind followed since 12 Nov 2026."""
         model(c)
         for i in range(4):
-            leg(c, f'{code}{i}', odds=1.16 + i * 0.01)
+            leg(c, f'{code}{i}', odds=1.30 + i * 0.01)
         ticket_id = fv.build_favourite_tickets(c, now=NOW)['ticket_ids'][0]
+        c.execute("UPDATE sports_ai_accumulator_tickets SET parameters_json=json_set(parameters_json,'$.product','sure_odds') WHERE id=?",
+                  (ticket_id,))
+        odds = c.execute('SELECT combined_odds FROM sports_ai_accumulator_tickets WHERE id=?', (ticket_id,)).fetchone()[0]
+        assert 2.0 <= odds <= 2.95, odds
         c.execute("""INSERT INTO sports_ai_booking_codes(id,accumulator_ticket_id,code,verification_method,evidence,status,
                      verified_at,created_at) VALUES(?,?,?,'displayed','test','verified',?,?)""",
                   (f'bc-{code}', ticket_id, code, coded_at.isoformat(), coded_at.isoformat()))

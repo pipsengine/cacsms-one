@@ -499,8 +499,13 @@ def _ticket_tick():
                 coverage = build_high_probability_tickets(connection, 'sports-ai-worker', _audit, now=current)
                 from favourites import build_favourite_tickets
                 favourites = build_favourite_tickets(connection, 'sports-ai-worker', now=current)
-            from jackpot_stop import disabled_result
-            jackpots = disabled_result()
+            # Objective 3: the weekly jackpot ladder (₦1M-₦200M, legs 1.60-2.95, Monday-Sunday matches).
+            # One set per week; refused bookings are rebuilt with fresh legs (prize_ladder.heal).
+            import prize_ladder
+            jackpots = prize_ladder.build(connection, 'sports-ai-worker', now=current)
+            healed = prize_ladder.heal(connection, 'sports-ai-worker', now=current)
+            if healed:
+                print('jackpot ladder repaired', healed)
         print(
             'tickets', result.get('status'),
             'created', result.get('tickets_created', result.get('ticket_count', 0)),

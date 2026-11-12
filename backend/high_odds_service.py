@@ -197,6 +197,10 @@ def eligible(connection, now=None, ignore_family=None, exclude_allocated=True):
         accepted.append(leg)
     free = unallocated(connection,accepted,current,ignore_family) if exclude_allocated else accepted
     rejected['Match already allocated to another active ticket'] += len(accepted)-len(free)
+    from league_quality import filter_legs
+    kept = filter_legs(connection, free)  # only sports and leagues with an acceptable record (12 Nov 2026)
+    rejected['League or sport with a losing record'] = len(free)-len(kept)
+    free = kept
     # Keep market alternatives in the beam; event keys enforce one per match.
     return free, {key:value for key,value in rejected.items() if value}, len(rows)
 
@@ -760,7 +764,7 @@ def coded_accumulator_tickets(connection, now=None, cats=None, limit=500):
     current = now_utc(now)
     cats = cats or categories(connection)
     rows = connection.execute(
-        """SELECT t.id,t.combined_odds,t.joint_probability,t.estimated_edge,t.leg_count,t.status,t.created_at ticket_created_at,
+        """SELECT t.id,t.combined_odds,t.joint_probability,t.estimated_edge,t.leg_count,t.status,t.created_at ticket_created_at,t.parameters_json,
                   b.code,b.status code_status,b.verified_at,s.outcome,s.hypothetical_profit
            FROM sports_ai_booking_codes b
            JOIN sports_ai_accumulator_tickets t ON t.id=b.accumulator_ticket_id
@@ -791,7 +795,13 @@ def coded_accumulator_tickets(connection, now=None, cats=None, limit=500):
         started = _parse_time(start) and _parse_time(start) <= current
         state = 'settled' if row['outcome'] else 'monitoring' if started else 'registered'
         from jackpot_stop import is_stopped
-        booking_disabled = category == JACKPOT or is_stopped(connection, row['id'])
+        # Jackpot-range codes are the weekly jackpot ladder (prize_ladder), enabled since 12 Nov 2026;
+        # only stopped products are shown as disabled.
+        booking_disabled = is_stopped(connection, row['id'])
+        try:
+            prize = json.loads(row['parameters_json'] or '{}').get('prize')
+        except (TypeError, ValueError):
+            prize = None
         if booking_disabled or row['status'] == 'expired' or row['code_status'] == 'expired':
             state = 'expired'
         tickets.append({
@@ -802,7 +812,7 @@ def coded_accumulator_tickets(connection, now=None, cats=None, limit=500):
             'joint_probability': row['joint_probability'], 'estimated_edge': row['estimated_edge'],
             'leg_count': len(legs), 'legs': legs, 'start_at': start, 'booking_code': row['code'],
             'code_status': row['code_status'], 'outcome': row['outcome'], 'hypothetical_profit': row['hypothetical_profit'],
-            'stake_assumption': None, 'source': 'accumulator',
+            'stake_assumption': 100 if prize else None, 'prize': prize, 'source': 'accumulator',
         })
     return tickets
 

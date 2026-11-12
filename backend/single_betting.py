@@ -244,11 +244,15 @@ def load_candidates(connection, now=None):
             (current.isoformat(),),
         ).fetchone()[0] or 1
     unbookable = _unbookable_fixtures(connection)
+    from league_quality import allowed as league_allowed
     for row in rows:
         if row['fixture_status'] not in OPEN_FIXTURE:
             continue
         if row['fixture_id'] in unbookable:
             rejected['NOT_FOUND_ON_SPORTYBET'] = rejected.get('NOT_FOUND_ON_SPORTYBET', 0) + 1
+            continue
+        if not league_allowed(connection, row['sport'], row['competition'], row['home'], row['away']):
+            rejected['LEAGUE_TRACK_RECORD'] = rejected.get('LEAGUE_TRACK_RECORD', 0) + 1
             continue
         quote = _latest_quote(connection, row['fixture_id'], row['market'])
         try:
@@ -433,7 +437,8 @@ def favourite_candidates(connection, now=None, exclude=()):
     current = _now(now)
     taken = _active_fixtures(connection) | set(exclude) | _ticket_fixtures(connection)
     try:
-        legs = candidates(connection, current)
+        from league_quality import filter_legs
+        legs = filter_legs(connection, candidates(connection, current))
     except Exception:  # favourites are optional; the edge engine must keep running
         return []
     # The favourites ticket lane is retired (owner's structure, 12 Nov), so singles use every favourite.

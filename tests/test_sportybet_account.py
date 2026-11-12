@@ -78,9 +78,9 @@ document.getElementById('place').addEventListener('click', () => {
 MULTI_PAGE = '''<!doctype html><html><body>
 <div class="s-header">NGN 4,755.89 Deposit Bet History My Account</div>
 <div class="match-row"><span>Braga</span><span>Estrela</span>
-  <span class="m-outcome">1.12</span><span class="m-outcome">7.50</span><span class="m-outcome">15.00</span></div>
+  <span class="m-outcome">1.45</span><span class="m-outcome">4.20</span><span class="m-outcome">15.00</span></div>
 <div class="match-row"><span>Porto</span><span>Benfica</span>
-  <span class="m-outcome">1.14</span><span class="m-outcome">7.00</span><span class="m-outcome">13.00</span></div>
+  <span class="m-outcome">1.55</span><span class="m-outcome">4.00</span><span class="m-outcome">13.00</span></div>
 <div class="m-betslip-wrapper">
   <div id="count">Betslip0</div>
   <ul><li id="tab-single">Singles</li><li id="tab-multi">Multiple</li></ul>
@@ -186,16 +186,16 @@ class AccountTests(unittest.TestCase):
         kickoff = (now + timedelta(hours=3)).isoformat()
         legs = [
             {'leg_no': 1, 'fixture_id': 'fa', 'sport': 'football', 'competition': 'Primeira Liga', 'home': 'Braga',
-             'away': 'Estrela', 'market': 'HOME', 'selection': 'Home Win (1)', 'decimal_odds': 1.12, 'probability': 0.95,
+             'away': 'Estrela', 'market': 'HOME', 'selection': 'Home Win (1)', 'decimal_odds': 1.45, 'probability': 0.95,
              'starts_at': kickoff, 'odds_observed_at': now.isoformat()},
             {'leg_no': 2, 'fixture_id': 'fb', 'sport': 'football', 'competition': 'Primeira Liga', 'home': 'Porto',
-             'away': 'Benfica', 'market': 'HOME', 'selection': 'Home Win (1)', 'decimal_odds': 1.14, 'probability': 0.93,
+             'away': 'Benfica', 'market': 'HOME', 'selection': 'Home Win (1)', 'decimal_odds': 1.55, 'probability': 0.93,
              'starts_at': kickoff, 'odds_observed_at': now.isoformat()},
         ]
         bet = {'id': 'combo-1', 'kind': 'COMBO', 'legs': legs, 'fixture_id': 'fa', 'sport': 'football',
                'competition': 'Primeira Liga', 'home': 'Braga', 'away': 'Estrela', 'market': 'COMBO',
-               'selection': 'Home Win (1) + Home Win (1)', 'decimal_odds': 1.2768, 'probability': 0.95 * 0.93,
-               'expected_value': 1.2768 * 0.95 * 0.93 - 1, 'stake': 100.0, 'starts_at': kickoff,
+               'selection': 'Home Win (1) + Home Win (1)', 'decimal_odds': 2.2475, 'probability': 0.95 * 0.93,
+               'expected_value': 2.2475 * 0.95 * 0.93 - 1, 'stake': 100.0, 'starts_at': kickoff,
                'odds_observed_at': now.isoformat(), 'local_date': sb.local_date(now)}
         connection.execute(
             """INSERT INTO sports_ai_single_bets(id,fixture_id,sport,competition,home,away,market,selection,decimal_odds,
@@ -335,7 +335,7 @@ Total Return
             order = c.execute("SELECT * FROM sports_ai_single_live_orders WHERE kind='SUBMISSION'").fetchone()
             checks = json.loads(order['checks_json'])
             self.assertTrue(all(checks['checks'].values()), checks['checks'])
-            self.assertAlmostEqual(order['page_odds'], 1.2768)
+            self.assertAlmostEqual(order['page_odds'], 2.2475)
             self.assertEqual(order['bookmaker_ref'], 'TK87654321')
             sb.apply_execution(c, bet, outcome, status, detail, 'SUBMISSION', now)
             self.assertEqual(c.execute("SELECT status FROM sports_ai_single_bets WHERE id='combo-1'").fetchone()[0], 'PLACED')
@@ -348,7 +348,7 @@ Braga v Estrela
 Total Stake
 100.00
 Total Return
-112.00
+145.00
 {placed}
 Multiple
 Won
@@ -357,10 +357,10 @@ SC Braga v Estrela da Amadora
 Total Stake
 100.00
 Total Return
-127.68'''
+224.75'''
             self.assertEqual(acct.reconcile(c, history, now), 1)
             order = c.execute("SELECT status, payout FROM sports_ai_single_live_orders WHERE kind='SUBMISSION'").fetchone()
-            self.assertEqual((order['status'], order['payout']), ('SETTLED_WON', 127.68))
+            self.assertEqual((order['status'], order['payout']), ('SETTLED_WON', 224.75))
 
     def test_no_edge_ticket_is_submitted_in_live_mode(self):
         now = datetime.now(timezone.utc)
@@ -372,9 +372,9 @@ Total Return
             acct.set_execution_mode(c, 'LIVE', 'admin', now)
             bet = self._combo(c, now)
             for item in bet['legs']:
-                item['probability'] = 0.75          # 56% joint, negative expected value
-            bet.update(kind='TICKET', probability=0.5625, expected_value=1.2768 * 0.5625 - 1)
-            c.execute("UPDATE sports_ai_single_bets SET kind='TICKET', probability=0.5625 WHERE id='combo-1'")
+                item['probability'] = 0.6325        # 40% joint, negative expected value
+            bet.update(kind='TICKET', probability=0.40, expected_value=2.2475 * 0.40 - 1)
+            c.execute("UPDATE sports_ai_single_bets SET kind='TICKET', probability=0.40 WHERE id='combo-1'")
         outcome, status, detail = asyncio.run(acct.execute_async(bet, 'SUBMISSION', now))
         self.assertEqual((outcome, status), ('LIVE_PLACED', 'PLACED'), detail)
         with db.connect() as c:

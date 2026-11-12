@@ -79,7 +79,17 @@ def _secrets_dir():
 
 
 def evidence_dir():
-    path = Path(os.environ.get('SPORTS_ACCOUNT_EVIDENCE_DIR') or Path(__file__).resolve().parent / 'account_evidence')
+    """Betslip screenshots. A run against any database other than the live one (every test,
+    whatever the runner) writes next to that database, never into the live folder."""
+    import db
+    live = Path(__file__).resolve().parent
+    configured = os.environ.get('SPORTS_ACCOUNT_EVIDENCE_DIR')
+    if configured:
+        path = Path(configured)
+    elif Path(db.DB).resolve() != (live / 'sports_demo.sqlite3').resolve():
+        path = Path(db.DB).resolve().parent / 'account_evidence'
+    else:
+        path = live / 'account_evidence'
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -110,15 +120,16 @@ def save_session(state):
     path = _session_file()
     temp = path.with_name(f'{path.name}.{os.getpid()}.{threading.get_ident()}.tmp')
     temp.write_bytes(_cipher().encrypt(json.dumps(state).encode()))
-    for attempt in range(5):
+    for attempt in range(25):
         try:
             os.replace(temp, path)
-            return
+            return True
         except PermissionError:  # Windows: the other process is reading the file this instant
-            if attempt == 4:
-                temp.unlink(missing_ok=True)
-                raise
-            time.sleep(0.2)
+            time.sleep(0.05 + 0.02 * attempt)
+    # Still busy after ~7 s: keep the previous (valid) session rather than fail the bet or check
+    # that called this. The cookies are refreshed again on the next browser visit.
+    temp.unlink(missing_ok=True)
+    return False
 
 
 def load_session():

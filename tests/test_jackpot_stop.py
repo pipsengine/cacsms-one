@@ -33,21 +33,23 @@ class JackpotStopTests(unittest.TestCase):
     def tearDown(self):
         self.c.close()
 
-    def test_all_build_and_rebuild_entry_points_stay_off_even_when_forced(self):
-        for builder, kwargs in [(jackpot_low.build, {'force': True}), (prize_ladder.build, {'force': True}),
-                                (prize_ladder.rebuild, {}), (prize_ladder.heal, {})]:
-            self.assertEqual(builder(None, **kwargs)['status'], 'disabled')
+    def test_retired_entry_points_stay_off_even_when_forced(self):
+        # The weekly jackpot ladder (prize_ladder) was re-enabled by the owner on 12 Nov 2026;
+        # the low-odds jackpot and the single-tier jackpot category stay off.
+        self.assertEqual(jackpot_low.build(None, force=True)['status'], 'disabled')
         self.assertIsNone(high_odds_service.persist_ticket(None, None, {'id': 'jackpot'}, None, None, None))
 
-    def test_all_jackpot_products_and_optimizer_category_are_stopped(self):
-        for ticket in ('jackpot_low', 'prize_ladder', 'autonomous_high_odds'):
+    def test_retired_jackpot_products_and_optimizer_category_are_stopped(self):
+        self.assertFalse(is_stopped(self.c, 'prize_ladder'))   # the weekly jackpot ladder is enabled
+        require_enabled(self.c, 'prize_ladder')
+        for ticket in ('jackpot_low', 'autonomous_high_odds'):
             self.assertTrue(is_stopped(self.c, ticket))
             with self.assertRaisesRegex(ValueError, 'disabled by the operator'):
                 require_enabled(self.c, ticket)
         require_enabled(self.c, 'sure_odds')
 
     def test_new_jobs_and_late_code_results_are_rejected(self):
-        for ticket in ('jackpot_low', 'prize_ladder', 'autonomous_high_odds'):
+        for ticket in ('jackpot_low', 'autonomous_high_odds'):
             with self.assertRaisesRegex(ValueError, 'disabled by the operator'):
                 sportybet_booking.create_job(self.c, [{'ticket_id': ticket}])
             with self.assertRaisesRegex(ValueError, 'disabled by the operator'):
@@ -55,7 +57,7 @@ class JackpotStopTests(unittest.TestCase):
 
     def test_already_queued_job_is_cancelled_before_opening_browser(self):
         self.c.execute('INSERT INTO sports_ai_booking_jobs(id,selections_json,status) VALUES(?,?,?)',
-                       ('job', '[{"ticket_id":"prize_ladder"}]', 'QUEUED'))
+                       ('job', '[{"ticket_id":"jackpot_low"}]', 'QUEUED'))
         self.c.commit()
         @contextmanager
         def connected(*args, **kwargs):

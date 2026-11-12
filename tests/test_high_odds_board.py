@@ -47,23 +47,27 @@ class HighOddsBoardTests(unittest.TestCase):
 
     def test_sure_tickets_land_between_2_and_2_95(self):
         day = {'name': 'Saturday', 'date': '2026-11-07'}
-        rows = [leg(str(index), 1.2, 0.90, competition=f'League {index}') for index in range(10)]
+        # Owner's structure (12 Nov 2026): 2-3 selections per ticket, at most 5 tickets a day.
+        rows = [leg(str(index), 1.45, 0.90, competition=f'League {index}') for index in range(14)]
         rows.append(leg('long', 4.0, 0.95))
-        rows.append(leg('weak', 1.2, 0.70))
+        rows.append(leg('weak', 1.45, 0.70))
         tickets = pack_sure_tickets(rows, day)
-        self.assertEqual(len(tickets), 2)
+        self.assertEqual(len(tickets), 5)  # 14 usable legs would allow 7 two-leg tickets; the daily cap is 5
         used = []
         for ticket in tickets:
-            self.assertGreaterEqual(ticket['selection_count'], 2)
+            self.assertIn(ticket['selection_count'], (2, 3))
             self.assertGreaterEqual(ticket['combined_odds'], 2)
             self.assertLessEqual(ticket['combined_odds'], 2.95)
             self.assertTrue(all(item['probability'] >= 80 for item in ticket['selections']))
             used.extend(item['fixture'] for item in ticket['selections'])
         self.assertEqual(len(used), len(set(used)))
         self.assertNotIn('long vs Opponent', used)
+        self.assertNotIn('weak vs Opponent', used)
         self.assertEqual(pack_sure_tickets([leg('only', 1.4, 0.91)], day), [])
+        # 1.20 legs reach only 1.73 with three: no ticket rather than a four-leg one.
+        self.assertEqual(pack_sure_tickets([leg(f'short-{i}', 1.2, 0.95, competition=f'League {i}') for i in range(8)], day), [])
         blocked = [leg('solo', 2.95, 0.99)]
-        blocked.extend(leg(f'small-{index}', 1.2, 0.90, competition=f'League {index}') for index in range(5))
+        blocked.extend(leg(f'small-{index}', 1.45, 0.90, competition=f'League {index}') for index in range(2))
         opened = pack_sure_tickets(blocked, day)
         self.assertEqual(len(opened), 1)
         self.assertNotIn('solo vs Opponent', [item['fixture'] for item in opened[0]['selections']])

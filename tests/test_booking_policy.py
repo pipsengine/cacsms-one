@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 from integrity_support import eligible_everywhere
+from category_support import register_category_card
 
 import db
 import booking_policy
@@ -77,7 +78,7 @@ class BookingPolicyTests(unittest.TestCase):
         db.DB = self.previous
         self.temp.cleanup()
 
-    def _ticket(self, c, status='review_required', legs=LEGS, ticket_id='t1', unlisted=(), qualify=True):
+    def _ticket(self, c, status='review_required', legs=LEGS, ticket_id='t1', unlisted=(), qualify=True, category_card=True):
         observed = (self.now - timedelta(hours=3)).isoformat()  # stale price, no qualification decisions
         c.execute(
             """INSERT INTO sports_ai_accumulator_tickets
@@ -86,6 +87,8 @@ class BookingPolicyTests(unittest.TestCase):
                VALUES(?,?,1,?,5,'basketball',?,8.21,0.2,?,'independent','test','{"tier_mode":"standard"}',?)""",
             (ticket_id, ticket_id, ticket_id, status, len(legs), self.now.isoformat()),
         )
+        if category_card:  # the booking queue requests codes only for category cards and Sure Odds
+            register_category_card(c, ticket_id, '5-9.99', self.now)
         for fixture, home, away, market, odds, hours in legs:
             kickoff = (self.now + timedelta(hours=hours)).isoformat()
             c.execute(
@@ -274,7 +277,7 @@ class BookingPolicyTests(unittest.TestCase):
     def test_codes_from_standard_tickets_show_on_the_category_dashboard(self):
         import high_odds_service
         with db.connect() as c:
-            self._ticket(c, status='qualified')  # 1.80 x 2.40 x 1.90 = 8.21 -> Low Odds
+            self._ticket(c, status='qualified', category_card=False)  # 1.80 x 2.40 x 1.90 = 8.21 -> Low Odds
             c.execute('UPDATE sports_ai_accumulator_tickets SET combined_odds=8.21')
             for index in range(2):  # the same code stored twice is shown once
                 c.execute(
