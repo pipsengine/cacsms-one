@@ -181,7 +181,7 @@ def _hours_to_sunday(current):
 
 
 def rebuild(connection, actor='operator', now=None):
-    """Replace today's ladder tickets that have no displayed code yet, then build again."""
+    """Rebuilding the prize ladder is stopped by the operator."""
     from jackpot_stop import disabled_result
     return disabled_result()
 
@@ -192,8 +192,7 @@ MAX_HEALS = 3
 
 
 def heal(connection, actor='sports-ai-worker', now=None):
-    """Rebuild each prize whose booking SportyBet refused, with fresh legs and without the matches
-    the page did not show. At most MAX_HEALS rebuilds per prize per WAT day."""
+    """Automatic prize-ladder repairs are stopped by the operator."""
     from jackpot_stop import disabled_result
     return disabled_result()
 
@@ -211,8 +210,7 @@ def _naira(value):
 
 
 def build(connection, actor='sports-ai-worker', now=None, force=False, prizes=None, exclude=()):
-    """Store today's prize ladder for the booking lane. Never places a wager.
-    With `prizes`, only those prize tickets are built; `exclude` lists matches to leave out."""
+    """Prize-ladder generation is stopped, including forced requests."""
     from jackpot_stop import disabled_result
     return disabled_result()
 

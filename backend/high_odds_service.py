@@ -786,7 +786,12 @@ def coded_accumulator_tickets(connection, now=None, cats=None, limit=500):
         start = min(l['starts_at'] for l in legs)
         started = _parse_time(start) and _parse_time(start) <= current
         state = 'settled' if row['outcome'] else 'monitoring' if started else 'registered'
+        from jackpot_stop import is_stopped
+        booking_disabled = category == JACKPOT or is_stopped(connection, row['id'])
+        if booking_disabled or row['status'] == 'expired' or row['code_status'] == 'expired':
+            state = 'expired'
         tickets.append({
+            'booking_disabled': booking_disabled,
             'ticket_id': row['id'], 'ticket_no': f"AC-{row['id'][:8].upper()}", 'category_id': category,
             'created_at': row['verified_at'], 'ticket_created_at': row['ticket_created_at'],
             'registration_state': state, 'status': row['status'], 'combined_odds': row['combined_odds'],
@@ -819,6 +824,8 @@ def dashboard(connection, now=None, date_from=None, date_to=None, status=None, c
             start_at=min(l['starts_at'] for l in snapshot['legs']),booking_code=code['code'] if code else None,
             code_status=code['status'] if code else None,model_uncertainty=snapshot['model_uncertainty'],
             dependency_policy=snapshot['dependency_policy'],stake_assumption=snapshot.get('stake_assumption'))
+        if item['category_id'] == JACKPOT:
+            item.update(booking_disabled=True, registration_state='expired')
         tickets.append(item)
     cats=categories(connection)
     coded=coded_accumulator_tickets(connection,current,cats)

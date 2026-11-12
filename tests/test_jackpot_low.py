@@ -70,7 +70,7 @@ class JackpotTests(unittest.TestCase):
         self.assertEqual(legs[0]['market'], 'OVER_0.5')
         self.assertLess(legs[0]['probability'], 1 / 1.05)
 
-    def test_jackpot_gate_allows_50_and_is_not_followed_by_single_betting(self):
+    def test_jackpot_gate_is_disabled_and_is_not_followed_by_single_betting(self):
         import single_betting as sb
         with db.connect() as c:
             c.execute('PRAGMA foreign_keys=OFF')
@@ -82,10 +82,11 @@ class JackpotTests(unittest.TestCase):
                           (fid, fid, 't', 'basketball' if i % 3 else 'football', 'L', f'{fid}H', f'{fid}A',
                            (NOW + timedelta(hours=4)).isoformat(), 'scheduled', '{}', '{}', NOW.isoformat()))
                 selections.append({'fixture_id': fid, 'market': 'HOME', 'sport': 'football'})
-            self.assertEqual(jl.require_bookable(c, selections, NOW)['product'], 'jackpot_low')
+            with self.assertRaisesRegex(ValueError, 'disabled by the operator'):
+                jl.require_bookable(c, selections, NOW)
             with self.assertRaises(ValueError):
                 jl.require_bookable(c, selections + selections[:6], NOW)
-            with self.assertRaisesRegex(ValueError, 'started'):
+            with self.assertRaisesRegex(ValueError, 'disabled by the operator'):
                 jl.require_bookable(c, selections, NOW + timedelta(hours=5))
             c.execute("""INSERT INTO sports_ai_accumulator_tickets(id,run_id,family_id,version,signature,tier,sport_mode,status,
                          combined_odds,joint_probability,estimated_edge,leg_count,probability_basis,uncertainty,explanation,

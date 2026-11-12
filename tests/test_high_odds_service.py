@@ -124,58 +124,30 @@ class HighOddsServiceTests(unittest.TestCase):
             self.assertEqual(service.generate_event(c,event,self.now),[])
             self.assertEqual(len(service.dashboard(c,self.now)['tickets']),len(tickets))
 
-    def test_jackpot_generation_registration_and_displayed_prices(self):
-        from sportybet_booking import ticket_selections, _store_displayed_code
+    def test_jackpot_generation_remains_disabled_when_database_flag_is_enabled(self):
         with db.connect() as c:
-            self.seed(c,21,odds=2)
             c.execute("UPDATE sports_ai_high_odds_categories SET enabled=(id='jackpot')")
             report=next(r for r in service.generate_event(c,self.event(c),self.now) if r['category_id']=='jackpot')
-            self.assertEqual(report['status'],'created')
-            identifier=report['created_ids'][0]
-            ticket=service.dashboard(c,self.now)['tickets'][0]
-            self.assertEqual(ticket['category_id'],'jackpot')
-            self.assertEqual(ticket['combined_odds'],2**21)
-            self.assertEqual(ticket['stake_assumption'],100)
-            self.assertAlmostEqual(ticket['joint_probability'],.62**21)
-            self.assertEqual(service.validate_snapshot(c,identifier,self.now),[])
-            with patch('sportybet_booking._now', return_value=self.now):  # the booking gate checks kickoff against this clock
-                self.assertEqual(service.queue_registration(c,self.now),1)
-            selections=ticket_selections(c,identifier)
-        shown=[{'fixture_id':leg['fixture_id'],'market':leg['market'],'page_odds':leg['decimal_odds']} for leg in selections]
-        with patch.object(service,'now_utc',side_effect=lambda now=None:now or self.now):
-            service.check_displayed_prices(identifier,selections,shown)
-            with db.connect() as c:
-                _store_displayed_code(c,identifier,'JACKPOTTESTONLY','isolated test evidence')
-                service.registration_result(c,identifier,{'status':'CODE_GENERATED'},self.now)
-                category=next(x for x in service.dashboard(c,self.now)['categories'] if x['id']=='jackpot')
-                self.assertEqual(category['daily_verified'],1)
-                self.assertEqual(category['daily_created'],1)
-                self.assertEqual(category['daily_target'],5)
-            shown[0]['page_odds']=2.1
-            with self.assertRaises(ValueError):service.check_displayed_prices(identifier,selections,shown)
-
-    def test_jackpot_daily_limit_survives_ticket_retirement(self):
-        with db.connect() as c:
-            fixtures=self.seed(c,105,odds=2)
-            revalidate(c,'test',self.now,fixture_ids=[item['fixture_id'] for item in fixtures])
-            c.execute("UPDATE sports_ai_high_odds_categories SET enabled=(id='jackpot')")
-            settings=service.category_settings(service.config(c),{'id':'jackpot'})
-            pool=service.eligible(c,self.now)[0]
-            category=next(x for x in service.categories(c) if x['id']=='jackpot')
-            event=self.event(c)
-            for start in range(0,105,21):
-                candidates,_=service.optimize(pool[start:start+21],category,settings)
-                self.assertTrue(candidates)
-                identifier=service.persist_ticket(c,candidates[0],category,event,settings,self.now)
-                c.execute("UPDATE sports_ai_accumulator_tickets SET status='expired' WHERE id=?",(identifier,))
-            report=next(x for x in service.generate_event(c,event,self.now) if x['category_id']=='jackpot')
-            self.assertEqual(report['status'],'daily_target')
+            self.assertEqual(report['status'],'disabled')
             self.assertEqual(report['created_ids'],[])
-            # 23:30 UTC is the next Africa/Lagos day; the previous day's limit is reset.
-            tomorrow=self.now.replace(hour=23,minute=30)
-            event2=service.enqueue(c,'test.next_day',{},'next-day',tomorrow)
-            report=next(x for x in service.generate_event(c,event2,tomorrow) if x['category_id']=='jackpot')
-            self.assertNotEqual(report['status'],'daily_target')
+            self.assertEqual(service.queue_registration(c,self.now),0)
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM sports_ai_high_odds_tickets').fetchone()[0],0)
+
+    def test_jackpot_stop_survives_daily_rollover(self):
+        with db.connect() as c:
+            c.execute("UPDATE sports_ai_high_odds_categories SET enabled=(id='jackpot')")
+            for offset in (0,1):
+                moment=self.now+timedelta(days=offset)
+                event=service.enqueue(c,'test.day',{},f'disabled-day-{offset}',moment)
+                report=next(r for r in service.generate_event(c,event,moment) if r['category_id']=='jackpot')
+                self.assertEqual(report['status'],'disabled')
+                self.assertEqual(report['created_ids'],[])
+
+    def test_jackpot_cannot_be_reenabled_in_settings(self):
+        with db.connect() as c:
+            with self.assertRaisesRegex(ValueError, 'disabled by the operator'):
+                service.save_settings(c, {}, [{'id':'jackpot','enabled':True}], 'operator')
+            self.assertFalse(next(row for row in service.categories(c) if row['id']=='jackpot')['enabled'])
 
     def test_jackpot_migration_preserves_existing_ticket_references(self):
         with db.connect() as c:
@@ -325,7 +297,7 @@ class HighOddsServiceTests(unittest.TestCase):
         with db.connect() as c:
             reports=service.generate_event(c,self.event(c),self.now)
             self.assertEqual(len(reports),9)
-            self.assertTrue(all(r['status']=='insufficient_eligible_data' for r in reports))
+            self.assertTrue(all(r['status']==('disabled' if r['category_id']=='jackpot' else 'insufficient_eligible_data') for r in reports))
             self.assertEqual(c.execute('SELECT COUNT(*) FROM sports_ai_accumulator_tickets').fetchone()[0],0)
 
     def test_category_failure_does_not_stop_the_other_seven(self):

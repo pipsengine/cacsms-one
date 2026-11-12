@@ -715,6 +715,8 @@ def _ticket_product(connection, ticket_id):
 
 
 def _store_displayed_code(connection, ticket_id, code, evidence):
+    from jackpot_stop import require_enabled
+    require_enabled(connection, ticket_id)
     from qualification_engine import require_current_qualification
     selections = ticket_selections(connection, ticket_id)
     stored_product = _ticket_product(connection, ticket_id)

@@ -179,13 +179,12 @@ def _built_today(connection, current):
 
 
 def build(connection, actor='sports-ai-worker', now=None, force=False):
-    """Store today's three low-odds jackpots for the booking lane. Never places a wager."""
+    """Jackpot generation is stopped, including forced requests."""
     from jackpot_stop import disabled_result
     return disabled_result()
 
 
 def require_bookable(connection, selections, now=None):
-    """Booking gate for low-odds jackpots (instead of the positive-EV gate they cannot meet):
-    known scheduled matches before kickoff, no shared match or team, no simulated game."""
+    """Reject every jackpot booking request after the operator stop."""
     from jackpot_stop import REASON
     raise ValueError(REASON)
