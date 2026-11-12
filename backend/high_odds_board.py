@@ -32,6 +32,8 @@ HIGHER_ODDS_BANDS = ('2-3', '3-4', '4-5', 'above-5')
 MAX_TICKETS_PER_BAND = 4
 SURE_COMBINED_MIN = 2.0
 SURE_COMBINED_MAX = 2.95
+SURE_PACK_RANGE = (2.10, 2.80)   # build target inside 2.00-2.95, leaving room for price drift before booking
+SURE_RETIRE_REASONS = ('SURE_ODDS_OUT_OF_RANGE', 'LEGS_NOT_OFFERED')
 
 
 def _certain(row):
@@ -148,9 +150,10 @@ def _sure_today(connection, day, now, candidates=None):
                   WHERE b.accumulator_ticket_id=t.id AND b.verification_method='displayed' AND TRIM(COALESCE(b.code,''))<>''))""",
         (day['start'].isoformat(), day['end'].isoformat()))}
     # At most SURE_DAILY_MAX per day: tickets already stored or coded today count towards it.
+    # Retired tickets (refused by SportyBet's displayed prices, see retire_failed_sure) do not count.
     made_today = connection.execute(
         """SELECT COUNT(*) FROM sports_ai_accumulator_tickets
-           WHERE json_extract(parameters_json,'$.product')='sure_odds'
+           WHERE json_extract(parameters_json,'$.product')='sure_odds' AND status!='expired'
              AND julianday(created_at)>=julianday(?) AND julianday(created_at)<julianday(?)""",
         (day['start'].isoformat(), day['end'].isoformat()),
     ).fetchone()[0]
@@ -385,7 +388,9 @@ def pack_sure_tickets(candidates, day, limit=SURE_DAILY_MAX, floor=None, sports=
                 for leg in combo:
                     product *= float(leg['decimal_odds'])
                     joint *= float(leg['probability'])
-                if not SURE_COMBINED_MIN - 1e-9 <= product <= SURE_COMBINED_MAX + 1e-9:
+                # Packed inside SURE_PACK_RANGE, not at the 2.00 edge: SportyBet's displayed prices drift
+                # a few percent before booking, and 12 Nov tickets packed at 2.00-2.01 showed 1.98-1.99.
+                if not SURE_PACK_RANGE[0] - 1e-9 <= product <= SURE_PACK_RANGE[1] + 1e-9:
                     continue
                 rank = (joint, -size, -product)
                 if best is None or rank > best[0]:
@@ -723,7 +728,11 @@ def _booking_index(connection):
                    ORDER BY j.created_at DESC LIMIT 1) AS job_id,
                   (SELECT j.updated_at FROM sports_ai_booking_jobs j
                    WHERE j.signature LIKE t.id || '|%'
-                   ORDER BY j.created_at DESC LIMIT 1) AS job_updated
+                   ORDER BY j.created_at DESC LIMIT 1) AS job_updated,
+                  (SELECT j.reason_code FROM sports_ai_booking_jobs j
+                   WHERE j.signature LIKE t.id || '|%' ORDER BY j.created_at DESC LIMIT 1) AS job_reason,
+                  (SELECT j.error FROM sports_ai_booking_jobs j
+                   WHERE j.signature LIKE t.id || '|%' ORDER BY j.created_at DESC LIMIT 1) AS job_error
            FROM sports_ai_accumulator_tickets t
            WHERE json_extract(t.parameters_json, '$.product') IN ('high_odds', 'sure_odds')
              AND t.status IN ('qualified','unverified_probability','awaiting_odds','review_required')
@@ -733,6 +742,7 @@ def _booking_index(connection):
         item = {
             'id': row['id'], 'code': row['code'], 'job_status': row['job_status'],
             'job_id': row['job_id'], 'job_updated': row['job_updated'],
+            'job_reason': row['job_reason'], 'job_error': row['job_error'],
         }
         found[row['signature']] = item
         found['body:' + _signature_body(row['signature'])] = item
@@ -747,11 +757,14 @@ def _attach_booking(connection, days):
             if not match:
                 continue
             ticket['ticket_id'] = match['id']
+            ticket['booking_status'] = match['job_status']
             if match['code']:
                 ticket['booking_code'] = str(match['code']).strip()
                 ticket['booking_note'] = None
             elif match['job_status'] in ('QUEUED', 'PREPARING'):
                 ticket['booking_note'] = 'SportyBet is opening this ticket.'
+            elif match.get('job_reason') == 'SURE_ODDS_OUT_OF_RANGE':
+                ticket['booking_note'] = match.get('job_error') or 'Displayed prices are outside 2.00-2.95; awaiting refreshed prices.'
             elif match['job_status'] in ('FAILED', 'ODDS_CHANGED'):
                 ticket['booking_note'] = 'The stored line was not on the page. The next request uses a line SportyBet has priced.'
             else:
@@ -1123,6 +1136,39 @@ def prepare_high_odds_booking(now=None, bands=None):
     return None
 
 
+def retire_failed_sure(connection, now):
+    """Expire today's Sure Odds tickets that can never become a 2.00-2.95 code, so the daily
+    cap of SURE_DAILY_MAX is refilled with fresh tickets instead of being held by dead ones:
+    - no code, and SportyBet's displayed slip was refused (total out of range, or a leg not offered);
+    - a code whose displayed total ended outside 2.00-2.95 (a leg was dropped before this check existed).
+    """
+    day = _today_window(now)[0]
+    rows = connection.execute(
+        """SELECT t.id, t.combined_odds, t.leg_count,
+                  EXISTS(SELECT 1 FROM sports_ai_booking_codes b WHERE b.accumulator_ticket_id=t.id
+                         AND b.verification_method='displayed' AND TRIM(COALESCE(b.code,''))<>'') AS coded,
+                  (SELECT j.status FROM sports_ai_booking_jobs j WHERE j.ticket_id=t.id ORDER BY j.updated_at DESC LIMIT 1) AS job_status,
+                  (SELECT j.reason_code FROM sports_ai_booking_jobs j WHERE j.ticket_id=t.id ORDER BY j.updated_at DESC LIMIT 1) AS job_reason
+           FROM sports_ai_accumulator_tickets t
+           WHERE json_extract(t.parameters_json,'$.product')='sure_odds' AND t.status!='expired'
+             AND julianday(t.created_at)>=julianday(?) AND julianday(t.created_at)<julianday(?)""",
+        (day['start'].isoformat(), day['end'].isoformat()),
+    ).fetchall()
+    retired = 0
+    for row in rows:
+        off_spec = row['coded'] and not (
+            SURE_COMBINED_MIN - 1e-9 <= float(row['combined_odds'] or 0) <= SURE_COMBINED_MAX + 1e-9
+            and 2 <= int(row['leg_count'] or 0) <= SURE_MAX_LEGS)
+        refused = not row['coded'] and row['job_status'] == 'FAILED' and row['job_reason'] in SURE_RETIRE_REASONS
+        if off_spec or refused:
+            connection.execute("UPDATE sports_ai_accumulator_tickets SET status='expired' WHERE id=? AND status!='expired'",
+                               (row['id'],))
+            retired += 1
+    if retired:
+        connection.commit()
+    return retired
+
+
 def prepare_sure_odds_booking(now=None):
     """Store today's 2.00–2.95 tickets and return the next code request.
 
@@ -1135,6 +1181,7 @@ def prepare_sure_odds_booking(now=None):
     moment = now or datetime.now(timezone.utc)
     today = moment.astimezone(WAT).date().isoformat()
     with connect() as connection:
+        retire_failed_sure(connection, moment)
         tickets = []
         for day in _today_window(moment):
             dated = dict(day)

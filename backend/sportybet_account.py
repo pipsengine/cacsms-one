@@ -27,6 +27,7 @@ import asyncio
 import json
 import os
 import re
+import sqlite3
 import threading
 import time
 import uuid
@@ -51,6 +52,7 @@ NO_EDGE_KINDS = ('FAVOURITE', 'TICKET')
 REQUIRED_REHEARSALS = 3
 MAX_AUTHORIZATION_HOURS = 168
 SESSION_CHECK_MINUTES = 20
+UNCLEAR_CHECK_MINUTES = 3
 LOGIN_WAIT_SECONDS = 600
 MAX_PRICE_MOVE = 0.05
 # Worker jobs can hold the SQLite write lock for 40 s (measured 2026-11-11); an operator's
@@ -73,7 +75,19 @@ _LOGIN_THREAD = None
 # ---------------------------------------------------------------- storage
 
 def _secrets_dir():
-    path = Path(os.environ.get('SPORTS_SECRETS_DIR') or Path(__file__).resolve().parent / '.secrets')
+    """The saved SportyBet login. A run against any database other than the live one (every test)
+    uses a folder next to that database: 12 Nov 2026 a test's setUp/tearDown overwrote and then
+    deleted the live session file, disconnecting the real account mid-betting."""
+    configured = os.environ.get('SPORTS_SECRETS_DIR')
+    if configured:
+        path = Path(configured)
+    else:
+        import db
+        live = Path(__file__).resolve().parent
+        if Path(db.DB).resolve() != (live / 'sports_demo.sqlite3').resolve():
+            path = Path(db.DB).resolve().parent / '.secrets'
+        else:
+            path = live / '.secrets'
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -610,11 +624,38 @@ def reconcile(connection, history_text, now=None):
             'UPDATE sports_ai_single_live_orders SET status=?, payout=?, reconciled_at=?, updated_at=? WHERE id=?',
             (status, payout, current.isoformat(), current.isoformat(), order['id']),
         )
+        if order['status'] in ('UNKNOWN', 'SUBMITTING'):
+            # The bet row may still be QUEUED when the process failed before recording the result.
+            connection.execute(
+                """UPDATE sports_ai_single_bets SET status='PLACED', placed_at=COALESCE(placed_at, ?),
+                          decimal_odds=COALESCE(?, decimal_odds), reason=? WHERE id=? AND status='QUEUED'""",
+                (order['submitted_at'] or current.isoformat(), order['page_odds'],
+                 'Confirmed from SportyBet Bet History', order['bet_id']),
+            )
         label = status.replace('SETTLED_', '').lower()
         _event(connection, order['bet_id'], 'RECONCILED',
                f"SportyBet Bet History shows {' + '.join(f'{h} v {a}' for h, a in pairs)} (₦100 {'multiple' if combo else 'single'}, placed {row['placed_at']:%H:%M} WAT) as {label}", current)
         updated += 1
+    _resume_after_reconcile(connection, current)
     return updated
+
+
+AUTO_PAUSE_ACTORS = ('live-recovery', 'live-execution')
+
+
+def _resume_after_reconcile(connection, now):
+    """Lift the engine's own pause once Bet History has explained every unclear order.
+    A pause set by the operator (any other actor) is never lifted here."""
+    from single_betting import runtime, set_paused
+    state = runtime(connection)
+    if not state.get('paused') or state.get('changed_by') not in AUTO_PAUSE_ACTORS:
+        return False
+    if connection.execute(
+        "SELECT 1 FROM sports_ai_single_live_orders WHERE kind='SUBMISSION' AND status IN ('UNKNOWN','SUBMITTING') LIMIT 1",
+    ).fetchone():
+        return False
+    set_paused(connection, False, 'bet-history-reconcile', now)
+    return True
 
 
 # ---------------------------------------------------------------- authorization and mode
@@ -763,11 +804,20 @@ def _finish_order(order_id, status, now=None, **fields):
     columns = {'status': status, 'updated_at': moment, **fields}
     if 'checks_json' in columns and not isinstance(columns['checks_json'], str):
         columns['checks_json'] = json.dumps(columns['checks_json'], default=str)
-    with _connect() as connection:
-        connection.execute(
-            f"UPDATE sports_ai_single_live_orders SET {', '.join(f'{k}=?' for k in columns)} WHERE id=?",
-            (*columns.values(), order_id),
-        )
+    # A real-money result must be recorded. 12 Nov 2026: SportyBet showed "Submission Successful" but the
+    # write hit a locked database, the order stayed SUBMITTING and the engine paused itself.
+    for attempt in range(6):
+        try:
+            with _connect() as connection:
+                connection.execute(
+                    f"UPDATE sports_ai_single_live_orders SET {', '.join(f'{k}=?' for k in columns)} WHERE id=?",
+                    (*columns.values(), order_id),
+                )
+            return
+        except sqlite3.OperationalError as error:
+            if attempt == 5 or 'locked' not in str(error).lower() and 'busy' not in str(error).lower():
+                raise
+            time.sleep(5)
 
 
 async def _prepare_in_account(page, bet, test=False):
@@ -1004,7 +1054,13 @@ def run_once(now=None):
         return {'status': 'paper'}
     if row['status'] in ('NOT_CONNECTED', 'AWAITING_LOGIN'):
         return {'status': 'waiting_for_login'}
-    if not session_fresh(row, current):
+    with _connect() as connection:
+        unclear = connection.execute(
+            "SELECT 1 FROM sports_ai_single_live_orders WHERE kind='SUBMISSION' AND status IN ('UNKNOWN','SUBMITTING') "
+            "AND updated_at<? LIMIT 1", ((current - timedelta(minutes=2)).isoformat(),),
+        ).fetchone()
+    # An unclear order is looked up in Bet History within minutes, not at the next 20-minute check.
+    if not session_fresh(row, current) or (unclear and not session_fresh(row, current, minutes=UNCLEAR_CHECK_MINUTES)):
         checked = check_session(capture_history=True)
         if checked['status'] != 'CONNECTED':
             return {'status': 'session_' + checked['status'].lower()}

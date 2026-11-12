@@ -1589,6 +1589,25 @@ async def _top_up_from_reserves(page, booked, seen, policy, limit=50, chunk=3):
     return added
 
 
+def _sure_price_problem(booked, seen):
+    """Reject a Sure Odds slip before requesting a code if dropped/moved legs break its band."""
+    if not 2 <= len(booked) <= 3:
+        return 'Sure Odds needs 2–3 selections still offered by SportyBet.'
+    shown = {(item.get('fixture_id'), item.get('market')): item.get('page_odds') for item in seen}
+    product = 1.0
+    for leg in booked:
+        try:
+            odds = float(shown[(leg.get('fixture_id'), leg.get('market'))])
+        except (KeyError, TypeError, ValueError):
+            return 'A displayed price is missing for a Sure Odds selection.'
+        if not 1 < odds <= 2.95:
+            return 'A displayed Sure Odds selection price is invalid.'
+        product *= odds
+    if not 2 <= product <= 2.95:
+        return f'Displayed Sure Odds total {product:.2f} is outside 2.00–2.95. No code was requested.'
+    return None
+
+
 def _prize_short(booked, seen):
     """For a prize-ladder ticket: (displayed odds, prize odds) when the booked legs fall short."""
     ticket_id = next((item.get('ticket_id') for item in booked if item.get('ticket_id')), None)
@@ -1741,6 +1760,7 @@ async def _execute_job(job_id, page_url=None):
             return {'id':job_id,'status':'FAILED','error':'; '.join(problems),'places_wager':False}
         from ticket_diversity import assert_available, TicketExposureConflict
         linked_id = selections[0].get('ticket_id') if selections else None
+        sure_ticket = bool(linked_id and _ticket_product(connection, linked_id) == 'sure_odds')
         linked_ticket = connection.execute('SELECT family_id,parameters_json FROM sports_ai_accumulator_tickets WHERE id=?', (linked_id,)).fetchone() if linked_id else None
         try:
             if policy['enforce_match_exposure']:
@@ -1840,6 +1860,9 @@ async def _execute_job(job_id, page_url=None):
                             'error': f'SportyBet is not offering {len(missing)} of {len(selections)} selection(s): {names}. '
                                      f'At least {needed} are needed to book.',
                         }
+                    elif sure_ticket and (price_problem := _sure_price_problem(booked, seen)):
+                        result = {'status': 'FAILED', 'reason_code': 'SURE_ODDS_OUT_OF_RANGE',
+                                  'seen': seen, 'code': None, 'error': price_problem}
                     elif _prize_short(booked, seen):
                         shown, floor = _prize_short(booked, seen)
                         result = {

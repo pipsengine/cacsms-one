@@ -373,6 +373,7 @@ def _sure_tickets(board, now):
         if any(_started(leg.get('starts_at'), current) for leg in selections):
             continue
         tickets.append({
+                'id': ticket.get('ticket_id') or ticket.get('id') or ticket.get('signature'),
                 'label': ticket.get('label') or f'{len(selections)} selections',
                 'odds_band': ticket.get('odds_band') or '',
                 'selection_count': len(selections),
@@ -382,6 +383,7 @@ def _sure_tickets(board, now):
                 'code': ticket.get('booking_code'),
                 'probability_source': ticket.get('leg_source', 'model'),
                 'booking_note': ticket.get('booking_note'),
+                'booking_status': ticket.get('booking_status'),
                 'selections': [
                     {
                         'fixture': leg.get('fixture'),

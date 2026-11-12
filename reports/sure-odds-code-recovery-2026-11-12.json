@@ -1,0 +1,34 @@
+[
+  {
+    "id": "0a98de42-7955-4228-9662-7cc939298809",
+    "status": "FAILED",
+    "code": null,
+    "reason_code": "SURE_ODDS_OUT_OF_RANGE",
+    "error": "Displayed Sure Odds total 1.54 is outside 2.00\u20132.95. No code was requested.",
+    "places_wager": false
+  },
+  {
+    "id": "8b7f8635-f01c-4f7f-893f-5ca2f8cbd48f",
+    "status": "PREPARING",
+    "code": null,
+    "reason_code": null,
+    "error": null,
+    "places_wager": false
+  },
+  {
+    "id": "b60b81b5-7cc3-4113-a009-1870da8c320a",
+    "status": "FAILED",
+    "code": null,
+    "reason_code": "SURE_ODDS_OUT_OF_RANGE",
+    "error": "Displayed Sure Odds total 1.69 is outside 2.00\u20132.95. No code was requested.",
+    "places_wager": false
+  },
+  {
+    "id": "ba803845-f239-4dbe-be1a-3700d55d67a8",
+    "status": "FAILED",
+    "code": null,
+    "reason_code": "SURE_ODDS_OUT_OF_RANGE",
+    "error": "Displayed Sure Odds total 1.99 is outside 2.00\u20132.95. No code was requested.",
+    "places_wager": false
+  }
+]

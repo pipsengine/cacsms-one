@@ -5,12 +5,14 @@ header, match list and betslip. Nothing here contacts SportyBet.
 """
 import asyncio
 import json
+import os
 import tempfile
 import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 import db
 import single_betting as sb
@@ -161,11 +163,15 @@ class AccountTests(unittest.TestCase):
         self.previous = db.DB
         db.DB = Path(self.temp.name) / 'sports.sqlite3'
         db.initialize()
+        # Never the live login: save/forget below would overwrite and delete it.
+        self.secrets = patch.dict(os.environ, {'SPORTS_SECRETS_DIR': str(Path(self.temp.name) / '.secrets')})
+        self.secrets.start()
         acct.save_session({'cookies': [], 'origins': []})
         STATE['flow'] = 'success'
 
     def tearDown(self):
         acct.forget_session()
+        self.secrets.stop()
         db.DB = self.previous
         self.temp.cleanup()
 

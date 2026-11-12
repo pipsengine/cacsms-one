@@ -445,9 +445,77 @@ def favourite_candidates(connection, now=None, exclude=()):
     tickets_full = True
     # Each price batch is split with the ticket lane (favourites.lane_of); once the tickets' daily
     # cap is reached, singles may use the whole batch.
-    return [_favourite_item(leg) for leg in legs
-            if leg['fixture_id'] not in taken and MIN_ODDS - 1e-9 <= float(leg['decimal_odds']) <= MAX_ODDS + 1e-9
-            and (tickets_full or lane_of(leg) == 'single')]
+    items = [_favourite_item(leg) for leg in legs
+             if leg['fixture_id'] not in taken and MIN_ODDS - 1e-9 <= float(leg['decimal_odds']) <= MAX_ODDS + 1e-9
+             and (tickets_full or lane_of(leg) == 'single')]
+    # Model favourites need a 70% anchored chance, which a 1.60-1.99 price almost never has, so the
+    # 1.60-1.99 singles also come from SportyBet's own favourites (12 Nov 2026: none otherwise).
+    have = {item['fixture_id'] for item in items} | taken
+    try:
+        items += [item for item in market_favourites(connection, current) if item['fixture_id'] not in have]
+    except Exception:
+        pass
+    return items
+
+
+MARKET_SINGLE_FLOOR = 0.55          # SportyBet's chance with the margin removed (about 1.73 at a 5% margin)
+MARKET_SINGLE_LEAD_MINUTES = 60
+MARKET_SINGLE_HORIZON_HOURS = 24
+
+
+def market_favourites(connection, now=None):
+    """SportyBet-priced favourites in MIN_ODDS..MAX_ODDS: reliable markets (result / double chance /
+    winner) in sports with settled results and leagues with an acceptable record, kickoff at least
+    MARKET_SINGLE_LEAD_MINUTES away. No model edge: the margin makes these lose ~5% on average."""
+    import jackpot_low
+    import prize_ladder
+    from league_quality import filter_legs
+    current = _now(now)
+    saved = (jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS)
+    jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS = MIN_ODDS, MAX_ODDS
+    try:
+        scanned = jackpot_low.scan(connection, current, horizon_hours=MARKET_SINGLE_HORIZON_HOURS)
+    finally:
+        jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS = saved
+    earliest = (current + timedelta(minutes=MARKET_SINGLE_LEAD_MINUTES)).isoformat()
+    legs = prize_ladder.reliable(filter_legs(connection, scanned), prize_ladder.hit_rates(connection))
+    legs = [leg for leg in legs if leg['sport'] in prize_ladder.LADDER_SPORTS
+            and leg['probability'] >= MARKET_SINGLE_FLOOR and str(leg['starts_at']) >= earliest]
+    legs.sort(key=lambda leg: (-leg['probability'], leg['starts_at'], leg['fixture_id']))
+    return [_favourite_item(leg) for leg in legs]
+
+
+def _recheck_market(connection, bet, current):
+    """Re-check a SportyBet-priced favourite: same quote, newest price, still in range, not started."""
+    import jackpot_low
+    snapshot = str(bet['prediction_id'] or '').split(':', 1)[1]
+    origin = connection.execute(
+        'SELECT fixture_id, market, outcome, line FROM sports_ai_odds_snapshots WHERE id=?', (snapshot,),
+    ).fetchone()
+    if origin is None:
+        return None, 'The SportyBet price this favourite was chosen from is no longer stored.'
+    fixture = connection.execute('SELECT status, starts_at FROM sports_ai_fixtures WHERE id=?', (bet['fixture_id'],)).fetchone()
+    if fixture is None or fixture['status'] not in ('scheduled', 'not_started'):
+        return None, 'The match is no longer scheduled.'
+    if str(fixture['starts_at']) < (current + timedelta(minutes=jackpot_low.LEAD_MINUTES)).isoformat():
+        return None, 'Kickoff is too close.'
+    quote = connection.execute(
+        """SELECT decimal_odds, observed_at FROM sports_ai_odds_snapshots
+           WHERE fixture_id=? AND bookmaker='SportyBet' AND market=? AND outcome=? AND IFNULL(line,-1)=IFNULL(?,-1)
+           ORDER BY observed_at DESC LIMIT 1""",
+        (origin['fixture_id'], origin['market'], origin['outcome'], origin['line']),
+    ).fetchone()
+    if quote is None or str(quote['observed_at']) < (current - timedelta(hours=jackpot_low.PRICE_HOURS)).isoformat():
+        return None, 'No recent SportyBet price for this favourite.'
+    odds = float(quote['decimal_odds'])
+    if not MIN_ODDS - 1e-9 <= odds <= MAX_ODDS + 1e-9:
+        return None, f"Price {odds:.2f} is outside the {MIN_ODDS:.2f}-{MAX_ODDS:.2f} range."
+    # Same margin as when chosen: the chance moves inversely with the price.
+    probability = min(0.99, float(bet['probability']) * float(bet['decimal_odds']) / odds)
+    if probability < MARKET_SINGLE_FLOOR:
+        return None, f'SportyBet now rates it {probability:.0%}, below {MARKET_SINGLE_FLOOR:.0%}.'
+    return {'decimal_odds': odds, 'observed_at': quote['observed_at'],
+            'ev': round(probability * odds - 1, 6), 'probability': probability}, ''
 
 
 def _chance_key(item):
@@ -637,6 +705,8 @@ def _recheck(connection, bet, current, max_age):
         return _recheck_combo(connection, bet, current, max_age)
     if _kind(bet) == 'TICKET':
         return _recheck_ticket(connection, bet, current)
+    if _kind(bet) == 'FAVOURITE' and str(bet['prediction_id'] or '').startswith('jackpot:'):
+        return _recheck_market(connection, bet, current)
     if _kind(bet) == 'FAVOURITE':
         from favourites import candidates
         leg = next(iter(candidates(connection, current, fixture_id=bet['fixture_id'], market=bet['market'])), None)
