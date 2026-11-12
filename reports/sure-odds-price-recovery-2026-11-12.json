@@ -1,0 +1,38 @@
+{
+  "queued": {
+    "queued": 160,
+    "places_wager": false,
+    "odds_invented": 0
+  },
+  "refresh": {
+    "checked": 120,
+    "refreshed": 19,
+    "deferred": 0,
+    "fixture_ids": [
+      "c58ba36d-d9ff-4c8f-9b08-bb23e87b948a",
+      "f45a5755-450c-4696-a4f5-90dc9e4cdaf0",
+      "46e2e338-869e-4c7f-a04d-f32a790bf84d",
+      "5f3c487c-e217-47f9-9841-a7ce3abfdc15",
+      "8fbf2d65-f2f9-423e-9e31-5f7911ec27b4",
+      "c8382203-7ffd-4c41-9d82-be273eda45ec",
+      "047aadba-b81f-454c-927c-6ab7ce0de947",
+      "0428fce3-5a41-4e4e-b6d9-d19ceab54f00",
+      "f0a3b18e-b87c-4404-9161-4ae04a0543b6",
+      "a69fc5f7-abef-43bb-8d4a-f323a305b96a",
+      "102e3639-608f-41dc-aa61-fe55c703188d",
+      "fb43cb81-dd0f-42ec-a24c-5d3e0e0fefaa",
+      "da203764-a734-4189-a9ee-6ffcb5280988",
+      "cfaaa56f-135e-4b2d-b706-37623667064b",
+      "acbc22dd-676b-4038-b70d-04469e7c06ec",
+      "20ba3647-c5ac-4317-9396-0db4d0d7079a",
+      "33b2c2c8-49fd-41cc-a622-715abe78cde3",
+      "cd0062ca-c581-41ec-b39e-ec51113cd57b",
+      "c9049612-8734-434b-9bd4-cf006cbbf127"
+    ],
+    "expired": 337,
+    "waiting": 101,
+    "feed_blocked": false,
+    "odds_invented": 0,
+    "places_wager": false
+  }
+}

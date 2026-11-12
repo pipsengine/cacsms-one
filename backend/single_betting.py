@@ -557,6 +557,9 @@ def _recheck_combo(connection, bet, current, max_age):
 def _recheck_ticket(connection, bet, current):
     """A followed ticket may be placed while every leg is still a scheduled match before kickoff.
     Prices are checked on the SportyBet page itself (each leg within MAX_PRICE_MOVE)."""
+    from jackpot_stop import is_stopped, REASON
+    if str(bet['id']).startswith(TICKET_PREFIX) and is_stopped(connection, bet['id'][len(TICKET_PREFIX):]):
+        return None, REASON
     legs = _legs(connection, bet['id'])
     if not legs:
         return None, 'The ticket has no legs.'

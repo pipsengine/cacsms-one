@@ -519,6 +519,7 @@ def candidate_rows(connection, now, limit=100):
              AND p.created_at=(
                SELECT MAX(p2.created_at) FROM sports_ai_engine_predictions p2
                WHERE p2.fixture_id=p.fixture_id AND p2.market=p.market
+                 AND p2.model_id=p.model_id
              )
            ) ranked
            WHERE ranked.sport_rank<=?
@@ -675,6 +676,7 @@ def rows_for_fixtures(connection, now, fixture_ids):
               AND p.created_at=(
                 SELECT MAX(p2.created_at) FROM sports_ai_engine_predictions p2
                 WHERE p2.fixture_id=p.fixture_id AND p2.market=p.market
+                  AND p2.model_id=p.model_id
               )""",
         (*fixture_ids, moment),
     ).fetchall()

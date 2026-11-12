@@ -1,0 +1,17 @@
+{
+  "checked": 788,
+  "changed": 379,
+  "expired": 26,
+  "counts": {
+    "QUALIFIED": 0,
+    "MONITORING": 4,
+    "REJECTED": 6,
+    "AWAITING_DATA": 262,
+    "EXPIRED": 186,
+    "SUSPENDED": 330
+  },
+  "policy_version": 2,
+  "evaluated_at": "2026-11-12T02:21:54.839396+00:00",
+  "clv_tracked": 0,
+  "paper_trades": 0
+}

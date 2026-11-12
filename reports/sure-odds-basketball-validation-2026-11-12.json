@@ -1,0 +1,266 @@
+{
+  "candidate_id": "384ff763-f40c-419a-ab59-e5ee993c145f",
+  "status": "research",
+  "metrics": {
+    "benchmark": "Original analytical basketball scoring distribution; not selected past winning tickets.",
+    "leagues": [
+      {
+        "available_fixtures": 1,
+        "competition": "Australia: NBL",
+        "counts": {
+          "calibration": 0,
+          "holdout": 0,
+          "train": 0
+        },
+        "markets": [],
+        "reason": "Only 1 usable fixtures in this league; frozen chronological sample requirements not met.",
+        "split_boundaries": {
+          "calibration_first": null,
+          "holdout_first": null,
+          "train_last": null
+        },
+        "status": "insufficient_data"
+      },
+      {
+        "available_fixtures": 2,
+        "competition": "Belarus: Premier League",
+        "counts": {
+          "calibration": 0,
+          "holdout": 0,
+          "train": 0
+        },
+        "markets": [],
+        "reason": "Only 2 usable fixtures in this league; frozen chronological sample requirements not met.",
+        "split_boundaries": {
+          "calibration_first": null,
+          "holdout_first": null,
+          "train_last": null
+        },
+        "status": "insufficient_data"
+      },
+      {
+        "available_fixtures": 4,
+        "competition": "Chile: LNB",
+        "counts": {
+          "calibration": 0,
+          "holdout": 0,
+          "train": 0
+        },
+        "markets": [],
+        "reason": "Only 4 usable fixtures in this league; frozen chronological sample requirements not met.",
+        "split_boundaries": {
+          "calibration_first": null,
+          "holdout_first": null,
+          "train_last": null
+        },
+        "status": "insufficient_data"
+      },
+      {
+        "available_fixtures": 4,
+        "competition": "Colombia: LBP",
+        "counts": {
+          "calibration": 0,
+          "holdout": 0,
+          "train": 0
+        },
+        "markets": [],
+        "reason": "Only 4 usable fixtures in this league; frozen chronological sample requirements not met.",
+        "split_boundaries": {
+          "calibration_first": null,
+          "holdout_first": null,
+          "train_last": null
+        },
+        "status": "insufficient_data"
+      },
+      {
+        "available_fixtures": 1,
+        "competition": "Czech Republic: NBL",
+        "counts": {
+          "calibration": 0,
+          "holdout": 0,
+          "train": 0
+        },
+        "markets": [],
+        "reason": "Only 1 usable fixtures in this league; frozen chronological sample requirements not met.",
+        "split_boundaries": {
+          "calibration_first": null,
+          "holdout_first": null,
+          "train_last": null
+        },
+        "status": "insufficient_data"
+      },
+      {
+        "available_fixtures": 4,
+        "competition": "Japan B League Premier",
+        "counts": {
+          "calibration": 0,
+          "holdout": 0,
+          "train": 0
+        },
+        "markets": [],
+        "reason": "Only 4 usable fixtures in this league; frozen chronological sample requirements not met.",
+        "split_boundaries": {
+          "calibration_first": null,
+          "holdout_first": null,
+          "train_last": null
+        },
+        "status": "insufficient_data"
+      },
+      {
+        "available_fixtures": 11,
+        "competition": "Japan: B.League One",
+        "counts": {
+          "calibration": 0,
+          "holdout": 0,
+          "train": 0
+        },
+        "markets": [],
+        "reason": "Only 11 usable fixtures in this league; frozen chronological sample requirements not met.",
+        "split_boundaries": {
+          "calibration_first": null,
+          "holdout_first": null,
+          "train_last": null
+        },
+        "status": "insufficient_data"
+      },
+      {
+        "available_fixtures": 9,
+        "competition": "Japan: B.League Premier",
+        "counts": {
+          "calibration": 0,
+          "holdout": 0,
+          "train": 0
+        },
+        "markets": [],
+        "reason": "Only 9 usable fixtures in this league; frozen chronological sample requirements not met.",
+        "split_boundaries": {
+          "calibration_first": null,
+          "holdout_first": null,
+          "train_last": null
+        },
+        "status": "insufficient_data"
+      },
+      {
+        "available_fixtures": 2,
+        "competition": "Lithuania NKL",
+        "counts": {
+          "calibration": 0,
+          "holdout": 0,
+          "train": 0
+        },
+        "markets": [],
+        "reason": "Only 2 usable fixtures in this league; frozen chronological sample requirements not met.",
+        "split_boundaries": {
+          "calibration_first": null,
+          "holdout_first": null,
+          "train_last": null
+        },
+        "status": "insufficient_data"
+      },
+      {
+        "available_fixtures": 1,
+        "competition": "Lithuania: NKL",
+        "counts": {
+          "calibration": 0,
+          "holdout": 0,
+          "train": 0
+        },
+        "markets": [],
+        "reason": "Only 1 usable fixtures in this league; frozen chronological sample requirements not met.",
+        "split_boundaries": {
+          "calibration_first": null,
+          "holdout_first": null,
+          "train_last": null
+        },
+        "status": "insufficient_data"
+      },
+      {
+        "available_fixtures": 22,
+        "competition": "NBA 2027",
+        "counts": {
+          "calibration": 3,
+          "holdout": 8,
+          "train": 7
+        },
+        "markets": [],
+        "reason": "Only 22 usable fixtures in this league; frozen chronological sample requirements not met.",
+        "split_boundaries": {
+          "calibration_first": "2026-11-09T01:00:00+00:00",
+          "holdout_first": "2026-11-10T00:00:00+00:00",
+          "train_last": "2026-11-08T03:00:00+00:00"
+        },
+        "status": "insufficient_data"
+      },
+      {
+        "available_fixtures": 1,
+        "competition": "Philippines: MPBL",
+        "counts": {
+          "calibration": 0,
+          "holdout": 0,
+          "train": 0
+        },
+        "markets": [],
+        "reason": "Only 1 usable fixtures in this league; frozen chronological sample requirements not met.",
+        "split_boundaries": {
+          "calibration_first": null,
+          "holdout_first": null,
+          "train_last": null
+        },
+        "status": "insufficient_data"
+      },
+      {
+        "available_fixtures": 2,
+        "competition": "South Korea: KBL",
+        "counts": {
+          "calibration": 0,
+          "holdout": 0,
+          "train": 0
+        },
+        "markets": [],
+        "reason": "Only 2 usable fixtures in this league; frozen chronological sample requirements not met.",
+        "split_boundaries": {
+          "calibration_first": null,
+          "holdout_first": null,
+          "train_last": null
+        },
+        "status": "insufficient_data"
+      },
+      {
+        "available_fixtures": 20,
+        "competition": "USA: NBA",
+        "counts": {
+          "calibration": 0,
+          "holdout": 8,
+          "train": 6
+        },
+        "markets": [],
+        "reason": "Only 20 usable fixtures in this league; frozen chronological sample requirements not met.",
+        "split_boundaries": {
+          "calibration_first": null,
+          "holdout_first": "2026-11-10T00:00:00+00:00",
+          "train_last": "2026-11-08T03:00:00+00:00"
+        },
+        "status": "insufficient_data"
+      }
+    ],
+    "observations": 84,
+    "policy": {
+      "maximum_brier": 0.25,
+      "maximum_ece": 0.15,
+      "maximum_log_loss": 0.8,
+      "minimum_brier_improvement": 0.005,
+      "minimum_calibration": 40,
+      "minimum_ece_improvement": 0.01,
+      "minimum_holdout": 60,
+      "minimum_league_holdout": 30,
+      "minimum_live_fixtures": 30,
+      "minimum_team_games": 10,
+      "promotion_ece": 0.08,
+      "version": 1
+    },
+    "recipe": "basketball-loss-audit-v1",
+    "release": "No automatic relaxation of sample, calibration, price-period or uncertainty gates.",
+    "selection": "One frozen recipe, fixed ridge penalty, per-league chronological 50/20/30, settlement embargo."
+  },
+  "reused": true
+}

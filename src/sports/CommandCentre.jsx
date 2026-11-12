@@ -283,6 +283,8 @@ export function KeyAlerts({data, nav}) {
 
 export default function CommandCentre({data, nav, run, loading, refresh}) {
   const view = data?.command_view || {};
+  const sure = useLiveResource('/sure-odds');
+  const sureView = sure.data || view;
   const [now, setNow] = React.useState(lagosClock);
   React.useEffect(() => {
     const timer = setInterval(() => setNow(lagosClock()), 30000);
@@ -299,20 +301,28 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
       <div className="ccx-top-side">
         <span className="ccx-clock"><Clock3 size={15}/>{now}</span>
         <span className="ccx-env">{view.environment || 'Development'}</span>
-        <button className="ccx-refresh" onClick={refresh}><RefreshCw size={15}/>Refresh</button>
+        <button className="ccx-refresh" onClick={() => { refresh(); sure.refresh(); }}><RefreshCw size={15}/>Refresh</button>
         <span className="ccx-env">Live · worker</span>
       </div>
     </header>
     <WorkflowBoard workflow={view.workflow} nav={nav} />
     <div className="ccx-sure-row">
       <section className="ccx-card ccx-sure">
-        <header><strong><Goal size={16}/>Sure Odds For (Today) <small>{view.sure_odds_date || 'Today'}</small></strong><button className="ccx-link" onClick={() => nav('tickets')}>View All</button></header>
+        <header><strong><Goal size={16}/>Sure Odds For (Today) <small>{sureView.sure_odds_date || 'Today'}</small></strong><button className="ccx-link" onClick={() => nav('tickets')}>View All</button></header>
+        {sure.error && <p className="ccx-high-note" role="status">{sure.error}{sure.data ? ' Showing the last successful update.' : ''}</p>}
         <div className="ccx-table-scroll ccx-card-scroll"><table className="ccx-table compact"><colgroup><col className="ccx-sure-num"/><col className="ccx-sure-fixture"/><col className="ccx-sure-league"/><col className="ccx-sure-code"/><col className="ccx-sure-time"/><col className="ccx-sure-price"/><col className="ccx-sure-confidence"/></colgroup><thead><tr><th>#</th><th>Fixture</th><th>League</th><th>Booking code</th><th>Match Date/time</th><th>Odds</th><th>AI Confidence</th></tr></thead><tbody>
-          {(view.sure_odds || []).map(ticket => <React.Fragment key={`${ticket.odds_band}-${ticket.label}`}>
+          {(sureView.sure_odds || []).map(ticket => <React.Fragment key={`${ticket.odds_band}-${ticket.label}`}>
             <tr className="ccx-sure-ticket"><td colSpan="7"><b>{ticket.label}</b><span>{ticket.odds_band} · {ticket.selection_count} selections · combined {ticket.combined_odds == null ? '—' : Number(ticket.combined_odds).toFixed(2)} · joint {ticket.joint_probability == null ? '—' : `${Number(ticket.joint_probability).toFixed(1)}%`} · {ticket.code || 'No booking code yet'}</span></td></tr>
             {(ticket.selections || []).map((row, index) => <tr key={`${row.fixture}-${row.starts_at}-${index}`}><td>{index + 1}</td><td className="ccx-sure-match"><b>{row.fixture}</b><small>{row.selection || 'Selection not stored'}{row.probability == null ? '' : ` · ${Number(row.probability).toFixed(1)}%`}</small></td><td>{row.league || '—'}</td><td>{ticket.code || '—'}</td><td>{wat(row.starts_at)}{row.starts_at ? <small className="ccx-wat">WAT</small> : null}</td><td className="ccx-odds">{row.odds == null ? '—' : Number(row.odds).toFixed(2)}</td><td><ProbBar value={row.confidence}/></td></tr>)}
           </React.Fragment>)}
-          {!(view.sure_odds || []).length && <tr><td colSpan="7">No ready ticket priced from 2.00 to 2.95 is still to play today. Tickets whose first game has kicked off are not listed.</td></tr>}
+          {!(sureView.sure_odds || []).length && <tr><td colSpan="7">
+            {!sure.data && !data?.command_view ? <p>{sure.loading ? "Checking today's qualified tickets..." : 'Ticket data is currently unavailable. Retrying automatically.'}</p> : <>
+            <p>{sureView.sure_odds_status?.message || 'No ready ticket priced from 2.00 to 2.95 is still to play today.'}</p>
+            {!!sureView.sure_odds_status?.blockers?.length && <p>{sureView.sure_odds_status.blockers.slice(0, 4).map(item => `${item.label}: ${item.count}`).join(' · ')}<small className="ccx-wat">Latest decisions per match and market; counts are not matches.</small></p>}
+            <p>Last source collection: {sureView.sure_odds_status?.last_collection_at ? `${wat(sureView.sure_odds_status.last_collection_at)} WAT` : 'Not recorded'} · Last Sure Odds ticket: {sureView.sure_odds_status?.last_ticket_at ? `${wat(sureView.sure_odds_status.last_ticket_at)} WAT` : 'Not recorded'}</p>
+            <small>Tickets disappear once their first match starts. Model validation and price checks still apply.</small>
+            </>}
+          </td></tr>}
         </tbody></table></div>
       </section>
     </div>

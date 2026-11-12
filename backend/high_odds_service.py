@@ -70,7 +70,8 @@ def config(connection):
 
 
 def categories(connection):
-    return [dict(r) for r in connection.execute('SELECT * FROM sports_ai_high_odds_categories ORDER BY min_odds')]
+    return [{**dict(r), **({'enabled': 0} if r['id'] == JACKPOT else {})}
+            for r in connection.execute('SELECT * FROM sports_ai_high_odds_categories ORDER BY min_odds')]
 
 
 def save_settings(connection, updates, category_updates, actor):
@@ -105,6 +106,9 @@ def save_settings(connection, updates, category_updates, actor):
         if not isinstance(maximum,int) or not 1 <= maximum <= 10:
             raise ValueError('Category maximum active tickets must be 1–10')
         enabled = item.get('enabled',known[item['id']]['enabled'])
+        if item['id'] == JACKPOT and enabled:
+            from jackpot_stop import REASON
+            raise ValueError(REASON)
         if enabled not in (True,False,0,1):
             raise ValueError('Category enabled must be boolean')
     stamp = now_utc().isoformat()
@@ -320,6 +324,8 @@ def optimize(pool, category, settings):
 
 
 def persist_ticket(connection, candidate, category, event_id, settings, now):
+    if category['id'] == JACKPOT:
+        return None
     # Recheck the daily cap under the caller's write lock before reserving legs.
     if category['id']==JACKPOT and connection.execute("""SELECT COUNT(*)
         FROM sports_ai_high_odds_tickets WHERE category_id=?
@@ -535,6 +541,7 @@ def queue_registration(connection, now=None):
     queued = 0
     rows = connection.execute("""SELECT h.* FROM sports_ai_high_odds_tickets h
         JOIN sports_ai_accumulator_tickets t ON t.id=h.ticket_id WHERE t.status='qualified'
+        AND h.category_id!='jackpot'
         AND h.registration_state IN ('pending','retry') AND h.attempts<?
         AND (h.next_retry_at IS NULL OR julianday(h.next_retry_at)<=julianday(?))
         ORDER BY CASE WHEN h.category_id=? THEN 0 ELSE 1 END,h.ticket_no LIMIT 24""",

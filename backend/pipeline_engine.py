@@ -138,16 +138,18 @@ def enqueue_odds_refresh(connection, now=None, limit=80):
               )
             LEFT JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id AND q.bookmaker='SportyBet'
             WHERE {upcoming_fixture_sql('f')}
+              AND julianday(f.starts_at)>julianday(?)
               AND p.market IN ('HOME','DRAW','AWAY','MONEYLINE_HOME','MONEYLINE_AWAY')
               AND p.created_at=(
                 SELECT MAX(p2.created_at) FROM sports_ai_engine_predictions p2
                 WHERE p2.fixture_id=p.fixture_id AND p2.market=p.market
+                  AND p2.model_id=p.model_id
               )
               AND (q.id IS NULL OR q.observed_at<?)
             GROUP BY f.id
             ORDER BY f.starts_at
             LIMIT ?""",
-        (fresh_after, limit),
+        (current.isoformat(), fresh_after, limit),
     ).fetchall()
     queued = 0
     for row in rows:
@@ -156,7 +158,7 @@ def enqueue_odds_refresh(connection, now=None, limit=80):
             (row['fixture_id'],),
         ).fetchone()
         nxt = _parse(existing['next_attempt_at']) if existing else None
-        if existing and existing['status'] == 'deferred' and nxt and nxt > current:
+        if existing and nxt and nxt > current:
             continue
         kickoff = _parse(row['starts_at'])
         distance = 10**6 if not kickoff else max(1, (kickoff - current).total_seconds() / 60)
@@ -172,8 +174,7 @@ def enqueue_odds_refresh(connection, now=None, limit=80):
                VALUES(?,?,'queued',0,NULL,NULL,?,?)
                ON CONFLICT(fixture_id) DO UPDATE SET
                  priority=excluded.priority, status='queued', reason=excluded.reason, updated_at=excluded.updated_at
-               WHERE sports_ai_odds_refresh_queue.status!='deferred'
-                  OR sports_ai_odds_refresh_queue.next_attempt_at IS NULL
+               WHERE sports_ai_odds_refresh_queue.next_attempt_at IS NULL
                   OR sports_ai_odds_refresh_queue.next_attempt_at<=excluded.updated_at""",
             (row['fixture_id'], priority, reason, current.isoformat()),
         )
@@ -190,9 +191,11 @@ def _enqueue_validated_prices(connection, current, fresh_after, limit):
             FROM sports_ai_fixtures f
             JOIN sports_ai_feature_snapshots s ON s.fixture_id=f.id
             JOIN sports_ai_engine_predictions p ON p.fixture_id=f.id
+            JOIN sports_ai_model_registry m ON m.id=p.model_id AND m.active=1
             JOIN sports_ai_market_registry r ON r.sport=f.sport AND r.market_key=p.market
               AND r.status IN ('active','validated')
             WHERE {upcoming_fixture_sql('f')}
+              AND julianday(f.starts_at)>julianday(?)
               AND NOT EXISTS (
                 SELECT 1 FROM sports_ai_odds_snapshots q
                 WHERE q.fixture_id=f.id AND q.bookmaker='SportyBet' AND q.observed_at>=?
@@ -204,7 +207,7 @@ def _enqueue_validated_prices(connection, current, fresh_after, limit):
             GROUP BY f.id
             ORDER BY f.starts_at
             LIMIT ?""",
-        (fresh_after, max(1, int(limit))),
+        (current.isoformat(), fresh_after, max(1, int(limit))),
     ).fetchall()
     queued = 0
     for row in rows:
@@ -214,8 +217,7 @@ def _enqueue_validated_prices(connection, current, fresh_after, limit):
                VALUES(?,?,'queued',0,NULL,NULL,?,?)
                ON CONFLICT(fixture_id) DO UPDATE SET
                  priority=excluded.priority, status='queued', reason=excluded.reason, updated_at=excluded.updated_at
-               WHERE sports_ai_odds_refresh_queue.status!='deferred'
-                  OR sports_ai_odds_refresh_queue.next_attempt_at IS NULL
+               WHERE sports_ai_odds_refresh_queue.next_attempt_at IS NULL
                   OR sports_ai_odds_refresh_queue.next_attempt_at<=excluded.updated_at""",
             (row['fixture_id'], 40, 'validated_market_price', current.isoformat()),
         )
@@ -273,6 +275,17 @@ def process_odds_refresh(connection, now=None, limit=40):
     minutes = freshness_minutes(connection)
     fresh_after = (current - timedelta(minutes=minutes)).isoformat()
     blocked = _feed_blocked(connection)
+    # Old high-priority kickoffs used to occupy the whole batch indefinitely.
+    expired = connection.execute(
+        """UPDATE sports_ai_odds_refresh_queue SET status='expired',
+                  reason='fixture_unavailable', next_attempt_at=NULL, updated_at=?
+           WHERE status IN ('queued','blocked','deferred') AND NOT EXISTS (
+             SELECT 1 FROM sports_ai_fixtures f
+             WHERE f.id=sports_ai_odds_refresh_queue.fixture_id
+               AND f.status IN ('scheduled','not_started')
+               AND julianday(f.starts_at)>julianday(?)
+           )""", (current.isoformat(), current.isoformat()),
+    ).rowcount
     from sportybet_research import _assess_value
     items = connection.execute(
         """SELECT * FROM sports_ai_odds_refresh_queue
@@ -284,19 +297,23 @@ def process_odds_refresh(connection, now=None, limit=40):
     refreshed = 0
     deferred = 0
     refreshed_ids = []
+    waiting = 0
     for item in items:
         quotes = _fresh_quotes(connection, item['fixture_id'], fresh_after)
+        matched = False
         if quotes:
             for market, quote in quotes.items():
                 prediction = connection.execute(
                     """SELECT p.id FROM sports_ai_engine_predictions p
                        JOIN sports_ai_fixtures f ON f.id=p.fixture_id
+                       JOIN sports_ai_model_registry m ON m.id=p.model_id AND m.active=1
                        WHERE p.fixture_id=? AND p.market=? AND p.created_at<f.starts_at
                        ORDER BY p.created_at DESC LIMIT 1""",
                     (item['fixture_id'], market),
                 ).fetchone()
                 if not prediction:
                     continue
+                matched = True
                 linked = connection.execute(
                     """SELECT odds_id FROM sports_ai_value_opportunities
                        WHERE prediction_id=? ORDER BY evaluated_at DESC LIMIT 1""",
@@ -309,6 +326,7 @@ def process_odds_refresh(connection, now=None, limit=40):
                     {'fixture_id': item['fixture_id'], 'canonical_market': market},
                     quote['id'], float(quote['decimal_odds']), current,
                 )
+        if matched:
             connection.execute(
                 """UPDATE sports_ai_odds_refresh_queue
                    SET status='refreshed', last_error=NULL, next_attempt_at=NULL, reason='verified_price', updated_at=?
@@ -319,6 +337,16 @@ def process_odds_refresh(connection, now=None, limit=40):
             refreshed_ids.append(item['fixture_id'])
             continue
         if not blocked:
+            # Give lower-priority fixtures a turn while the collector obtains
+            # missing markets. A fresh unrelated quote is not a successful refresh.
+            connection.execute(
+                """UPDATE sports_ai_odds_refresh_queue SET status='queued',
+                   next_attempt_at=?, last_error=?, updated_at=? WHERE fixture_id=?""",
+                ((current + timedelta(minutes=2)).isoformat(),
+                 'Awaiting a fresh SportyBet quote matching an active forecast.',
+                 current.isoformat(), item['fixture_id']),
+            )
+            waiting += 1
             continue
         attempt = int(item['attempt'] or 0) + 1
         if attempt >= MAX_ATTEMPTS:
@@ -341,6 +369,7 @@ def process_odds_refresh(connection, now=None, limit=40):
     after = connection.execute('SELECT COUNT(*) FROM sports_ai_odds_snapshots').fetchone()[0]
     return {
         'checked': len(items), 'refreshed': refreshed, 'deferred': deferred, 'fixture_ids': refreshed_ids,
+        'expired': expired, 'waiting': waiting,
         'feed_blocked': blocked, 'odds_invented': after - before, 'places_wager': False,
     }
 

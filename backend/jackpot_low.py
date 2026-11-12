@@ -180,89 +180,12 @@ def _built_today(connection, current):
 
 def build(connection, actor='sports-ai-worker', now=None, force=False):
     """Store today's three low-odds jackpots for the booking lane. Never places a wager."""
-    from accumulator_engine import CONFIG_ID, combine_ticket, default_config, _insert_ticket
-    from ticket_diversity import unallocated
-    current = _now(now)
-    if not force and _built_today(connection, current) >= DAILY_RUNS:
-        return {'status': 'already_built', 'created': 0, 'places_wager': False}
-    pool = unallocated(connection, scan(connection, current), current)
-    hands = deal(pool)
-    if any(len(hand) < MIN_BOOKED for hand in hands):
-        return {'status': 'insufficient', 'created': 0, 'pool': len(pool),
-                'legs': [len(hand) for hand in hands], 'places_wager': False}
-    config = default_config()
-    config.update(max_per_competition=MAX_PER_LEAGUE, max_legs=LEGS)
-    run_id = str(uuid.uuid4())
-    connection.execute(
-        """INSERT INTO sports_ai_accumulator_runs
-           (id,config_id,sport_mode,status,trigger,idempotency_key,parameters_json,actor,started_at)
-           VALUES(?,?,'mixed','running','jackpot_low',?,'{}',?,?)""",
-        (run_id, CONFIG_ID, f"jackpot-low:{current.strftime('%Y%m%dT%H%M%S%f')}", actor, current.isoformat()),
-    )
-    created = []
-    for number, legs in enumerate(hands, start=1):
-        combined = combine_ticket(legs, config)
-        joint = 1.0
-        odds = 1.0
-        for leg in legs:
-            joint *= leg['probability']
-            odds *= leg['decimal_odds']
-        sports = sorted({leg['sport'] for leg in legs})
-        chance = f"{joint * 100:.1f}%" if joint >= 0.001 else 'below 0.1%'
-        ticket = {
-            'tier': 2, 'tier_label': f'Low-odds jackpot {number}', 'tier_mode': 'standard',
-            'coverage': PRODUCT, 'coverage_sport': 'mixed', 'legs': legs,
-            'signature': '|'.join(sorted(f"{l['fixture_id']}:{l['market']}" for l in legs)),
-            'score': joint, 'components': {}, **combined,
-            # Independent legs on different matches with no shared team: joint = product of legs.
-            'combined_odds': odds, 'joint_probability': joint, 'estimated_edge': joint * odds - 1,
-            'probability_basis': 'independent', 'sport_mode': 'mixed',
-            'explanation': NOTICE.format(legs=len(legs), sports=len(sports), chance=chance)
-                           + ' Probabilities are SportyBet prices with the bookmaker margin removed.',
-            'status': 'qualified',
-        }
-        ticket_id = _insert_ticket(connection, run_id, ticket, config, current, 'created', f'Low-odds jackpot {number}')
-        row = connection.execute('SELECT parameters_json FROM sports_ai_accumulator_tickets WHERE id=?', (ticket_id,)).fetchone()
-        parameters = json.loads(row['parameters_json'] or '{}')
-        parameters.update(product=PRODUCT, jackpot_number=number, positive_edge=False, min_booked_legs=MIN_BOOKED)
-        connection.execute('UPDATE sports_ai_accumulator_tickets SET parameters_json=?, finalized=1 WHERE id=?',
-                           (json.dumps(parameters), ticket_id))
-        created.append({'ticket_id': ticket_id, 'legs': len(legs), 'odds': round(odds, 2), 'chance': chance, 'sports': sports})
-    connection.execute(
-        "UPDATE sports_ai_accumulator_runs SET status='complete', summary_json=?, finished_at=? WHERE id=?",
-        (json.dumps({'tickets': created, 'pool': len(pool), 'places_wager': False}), current.isoformat(), run_id),
-    )
-    return {'status': 'complete', 'created': len(created), 'tickets': created, 'pool': len(pool), 'places_wager': False}
+    from jackpot_stop import disabled_result
+    return disabled_result()
 
 
 def require_bookable(connection, selections, now=None):
     """Booking gate for low-odds jackpots (instead of the positive-EV gate they cannot meet):
     known scheduled matches before kickoff, no shared match or team, no simulated game."""
-    from accumulator_engine import _simulated_competition
-    current = _now(now)
-    if not selections or len(selections) > 50:
-        raise ValueError('A jackpot booking needs 1 to 50 selections')
-    fixtures, teams = set(), set()
-    for item in selections:
-        fixture_id = item.get('fixture_id')
-        if fixture_id in fixtures:
-            raise ValueError('Two legs share a fixture')
-        fixtures.add(fixture_id)
-        row = connection.execute('SELECT sport,competition,home,away,starts_at,status FROM sports_ai_fixtures WHERE id=?',
-                                 (fixture_id,)).fetchone()
-        if row is None:
-            raise ValueError('A leg refers to an unknown fixture')
-        if row['sport'] in SIMULATED_SPORTS or _simulated_competition(row['competition']):
-            raise ValueError('Simulated games are not allowed on a jackpot')
-        for team in (row['home'], row['away']):
-            key = str(team or '').strip().casefold()
-            if key and key in teams:
-                raise ValueError(f'{team} appears in two legs')
-            teams.add(key)
-        try:
-            kickoff = datetime.fromisoformat(str(row['starts_at']).replace('Z', '+00:00'))
-        except ValueError:
-            kickoff = None
-        if kickoff is None or kickoff.astimezone(timezone.utc) <= current or row['status'] not in ('scheduled', 'not_started'):
-            raise ValueError('A leg has started or is not scheduled')
-    return {'legs': {}, 'product': PRODUCT, 'positive_edge': False}
+    from jackpot_stop import REASON
+    raise ValueError(REASON)

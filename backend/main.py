@@ -388,6 +388,13 @@ def booking_centre(connection):
         'tickets': items,
     }
 
+@router.get('/sure-odds')
+def sure_odds(user=Depends(auth)):
+    from command_view import sure_odds_view
+    with connect() as connection:
+        return sure_odds_view(connection)
+
+
 @router.get('/dashboard')
 def dashboard(user=Depends(auth)):
     with connect() as c:

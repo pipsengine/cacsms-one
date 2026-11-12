@@ -200,6 +200,9 @@ def qualified_selections(connection, now=None):
 
 
 def create_job(connection, selections, high_odds=False):
+    from jackpot_stop import require_enabled
+    for selection in selections:
+        require_enabled(connection, selection.get('ticket_id'))
     from booking_policy import load
     from qualification_engine import require_bookable
     policy = load(connection)
@@ -1660,6 +1663,10 @@ async def _execute_job(job_id, page_url=None):
         job = connection.execute('SELECT * FROM sports_ai_booking_jobs WHERE id=?', (job_id,)).fetchone()
         if not job:
             raise ValueError('Booking job not found')
+        from jackpot_stop import is_stopped, REASON
+        if is_stopped(connection, _ticket_on_job(connection, job_id)):
+            _set_job(connection, job_id, 'SUPERSEDED', error=REASON, reason_code='OPERATOR_DISABLED')
+            return {'id': job_id, 'status': 'SUPERSEDED', 'code': None, 'error': REASON, 'places_wager': False}
         if job['status'] != 'QUEUED':
             return {'id': job_id, 'status': job['status'], 'places_wager': False}
         attempt = int(job['attempt'] or 0) + 1

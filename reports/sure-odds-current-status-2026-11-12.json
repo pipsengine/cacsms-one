@@ -1,0 +1,44 @@
+{
+  "message": "No selection currently qualifies for today's Sure Odds tickets.",
+  "blockers": [
+    {
+      "code": "MARKET_UNAVAILABLE",
+      "label": "Bookmaker price missing",
+      "count": 245
+    },
+    {
+      "code": "ODDS_STALE",
+      "label": "Bookmaker price needs refreshing",
+      "count": 179
+    },
+    {
+      "code": "BASKETBALL_QUARANTINE",
+      "label": "Basketball validation pending",
+      "count": 164
+    },
+    {
+      "code": "MARKET_NOT_CALIBRATED",
+      "label": "Market validation pending",
+      "count": 104
+    },
+    {
+      "code": "EDGE_BELOW_MARKET",
+      "label": "Estimated edge below the required level",
+      "count": 82
+    },
+    {
+      "code": "MODEL_INACTIVE",
+      "label": "Awaiting analysis from the active model",
+      "count": 81
+    },
+    {
+      "code": "MARKET_DISAGREEMENT",
+      "label": "Model and bookmaker disagree",
+      "count": 13
+    }
+  ],
+  "qualified_selections": 0,
+  "last_ticket_at": "2026-11-09T15:51:13.725763+00:00",
+  "last_collection_at": "2026-11-12T01:51:19.199748+00:00",
+  "count_basis": "Latest decisions per fixture and market; counts are not matches."
+}

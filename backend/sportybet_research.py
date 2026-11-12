@@ -580,7 +580,7 @@ def _assess_value(connection, observation, odds_id, odds, now):
            FROM sports_ai_engine_predictions p
            JOIN sports_ai_model_registry m ON m.id=p.model_id
            WHERE p.fixture_id=? AND p.market=? AND p.created_at < ?
-           ORDER BY p.created_at DESC LIMIT 1""",
+           ORDER BY m.active DESC, p.created_at DESC LIMIT 1""",
         (observation['fixture_id'], observation['canonical_market'], fixture['starts_at']),
     ).fetchone()
     if not prediction:

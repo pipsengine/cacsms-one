@@ -74,6 +74,90 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(queued, 1)
         self.assertEqual(odds, 0)
 
+    def test_past_high_priority_requests_do_not_starve_upcoming_prices(self):
+        with db.connect() as connection:
+            past, _ = self._ids(connection, NOW - timedelta(hours=1))
+            upcoming, _ = self._ids(connection, NOW + timedelta(hours=1))
+            self._quote(connection, upcoming, NOW - timedelta(minutes=1))
+            for fixture, priority in [(past, 10000), (upcoming, 10)]:
+                connection.execute(
+                    "INSERT INTO sports_ai_odds_refresh_queue(fixture_id,priority,status,updated_at) VALUES(?,?,'queued',?)",
+                    (fixture, priority, NOW.isoformat()),
+                )
+            result = process_odds_refresh(connection, NOW, limit=1)
+            self.assertEqual(result['expired'], 1)
+            self.assertEqual(result['fixture_ids'], [upcoming])
+            self.assertEqual(connection.execute(
+                'SELECT status FROM sports_ai_odds_refresh_queue WHERE fixture_id=?', (past,),
+            ).fetchone()[0], 'expired')
+
+    def test_missing_market_yields_to_other_fixtures_and_enqueue_preserves_retry(self):
+        with db.connect() as connection:
+            missing, _ = self._ids(connection, NOW + timedelta(hours=1))
+            upcoming, _ = self._ids(connection, NOW + timedelta(hours=2))
+            # A quote for a different outcome must not complete the missing HOME refresh.
+            quote = self._quote(connection, missing, NOW - timedelta(minutes=1))
+            connection.execute("UPDATE sports_ai_odds_snapshots SET outcome='away' WHERE id=?", (quote,))
+            self._quote(connection, upcoming, NOW - timedelta(minutes=1))
+            enqueue_odds_refresh(connection, NOW)
+            first = process_odds_refresh(connection, NOW, limit=1)
+            self.assertEqual(first['waiting'], 1)
+            self.assertEqual(first['refreshed'], 0)
+            retry = connection.execute(
+                'SELECT next_attempt_at FROM sports_ai_odds_refresh_queue WHERE fixture_id=?', (missing,),
+            ).fetchone()[0]
+            enqueue_odds_refresh(connection, NOW + timedelta(seconds=1))
+            second = process_odds_refresh(connection, NOW + timedelta(seconds=1), limit=1)
+            self.assertEqual(second['fixture_ids'], [upcoming])
+            self.assertEqual(connection.execute(
+                'SELECT next_attempt_at FROM sports_ai_odds_refresh_queue WHERE fixture_id=?', (missing,),
+            ).fetchone()[0], retry)
+
+    def test_refresh_links_active_forecast_ahead_of_newer_inactive_forecast(self):
+        with db.connect() as connection:
+            fixture, prediction = self._ids(connection, NOW + timedelta(hours=1))
+            inactive = self._model(connection, version='inactive-test', active=False)
+            run = str(uuid.uuid4())
+            connection.execute(
+                "INSERT INTO sports_ai_analysis_runs(id,fixture_count,selection_count,ticket_count,status) VALUES(?,1,1,0,'complete')",
+                (run,),
+            )
+            connection.execute(
+                """INSERT INTO sports_ai_engine_predictions
+                   (id,run_id,fixture_id,model_id,feature_id,market,outcome,probability,settlement_json,explanation_json,created_at)
+                   SELECT ?,?,fixture_id,?,feature_id,market,outcome,probability,settlement_json,explanation_json,?
+                   FROM sports_ai_engine_predictions WHERE id=?""",
+                (str(uuid.uuid4()), run, inactive, NOW.isoformat(), prediction),
+            )
+            self._quote(connection, fixture, NOW - timedelta(minutes=1))
+            enqueue_odds_refresh(connection, NOW)
+            result = process_odds_refresh(connection, NOW)
+            linked = connection.execute('SELECT prediction_id FROM sports_ai_value_opportunities').fetchall()
+            self.assertEqual(result['fixture_ids'], [fixture])
+            self.assertEqual([row[0] for row in linked], [prediction])
+            from qualification_engine import candidate_rows, rows_for_fixtures
+            self.assertIn(prediction, [row['prediction_id'] for row in candidate_rows(connection, NOW)])
+            self.assertIn(prediction, [row['prediction_id'] for row in rows_for_fixtures(connection, NOW, [fixture])])
+
+    def test_sure_odds_status_excludes_past_and_other_day_decisions(self):
+        from command_view import _sure_odds_status
+        # Use midday so the current fixture remains inside today's WAT window.
+        now = NOW.replace(hour=11)
+        with db.connect() as connection:
+            for kickoff in [now - timedelta(hours=1), now + timedelta(hours=1), now + timedelta(days=1)]:
+                fixture, prediction = self._ids(connection, kickoff)
+                connection.execute(
+                    """INSERT INTO sports_ai_qualification_decisions
+                       (id,prediction_id,fixture_id,sport,market,state,reason_code,reason,evidence_json,
+                        products_json,policy_version,decision_version,fingerprint,starts_at,created_at,updated_at)
+                       VALUES(?,?,?,'football','HOME','EXPIRED','ODDS_STALE','Stale','{}','[]',1,1,'old',?,?,?)""",
+                    (str(uuid.uuid4()), prediction, fixture, kickoff.isoformat(), now.isoformat(), now.isoformat()),
+                )
+            status = _sure_odds_status(connection, now)
+            self.assertEqual(status['qualified_selections'], 0)
+            self.assertEqual(status['blockers'], [{'code': 'ODDS_STALE', 'label': 'Bookmaker price needs refreshing', 'count': 1}])
+            self.assertIn('No selection currently qualifies', status['message'])
+
     def test_a_stored_fresh_price_refreshes_and_a_challenge_does_not_create_one(self):
         kickoff = NOW + timedelta(days=1)
         with db.connect() as connection:
@@ -286,20 +370,20 @@ class PipelineTests(unittest.TestCase):
         self.odds = odds
         return fixture_id, prediction_id
 
-    def _model(self, connection):
+    def _model(self, connection, version='v-test', active=True):
         run_id, model_id = str(uuid.uuid4()), str(uuid.uuid4())
         connection.execute(
             """INSERT INTO sports_ai_training_runs
                (id,sport,model_name,version,status,training_window_json,parameters_json,metrics_json,sample_size)
                VALUES(?,?,?,?,?,?,?,?,?)""",
-            (run_id, 'football', 'sports-ai-football-ensemble', 'v-test', 'validated', '{}', '{}', '{}', 40),
+            (run_id, 'football', 'sports-ai-football-ensemble', version, 'validated', '{}', '{}', '{}', 40),
         )
         connection.execute(
             """INSERT INTO sports_ai_model_registry
                (id,training_run_id,sport,model_name,version,status,active,parameters_json,metrics_json,lifecycle,calibration_status)
                VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                model_id, run_id, 'football', 'sports-ai-football-ensemble', 'v-test', 'active', 1, '{}',
+                model_id, run_id, 'football', 'sports-ai-football-ensemble', version, 'active', int(active), '{}',
                 '{"calibration_error":0.04,"holdout_fixtures":40,"brier_score":0.2}', 'active', 'validated',
             ),
         )

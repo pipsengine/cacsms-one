@@ -484,10 +484,8 @@ def _ticket_tick():
             coverage = build_high_probability_tickets(connection, 'sports-ai-worker', _audit, now=current)
             from favourites import build_favourite_tickets
             favourites = build_favourite_tickets(connection, 'sports-ai-worker', now=current)
-            from prize_ladder import build as build_ladder
-            jackpots = build_ladder(connection, 'sports-ai-worker', now=current)  # prize ladder, once per WAT day
-            from prize_ladder import heal as heal_ladder
-            jackpots['healed'] = heal_ladder(connection, 'sports-ai-worker', now=current)  # rebuild refused prizes
+            from jackpot_stop import disabled_result
+            jackpots = disabled_result()
         print(
             'tickets', result.get('status'),
             'created', result.get('tickets_created', result.get('ticket_count', 0)),

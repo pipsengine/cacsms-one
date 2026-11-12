@@ -502,9 +502,10 @@ def _rows(connection, start, end, now=None):
         return []
     predictions = _chunked(
         connection,
-        """SELECT id, fixture_id, market, probability, created_at, model_id
-           FROM sports_ai_engine_predictions
-           WHERE probability>=? AND fixture_id IN ({marks})""",
+        """SELECT p.id, p.fixture_id, p.market, p.probability, p.created_at, p.model_id
+           FROM sports_ai_engine_predictions p
+           JOIN sports_ai_model_registry m ON m.id=p.model_id AND m.active=1
+           WHERE p.probability>=? AND p.fixture_id IN ({marks})""",
         list(fixtures),
         (SELECTION_FLOOR,),
     )

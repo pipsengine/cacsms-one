@@ -1,0 +1,6 @@
+{
+  "status": "failed",
+  "stage": "accept_displayed_quotes",
+  "error": "sqlite3.OperationalError: database is locked",
+  "note": "Some earlier batches may have committed. A whole-run imported count was not returned; no complete collection success is claimed."
+}

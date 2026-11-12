@@ -197,6 +197,7 @@ def command_view(connection, now=None):
         'draws': draws,
         'sure_odds': _sure_tickets(sure_board, current),
         'sure_odds_date': sure_odds_date,
+        'sure_odds_status': _sure_odds_status(connection, current),
         'sports': sports,
         'codes': codes,
         'slips': slips,
@@ -287,6 +288,71 @@ def _opportunities(connection, now, week_end):
             'status': _status_label(row['state'], row['reason_code']),
         })
     return items
+
+
+def _sure_odds_status(connection, now):
+    """Explain today's blockers using one latest decision per fixture and market."""
+    end = (now.astimezone(WAT).replace(hour=0, minute=0, second=0, microsecond=0)
+           + timedelta(days=1)).astimezone(timezone.utc)
+    rows = connection.execute(
+        """SELECT state, reason_code, COUNT(*) AS count FROM (
+             SELECT d.state, d.reason_code, ROW_NUMBER() OVER (
+               PARTITION BY d.fixture_id,d.market
+               ORDER BY m.active DESC,p.created_at DESC,d.updated_at DESC,d.id DESC
+             ) AS position
+             FROM sports_ai_qualification_decisions d
+             JOIN sports_ai_fixtures f ON f.id=d.fixture_id
+             JOIN sports_ai_engine_predictions p ON p.id=d.prediction_id
+             JOIN sports_ai_model_registry m ON m.id=p.model_id
+             WHERE f.sport IN ('football','basketball')
+               AND f.status IN ('scheduled','not_started')
+               AND julianday(f.starts_at)>julianday(?)
+               AND julianday(f.starts_at)<julianday(?)
+           ) WHERE position=1 GROUP BY state,reason_code ORDER BY count DESC,reason_code""",
+        (now.isoformat(), end.isoformat()),
+    ).fetchall()
+    labels = {
+        'BASKETBALL_QUARANTINE': 'Basketball validation pending',
+        'MARKET_UNAVAILABLE': 'Bookmaker price missing',
+        'ODDS_STALE': 'Bookmaker price needs refreshing',
+        'MODEL_INACTIVE': 'Awaiting analysis from the active model',
+        'MARKET_NOT_CALIBRATED': 'Market validation pending',
+        'EDGE_BELOW_MARKET': 'Estimated edge below the required level',
+        'MARKET_DISAGREEMENT': 'Model and bookmaker disagree',
+        'CAPABILITY_NOT_ELIGIBLE': 'Forward validation pending',
+    }
+    blockers = [
+        {'code': row['reason_code'], 'label': labels.get(row['reason_code'],
+         str(row['reason_code'] or row['state']).replace('_', ' ').capitalize()), 'count': row['count']}
+        for row in rows if row['state'] != 'QUALIFIED'
+    ]
+    qualified = sum(row['count'] for row in rows if row['state'] == 'QUALIFIED')
+    last_ticket = connection.execute(
+        """SELECT MAX(created_at) FROM sports_ai_accumulator_tickets
+           WHERE json_extract(parameters_json,'$.product')='sure_odds'""",
+    ).fetchone()[0]
+    last_collection = connection.execute(
+        "SELECT MAX(finished_at) FROM sports_ai_acquisition_jobs WHERE status='complete'",
+    ).fetchone()[0]
+    return {
+        'message': ('No selection currently qualifies for today\'s Sure Odds tickets.' if rows and not qualified
+                    else 'No ready ticket with combined odds 2.00 to 2.95 is still to play today.'),
+        'blockers': blockers, 'qualified_selections': qualified,
+        'last_ticket_at': last_ticket, 'last_collection_at': last_collection,
+        'count_basis': 'Latest decisions per fixture and market; counts are not matches.',
+    }
+
+
+def sure_odds_view(connection, now=None):
+    """The daily card can refresh without scanning the full dashboard history."""
+    current = now or datetime.now(timezone.utc)
+    local = current.astimezone(WAT)
+    return {
+        'sure_odds': _sure_tickets(sure_odds_board(connection, current), current),
+        'sure_odds_date': f"{local.strftime('%a')}, {local.day} {local.strftime('%b %Y')}",
+        'sure_odds_status': _sure_odds_status(connection, current),
+        'generated_at': current.isoformat(),
+    }
 
 
 def _sure_tickets(board, now):
