@@ -135,7 +135,7 @@ def find_match(fixture, candidates):
 
 
 def _missing(connection, current, days, limit):
-    """Played fixtures without a result: those bet on first, then those with a prediction."""
+    """Played fixtures without a result: those bet on first, then predicted or SportyBet-priced ones."""
     return connection.execute(
         """SELECT f.id, f.sport, f.home, f.away, f.starts_at,
                   (EXISTS (SELECT 1 FROM sports_ai_accumulator_legs l WHERE l.fixture_id=f.id)
@@ -146,7 +146,10 @@ def _missing(connection, current, days, limit):
              AND (EXISTS (SELECT 1 FROM sports_ai_engine_predictions p WHERE p.fixture_id=f.id)
                   OR EXISTS (SELECT 1 FROM sports_ai_accumulator_legs l WHERE l.fixture_id=f.id)
                   OR EXISTS (SELECT 1 FROM sports_ai_single_bets s WHERE s.fixture_id=f.id)
-                  OR EXISTS (SELECT 1 FROM sports_ai_single_bet_legs sl WHERE sl.fixture_id=f.id))
+                  OR EXISTS (SELECT 1 FROM sports_ai_single_bet_legs sl WHERE sl.fixture_id=f.id)
+                  -- Every match SportyBet priced: its result is what the pick scoring learns from
+                  -- (13 Nov 2026: only 6% of finished SportyBet matches had a result).
+                  OR EXISTS (SELECT 1 FROM sports_ai_sportybet_observations o WHERE o.fixture_id=f.id))
              AND NOT EXISTS (SELECT 1 FROM sports_ai_results r WHERE r.fixture_id=f.id)
            ORDER BY bet_on DESC, f.starts_at DESC LIMIT ?""",
         (_iso(current, hours=-3), _iso(current, days=-days), limit),

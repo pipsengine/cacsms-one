@@ -165,9 +165,44 @@ def day_limits(connection):
             min(DAILY_STAKE_LIMIT, DAILY_STAKE, grant.get('daily_stake') or DAILY_STAKE))
 
 
+# Singles held for a sport each day (owner, 13 Nov 2026: basketball every day). Its games are mostly in the
+# evening and night, while the morning's football favourites used to fill all 10 singles by 09:30 WAT.
+# Unfilled reserved slots are released to every sport at SPORT_RESERVE_RELEASE_HOUR (WAT).
+SPORT_RESERVE = {'basketball': 3}
+SPORT_RESERVE_RELEASE_HOUR = 21
 SINGLES_DAILY = 10            # owner's structure (12 Nov 2026): 10 singles at 1.60-1.99 ...
 COMBINED_DAILY = 5            # ... plus the day's 5 Sure Odds combined bets at 2.00-2.95 = 15 a day
 COMBINED_KINDS = ('TICKET', 'COMBO')
+
+
+def sport_reserve_left(connection, day, now):
+    """{sport: reserved single slots still open today}; empty once the release hour has passed."""
+    if _now(now).astimezone(WAT).hour >= SPORT_RESERVE_RELEASE_HOUR:
+        return {}
+    left = {}
+    for sport, slots in SPORT_RESERVE.items():
+        used = connection.execute(
+            f"""SELECT COUNT(*) FROM sports_ai_single_bets WHERE local_date=? AND sport=?
+                  AND COALESCE(kind,'SINGLE') NOT IN ('TICKET','COMBO')
+                  AND status IN ({','.join('?' * (len(COUNTED) + 1))})""" + (_LIVE_ONLY if _live(connection) else ''),
+            (day, sport, *COUNTED, 'QUEUED'),
+        ).fetchone()[0]
+        left[sport] = max(0, slots - int(used))
+    return left
+
+
+def with_sport_reserve(items, room, reserve):
+    """Choose up to `room` items in priority order, keeping `reserve` slots for their sports: reserved
+    sports take their slots first, and slots a reserved sport cannot fill yet are kept free."""
+    chosen = []
+    unfilled = 0
+    for sport, slots in reserve.items():
+        mine = [item for item in items if item.get('sport') == sport][:min(slots, max(0, room - len(chosen)))]
+        chosen += mine
+        unfilled += slots - len(mine)
+    rest = [item for item in items if item not in chosen]
+    chosen += rest[:max(0, room - len(chosen) - unfilled)]
+    return chosen[:room]
 
 
 def _group(kind):
@@ -423,6 +458,10 @@ def _favourite_item(leg):
         'probability': float(leg['probability']),
         'expected_value': round(leg['probability'] * leg['decimal_odds'] - 1, 6),
         'starts_at': leg['starts_at'], 'odds_observed_at': leg['odds_observed_at'],
+        # SportyBet's own chance and the history correction behind 'probability' (pick_scoring), for the day plan.
+        'market_probability': float(leg.get('market_probability', leg['probability'])),
+        'history_factor': leg.get('history_factor', 1.0), 'history_level': leg.get('history_level', 'model pick'),
+        'history_sample': leg.get('history_sample', 0),
     }
 
 
@@ -543,6 +582,7 @@ def favourite_candidates(connection, now=None, exclude=()):
     return items
 
 
+MARKET_SINGLE_MIN_MARKET = 0.50   # SportyBet's own chance (margin removed), whatever history says
 MARKET_SINGLE_FLOOR = 0.55          # SportyBet's chance with the margin removed (about 1.73 at a 5% margin)
 MARKET_SINGLE_LEAD_MINUTES = 60
 MARKET_SINGLE_HORIZON_HOURS = 24
@@ -566,7 +606,9 @@ def market_favourites(connection, now=None):
     earliest = (current + timedelta(minutes=MARKET_SINGLE_LEAD_MINUTES)).isoformat()
     legs = prize_ladder.reliable(filter_legs(connection, scanned), prize_ladder.hit_rates(connection))
     legs = [leg for leg in legs if leg['sport'] in prize_ladder.LADDER_SPORTS
-            and leg['probability'] >= MARKET_SINGLE_FLOOR and str(leg['starts_at']) >= earliest]
+            and leg['probability'] >= MARKET_SINGLE_FLOOR and str(leg['starts_at']) >= earliest
+            # History may raise a chance, but SportyBet itself must rate the pick at least this likely.
+            and leg.get('market_probability', leg['probability']) >= MARKET_SINGLE_MIN_MARKET]
     legs.sort(key=lambda leg: (-leg['probability'], leg['starts_at'], leg['fixture_id']))
     return [_favourite_item(leg) for leg in legs]
 
@@ -961,11 +1003,10 @@ def run_cycle(connection, now=None, candidates=None):
                 ('Daily real-money limit reached', bet['id']))
             _event(connection, bet['id'], 'CANCELLED', f'Removed from queue – {_fixture(bet)}: daily real-money limit reached', current)
             result['cancelled'] = result.get('cancelled', 0) + 1
-    room = room_today(connection, day, 'single')
-    picks = list(pool['eligible'][:room])
-    favourite_room = min(room - len(picks), FAVOURITE_DAILY_LIMIT - _favourites_today(connection, day))
-    if favourite_room > 0:
-        picks += (pool.get('favourites') or [])[:favourite_room]
+    # The day plan ranks every game of the betting day by evidence-based chance of winning and queues
+    # a pick only when its placement window opens (day_plan), instead of the first candidates that come.
+    from day_plan import plan_singles
+    picks = plan_singles(connection, current, day, pool)
     for item in picks:
         bet_id = str(uuid.uuid4())
         kind = item.get('kind') or 'SINGLE'
@@ -1359,6 +1400,12 @@ def build_single_betting_router(auth, require_admin_key):
     def get_dashboard(actor: str = Depends(auth)):
         with connect() as connection:
             return dashboard(connection)
+
+    @router.get('/plan')
+    def plan(actor: str = Depends(auth)):
+        from day_plan import plan_view
+        with connect() as connection:
+            return plan_view(connection)
 
     @router.get('/engine')
     def get_engine(actor: str = Depends(auth)):

@@ -2,6 +2,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -193,7 +194,9 @@ class FavouriteSinglesTests(unittest.TestCase):
             singles = ids('f', 'single', sb.FAVOURITE_DAILY_LIMIT + 3)
             for fid in singles:
                 leg(c, fid, odds=SINGLE_ODDS, probability=0.86)
-            self.assertEqual(sb.run_cycle(c, NOW)['queued'], sb.FAVOURITE_DAILY_LIMIT)
+            # Football-only candidates: the basketball reserve (tested in test_three_objectives) is off here.
+            with patch.object(sb, 'SPORT_RESERVE', {}):
+                self.assertEqual(sb.run_cycle(c, NOW)['queued'], sb.FAVOURITE_DAILY_LIMIT)
             # A favourite whose price went stale is cancelled before placement.
             first = c.execute("SELECT fixture_id FROM sports_ai_single_bets ORDER BY created_at, id LIMIT 1").fetchone()[0]
             c.execute("UPDATE sports_ai_odds_snapshots SET observed_at=? WHERE fixture_id=?",

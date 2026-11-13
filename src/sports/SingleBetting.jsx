@@ -271,6 +271,21 @@ function QueueTable({queue,auto,c,s,filters}){
     <tbody>{queue.map((q,i)=><tr key={q.id}><td className="num">{i+1}</td><td><span className={'sb-sport '+q.sport}><span>{SPORT_ICON[q.sport]||'🎯'}</span>{sportName(q.sport)}</span></td><td><b>{q.kind==='COMBO'&&<span className="sb-stage-chip queued">Combined ×{q.legs.length}</span>}{q.kind==='FAVOURITE'&&<span className="sb-stage-chip fav" title="No positive edge">Favourite</span>}{q.kind==='TICKET'&&<span className="sb-stage-chip ticket" title="Booked accumulator followed as a paper bet">Ticket ×{q.legs.length}{q.booking_code?' · '+q.booking_code:''}</span>} {q.fixture}</b><small className="blue">{q.competition}</small></td><td>{q.selection}</td><td><b>{q.decimal_odds.toFixed(2)}</b></td><td>{naira(q.stake)}</td>
       <td>{q.stage==='Placing'?<span className="sb-stage-chip placing"><RefreshCcw size={13}/>Placing Bet</span>:<span className="sb-stage-chip queued"><Clock3 size={13}/>Queued</span>}</td><td className="num">{eta(q.eta_seconds)}</td></tr>)}</tbody></table>}
 
+// The day plan: every candidate of the betting day ranked by evidence-based chance of winning (day_plan.py).
+function PlanTable({plan}){
+  const rows=plan?.rows||[];
+  if(!rows.length)return <div className="sb-empty"><Target size={22}/><b>No plan yet</b><span>The engine ranks every game of the betting day on its next cycle.</span></div>;
+  const sign=v=>v==null?'—':`${v>0?'+':''}${(v*100).toFixed(1)}%`;
+  return <><p className="sb-note sb-plan-note">Ranked {plan.candidates} candidates for the betting day (to 06:00 WAT) · {plan.picked} picked · a pick is placed from {plan.place_window_hours} h before its kick-off · at most {plan.max_per_league} per league · updated {hhmm(plan.built_at)} WAT.
+    Chance = SportyBet's price without its margin, corrected by how such selections actually did (history), blended with the model where it has a prediction, nudged by price movement.</p>
+  <table className="sb-table sb-plan"><thead><tr><th>#</th><th>Match</th><th>Selection</th><th>Odds</th><th title="The plan's chance of winning">Chance</th><th title="SportyBet's price without its margin">SportyBet</th><th title="How such selections actually did versus their price">History</th><th>Model</th><th title="Price change since its first price today (+ = shortened)">Move</th><th>Kick-off</th><th>Status</th></tr></thead>
+  <tbody>{rows.map(r=><tr key={r.fixture_id} className={r.picked?'picked':''}><td className="num">{r.rank}</td>
+    <td><b>{SPORT_ICON[r.sport]||'🎯'} {r.fixture}</b><small className="blue">{r.competition}</small></td><td>{r.selection||r.market}</td>
+    <td><b>{r.odds.toFixed(2)}</b></td><td><b className={r.picked?'green':''}>{pct(r.chance)}</b></td><td>{pct(r.market_chance)}</td>
+    <td title={`${r.history_level}${r.history_sample?` · ${r.history_sample} graded`:''}`}>{r.history_factor===1?'—':`×${r.history_factor.toFixed(2)}`}</td>
+    <td>{r.model_chance==null?'—':pct(r.model_chance)}</td><td>{sign(r.movement)}</td><td className="num">{hhmm(r.starts_at)}</td>
+    <td><span className={'sb-stage-chip '+(r.picked?'placing':'queued')}>{r.status}</span></td></tr>)}</tbody></table></>}
+
 function PlacedTable({rows}){if(!rows.length)return <div className="sb-empty"><Ticket size={22}/><b>No singles placed today</b><span>Placed singles and their results appear here.</span></div>;
   return <table className="sb-table"><thead><tr><th>Time</th><th>Match</th><th>Selection</th><th>Odds</th><th>Stake</th><th>Total Return</th><th>P/L</th><th>Status</th></tr></thead><tbody>{rows.map(b=><tr key={b.id}><td className="num">{hhmm(b.placed_at||b.created_at)}</td><td><b>{SPORT_ICON[b.sport]||'🎯'} {b.kind==='COMBO'&&<span className="sb-stage-chip queued">Combined ×{b.legs.length}</span>}{b.kind==='FAVOURITE'&&<span className="sb-stage-chip fav" title="No positive edge">Favourite</span>}{b.real_money?<span className="sb-stage-chip real" title="Submitted to your SportyBet account">Real ₦</span>:<span className="sb-stage-chip paper" title="Rehearsed only – Place Bet not clicked, no money staked">Paper</span>}{b.kind==='TICKET'&&<span className="sb-stage-chip ticket" title="Booked accumulator followed as a paper bet">Ticket ×{b.legs.length}{b.booking_code?' · '+b.booking_code:''}</span>} {b.fixture}</b></td><td>{b.selection}</td><td><b>{b.decimal_odds.toFixed(2)}</b></td><td>{naira(b.stake)}</td>
       {/* Total return before profit: the payout once settled, else the potential return (stake x odds). */}
@@ -293,9 +308,10 @@ function ActivityLog({events,refresh}){const[all,setAll]=useState(false);const s
 
 export function SingleBettingEngine(){
   const {data,error,loading,refresh}=useLiveResource('/single-betting/engine',10000);
+  const plan=useLiveResource('/single-betting/plan',30000).data;
   const[tab,setTab]=useState('queue'),[drawer,setDrawer]=useState(false);
   const s=data?.strategy,c=data?.cards,h=data?.health,a=data?.automation,auto=data?.autonomous,f=data?.focus,live=data?.live;
-  const tabs=useMemo(()=>data?[['queue','Queue',data.queue.length],['placed','Placed today',data.recent.length],['exec','SportyBet executions',live?.orders?.length||0]]:[],[data,live]);
+  const tabs=useMemo(()=>data?[['queue','Queue',data.queue.length],['placed','Placed today',data.recent.length],['exec','SportyBet executions',live?.orders?.length||0],['plan',"Today's plan",plan?.picked??0]]:[],[data,live,plan]);
   return <div className="sb">
     <PageHeader icon={<Bot size={40}/>} title="Single Betting AI Engine" subtitle="Autonomous Selection • Validation • Execution • Monitoring • Settlement • Learning (No Human Input)" auto={auto} label="Engine Running" running="Autonomous" mode={data?.mode}/>
     <Loading error={error} loading={loading&&!data}/>
@@ -340,7 +356,7 @@ export function SingleBettingEngine(){
       <div className="sb-a-main">
         <Card className="sb-queue" icon={<Target size={22}/>} title="Execution Queue (Live – Single Selections)" sub="Qualified selections from the shared intelligence pipeline, executed autonomously.">
           <div className="sb-tabs" role="tablist">{tabs.map(([k,l,n])=><button key={k} role="tab" aria-selected={tab===k} className={tab===k?'on':''} onClick={()=>setTab(k)}>{l}<span>{n}</span></button>)}</div>
-          <div className="sb-table-scroll sb-scroll">{tab==='queue'?<QueueTable queue={data.queue} auto={auto} c={c} s={s} filters={data.last_cycle?.rejected}/>:tab==='placed'?<PlacedTable rows={data.recent}/>:<ExecutionsTable orders={live?.orders||[]}/>}</div>
+          <div className="sb-table-scroll sb-scroll">{tab==='queue'?<QueueTable queue={data.queue} auto={auto} c={c} s={s} filters={data.last_cycle?.rejected}/>:tab==='placed'?<PlacedTable rows={data.recent}/>:tab==='plan'?<PlanTable plan={plan}/>:<ExecutionsTable orders={live?.orders||[]}/>}</div>
         </Card>
       </div>
       <div className="sb-a-mid">

@@ -74,13 +74,44 @@ class SingleBettingTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         db.DB = Path(self.temp.name) / 'sports.sqlite3'
         db.initialize()
+        # These tests seed every match in one league; the day plan's league limit is tested on its own.
+        import day_plan
+        self.league_cap = patch.object(day_plan, 'MAX_PER_LEAGUE', 99)
+        self.league_cap.start()
 
     def tearDown(self):
+        self.league_cap.stop()
         db.DB = self.previous
         self.temp.cleanup()
 
     def conn(self):
         return db.connect()
+
+    def test_day_plan_ranks_the_whole_day_and_places_near_kickoff(self):
+        import day_plan
+        with self.conn() as c:
+            c.execute('PRAGMA foreign_keys=OFF')
+            seed(c, 'early', probability=0.60, kickoff=NOW + timedelta(hours=2))
+            seed(c, 'late-better', probability=0.70, kickoff=NOW + timedelta(hours=9))
+            pool = sb.load_candidates(c, NOW)
+            with patch.object(sb, 'SPORT_RESERVE', {}):
+                queued = day_plan.plan_singles(c, NOW, sb.local_date(NOW), pool)
+            # Both are picked; only the one inside its placement window is queued now.
+            self.assertEqual([i['fixture_id'] for i in queued], ['early'])
+            plan = day_plan.plan_view(c)
+            self.assertEqual([r['fixture_id'] for r in plan['rows']], ['late-better', 'early'])   # ranked by chance
+            self.assertTrue(plan['rows'][0]['status'].startswith('picked · places from'))
+
+    def test_day_plan_league_limit(self):
+        import day_plan
+        with self.conn() as c, patch.object(day_plan, 'MAX_PER_LEAGUE', 2), patch.object(sb, 'SPORT_RESERVE', {}):
+            c.execute('PRAGMA foreign_keys=OFF')
+            for i in range(4):
+                seed(c, f'same-league-{i}', probability=0.60 + i / 100)
+            queued = day_plan.plan_singles(c, NOW, sb.local_date(NOW), sb.load_candidates(c, NOW))
+            self.assertEqual(len(queued), 2)
+            skipped = [r for r in day_plan.plan_view(c)['rows'] if not r['picked']]
+            self.assertTrue(all('league already has 2' in r['status'] for r in skipped))
 
     def test_engine_read_uses_relevant_prices_without_global_history_counts(self):
         with self.conn() as c:
@@ -177,8 +208,10 @@ class SingleBettingTests(unittest.TestCase):
             c.execute('PRAGMA foreign_keys=OFF')
             for i in range(30):
                 seed(c, f'fx{i}')
-            out = sb.run_cycle(c, NOW)
-            self.assertEqual(out['queued'], sb.SINGLES_DAILY)  # singles quota; the other 5 are combined bets
+            # Football-only candidates: the basketball reserve (tested in test_three_objectives) is off here.
+            with patch.object(sb, 'SPORT_RESERVE', {}):
+                out = sb.run_cycle(c, NOW)
+                self.assertEqual(out['queued'], sb.SINGLES_DAILY)  # singles quota; the other 5 are combined bets
 
     def test_rehearsed_bets_do_not_use_up_live_capacity(self):
         day = sb.local_date(NOW)

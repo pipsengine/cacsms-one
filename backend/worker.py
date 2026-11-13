@@ -932,6 +932,17 @@ def _learning_loop_tick():
             if linked['linked'] or due(connection):
                 anchors = learn(connection)
                 print('market anchor', 'pairs', anchors['pairs'], 'sports', {k: v['weight'] for k, v in anchors['sports'].items()})
+        # The pick scoring's history table (graded SportyBet prices): rebuilt once a day from the results
+        # linked above; ~30 s. Its own failure never stops the learning loop.
+        try:
+            import pick_scoring
+            with connect() as connection:
+                history = pick_scoring.refresh_if_stale(connection)
+            if history['status'] == 'built':
+                print('pick scoring history', history)
+            _observed('pick_scoring', {'status': history['status']})
+        except Exception as error:
+            _observed('pick_scoring', {'status': 'failed'}, failed=True, error=error)
         print('learning loop', 'reassessed', waiting['reassessed'], waiting['counts'],
               'drift_retrained', [item['sport'] for item in drift['trained']], 'places_wager', False)
         _observed('learning_loop', {'status': 'complete', 'reassessed': waiting['reassessed'], 'counts': waiting['counts']})

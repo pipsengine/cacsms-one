@@ -74,6 +74,38 @@ class DailyQuotas(unittest.TestCase):
             self.assertEqual(sb.room_today(c, '2026-11-12'), 3)
 
 
+class BasketballReserve(unittest.TestCase):
+    """3 of the 10 singles are held for basketball (evening games) until 21:00 WAT."""
+
+    def test_reserved_slots_are_kept_for_basketball(self):
+        items = [{'sport': 'football', 'id': i} for i in range(12)] + [{'sport': 'basketball', 'id': 'b'}]
+        chosen = sb.with_sport_reserve(items, 10, {'basketball': 3})
+        self.assertEqual(sum(i['sport'] == 'basketball' for i in chosen), 1)
+        self.assertEqual(len(chosen), 8)          # 2 slots stay free for later basketball games
+        self.assertEqual(len(sb.with_sport_reserve(items, 10, {})), 10)   # released: any sport
+
+    def test_release_hour_and_usage(self):
+        import tempfile, db
+        temp = tempfile.TemporaryDirectory()
+        previous = db.DB
+        db.DB = Path(temp.name) / 'r.sqlite3'
+        try:
+            db.initialize()
+            with db.connect() as c:
+                morning = datetime(2026, 11, 13, 8, 0, tzinfo=timezone.utc)      # 09:00 WAT
+                self.assertEqual(sb.sport_reserve_left(c, '2026-11-13', morning), {'basketball': 3})
+                c.execute("""INSERT INTO sports_ai_single_bets(id,fixture_id,sport,competition,home,away,market,selection,
+                             decimal_odds,probability,expected_value,stake,mode,status,local_date,starts_at,created_at,kind)
+                             VALUES('b1','fb','basketball','NBA','H','A','MONEYLINE_HOME','Home',1.7,0.58,0,100,'PAPER',
+                             'PLACED','2026-11-13',?,?,'FAVOURITE')""", (morning.isoformat(), morning.isoformat()))
+                self.assertEqual(sb.sport_reserve_left(c, '2026-11-13', morning), {'basketball': 2})
+                night = datetime(2026, 11, 13, 20, 30, tzinfo=timezone.utc)      # 21:30 WAT
+                self.assertEqual(sb.sport_reserve_left(c, '2026-11-13', night), {})
+        finally:
+            db.DB = previous
+            temp.cleanup()
+
+
 class ObjectiveTwo(unittest.TestCase):
     def test_tickets_have_two_or_three_legs_in_range_and_at_most_five(self):
         pool = [leg(i, odds) for i, odds in enumerate([1.15, 1.18, 1.2, 1.25, 1.3, 1.35, 1.4, 1.45, 1.5, 1.55,

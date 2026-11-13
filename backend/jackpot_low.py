@@ -115,6 +115,9 @@ def scan(connection, now=None, horizon_hours=None, keep=None):
     ).fetchall()
     margins = _margins(rows)
     from booking_policy import load as booking_policy
+    # History-corrected chance (pick_scoring): every product ranks by evidence, not SportyBet's price alone.
+    import pick_scoring
+    history = pick_scoring.table()
     best = {}
     for row in rows:
         odds = float(row['decimal_odds'])
@@ -142,6 +145,11 @@ def scan(connection, now=None, horizon_hours=None, keep=None):
             'model_id': 'market-price', 'model_version': 'sportybet-fair-price', 'completeness': None,
             'reliability': None, 'settlement_kind': 'binary',
         }
+        leg['market_probability'] = probability
+        leg['history_factor'], leg['history_sample'], leg['history_level'] = pick_scoring.history_factor(
+            leg['sport'], leg['competition'], market, odds, history)
+        leg['probability'] = min(pick_scoring.MAX_PROBABILITY, probability * leg['history_factor'])
+        leg['edge'] = leg['probability'] * odds - 1
         if keep is not None and not keep(leg):
             continue
         held = best.get(row['fixture_id'])
