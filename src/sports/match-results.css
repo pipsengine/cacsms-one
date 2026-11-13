@@ -161,3 +161,9 @@
    monitor it takes the full width and the verification / trend panels sit side by side underneath,
    instead of squeezing the money columns off-screen (13 Nov 2026, 13" laptop). */
 @media(max-width:1700px) and (min-width:1051px){.mr-grid{grid-template-columns:1fr}.mr-grid>.mr-stack{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start}}
+/* 10 summary cards: counts on the first row, money on the second (13 Nov 2026). */
+.mr-kpis{grid-template-columns:repeat(5,minmax(0,1fr))}
+.mr-kpi-icon.is-red{background:#fdeceb;color:#dc2626}
+.mr-kpi-icon.is-amber{background:#fff4e0;color:#b45309}
+@media(max-width:1050px){.mr-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:700px){.mr-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}

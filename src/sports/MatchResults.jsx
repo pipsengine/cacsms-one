@@ -121,7 +121,11 @@ export default function MatchResults(){
   {error&&<div className="mr-notice is-error"><AlertTriangle size={16}/><span><b>Results unavailable.</b> {error}. No figures are shown in their place.</span><button onClick={load}>Retry</button></div>}
   <div className="mr-kpis">
    <Kpi big icon={Ticket} tone="purple" label="Bets Placed" value={(s.placed??0).toLocaleString()} sub={`${s.settled??0} settled · ${s.awaiting??0} awaiting${s.unconfirmed?` · ${s.unconfirmed} unconfirmed`:''}`}/>
+   <Kpi big icon={CheckCircle2} tone="green" label="Bets Won" value={(s.won??0).toLocaleString()} sub={s.won?`${naira(s.won_returned)} returned · ${nairaSigned(s.won_profit)}`:'No winning bet yet'}/>
+   <Kpi big icon={XCircle} tone="red" label="Bets Lost" value={(s.lost??0).toLocaleString()} sub={s.lost?`${naira(s.lost_staked)} stake lost`:'No losing bet yet'}/>
+   <Kpi big icon={Hourglass} tone="amber" label="Awaiting Result" value={(s.awaiting??0).toLocaleString()} sub={s.awaiting?`${naira(s.pending_staked)} staked · ${naira(s.awaiting_potential)} potential`:'Nothing running'}/>
    <Kpi big icon={Target} tone="green" label="Win Rate" value={pct(s.win_rate)} sub={`${s.won??0} won · ${s.lost??0} lost${s.void?` · ${s.void} void`:''}`}/>
+   <Kpi big icon={Activity} tone="purple" label="Average Odds" value={s.avg_odds?s.avg_odds.toFixed(2):'—'} sub={s.avg_odds?`Break-even win rate ${pct(1/s.avg_odds)}`:null}/>
    <Kpi big icon={Wallet} label="Total Staked (settled)" value={naira(s.staked)} sub={s.pending_staked?`+ ${naira(s.pending_staked)} awaiting result`:null}/>
    <Kpi big icon={Banknote} label="Total Returned" value={naira(s.returned)}/>
    <Kpi big icon={TrendingUp} tone={tone(s.profit)} label="Profit / Loss" value={nairaSigned(s.profit)}/>

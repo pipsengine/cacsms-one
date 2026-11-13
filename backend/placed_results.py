@@ -146,6 +146,12 @@ def metrics(rows):
         'staked': round(staked_settled, 2),
         'pending_staked': round(sum(r['stake'] or 0 for r in rows if r['result'] not in SETTLED), 2),
         'returned': round(sum(r['payout'] or 0 for r in settled), 2),
+        # Per-outcome money for the Won / Lost / Awaiting cards.
+        'won_returned': round(sum(r['payout'] or 0 for r in settled if r['result'] == 'Won'), 2),
+        'won_profit': round(sum(r['profit'] or 0 for r in settled if r['result'] == 'Won'), 2),
+        'lost_staked': round(sum(r['stake'] or 0 for r in settled if r['result'] == 'Lost'), 2),
+        'awaiting_potential': round(sum(r.get('potential_return') or 0 for r in rows if r['result'] == 'Awaiting result'), 2),
+        'avg_odds': (round(sum(priced) / len(priced), 2) if (priced := [r['odds'] for r in rows if r.get('odds')]) else None),
         'profit': round(profit, 2) if settled else None,
         'roi': profit / staked_settled if staked_settled else None,
     }
