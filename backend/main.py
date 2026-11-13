@@ -390,6 +390,13 @@ def booking_centre(connection):
 
 @router.get('/sure-odds')
 def sure_odds(user=Depends(auth)):
+    # Rebuilding the board runs the SportyBet market scan (~2 min on the live database, 13 Nov 2026):
+    # served from a background-refreshed copy (view_cache) like the dashboard.
+    from view_cache import cached_view
+    return cached_view('sure_odds', _build_sure_odds, ttl=300)
+
+
+def _build_sure_odds():
     from command_view import sure_odds_view
     with connect() as connection:
         return sure_odds_view(connection)
@@ -400,6 +407,11 @@ def dashboard(user=Depends(auth)):
     # ~12 s to build on the live database; served from a 30 s background-refreshed copy (view_cache).
     from view_cache import cached_view
     return cached_view('dashboard', lambda: _build_dashboard(user), ttl=30)
+
+def _odds_rowid_since(connection, since_iso):
+    from odds_window import first_rowid_since
+    return first_rowid_since(connection, since_iso)
+
 
 def _build_dashboard(user):
     with connect() as c:
@@ -455,7 +467,9 @@ def _build_dashboard(user):
         counts['activity_today']={
             'fixtures':c.execute("SELECT COUNT(*) FROM sports_ai_fixtures WHERE date(observed_at)=date('now')").fetchone()[0],
             'predictions':counts['predictions_today'],
-            'odds':c.execute("SELECT COUNT(*) FROM sports_ai_odds_snapshots WHERE date(observed_at)=date('now')").fetchone()[0],
+            # rowid window from yesterday's start keeps this from reading the whole price history.
+            'odds':c.execute("SELECT COUNT(*) FROM sports_ai_odds_snapshots NOT INDEXED WHERE rowid>=? AND date(observed_at)=date('now')",
+                             (_odds_rowid_since(c, (datetime.now(timezone.utc)-timedelta(days=1)).replace(hour=0,minute=0,second=0,microsecond=0).isoformat()),)).fetchone()[0],
             'opportunities':c.execute("SELECT COUNT(*) FROM sports_ai_value_opportunities WHERE date(evaluated_at)=date('now')").fetchone()[0],
             'tickets':c.execute("SELECT COUNT(*) FROM sports_ai_accumulator_tickets WHERE date(created_at)=date('now')").fetchone()[0],
             'results':c.execute("SELECT COUNT(*) FROM sports_ai_results WHERE date(settled_at)=date('now')").fetchone()[0],
@@ -567,9 +581,10 @@ def _build_dashboard(user):
             value_cycle={}
         discovery=c.execute("SELECT enabled FROM sports_ai_schedules WHERE id='schedule-discovery'").fetchone()
         fresh_odds=c.execute(
-            """SELECT COUNT(DISTINCT fixture_id) FROM sports_ai_odds_snapshots
-               WHERE bookmaker='SportyBet' AND observed_at>=?""",
-            (fresh_quote,),
+            # NOT INDEXED: seek the rowid range; with an index the planner walked every row (43 s).
+            """SELECT COUNT(DISTINCT fixture_id) FROM sports_ai_odds_snapshots NOT INDEXED
+               WHERE rowid>=? AND bookmaker='SportyBet' AND observed_at>=?""",
+            (_odds_rowid_since(c, fresh_quote), fresh_quote),
         ).fetchone()[0]
         blockers=[]
         for decision in governance.get('decisions') or []:
@@ -2066,10 +2081,11 @@ app.include_router(build_coverage_router(auth))
 
 @app.on_event('startup')
 def _warm_slow_views():
-    """Build the two slow page payloads in the background at start, so the first visitor does not wait."""
+    """Build the slow page payloads in the background at start, so the first visitor does not wait."""
     def warm():
         for name, build in (('dashboard', lambda: dashboard(user='startup-warmup')),
-                            ('autonomous_overview', lambda: autonomous_overview(user='startup-warmup'))):
+                            ('autonomous_overview', lambda: autonomous_overview(user='startup-warmup')),
+                            ('sure_odds', lambda: sure_odds(user='startup-warmup'))):
             try:
                 build()
             except Exception as error:

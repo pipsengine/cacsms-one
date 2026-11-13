@@ -338,6 +338,25 @@ Total Return
             self.assertEqual(updated, 1)
             order = c.execute("SELECT status, payout FROM sports_ai_single_live_orders WHERE kind='SUBMISSION'").fetchone()
             self.assertEqual((order['status'], order['payout']), ('SETTLED_WON', 172.0))
+            # SportyBet's settlement is the bet's result (its leagues may have no results provider).
+            bet_row = c.execute("SELECT status, payout, profit FROM sports_ai_single_bets WHERE id='bet-1'").fetchone()
+            self.assertEqual((bet_row['status'], bet_row['payout'], bet_row['profit']), ('WON', 172.0, 72.0))
+
+    def test_settled_tab_only_counts_when_it_shows_settled_bets(self):
+        parsed = acct.parse_history('12/11/2026 17:02\nSingles\nLost\nNeftyanik Almetyevsk v Sokol Krasnoyarsk\n'
+                                    'Total Stake\n100.00\nTotal Return\n0.00')
+        self.assertEqual((parsed[0]['status'], parsed[0]['return']), ('lost', 0.0))
+        # A page ends at its page numbers; the betslip sidebar's matches are not events of the last bet.
+        page = ('Bet History\n12/11/2026 15:14\nSingles\nWon\nBrynas IF v Skelleftea AIK\nTotal Stake\n100.00\n'
+                'Total Return\n160.00\n12345678910\nBetslip3\nHome or Away\nAl Hashemehya v Sama AL Sarhan SC\n'
+                '12/11/2026 14:35\nSingles\nFlashWin\nBenin v Central African Republic\nTotal Stake\n100.00\n'
+                'Total Return\n168.00')
+        rows = acct.parse_history(acct.bet_list_text(page))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['events'], ['Brynas IF v Skelleftea AIK'])
+        flash = acct.parse_history('12/11/2026 14:35\nSingles\nFlashWin\nBenin v Central African Republic\n'
+                                   'Total Stake\n100.00\nTotal Return\n168.00')[0]
+        self.assertEqual(acct.HISTORY_STATES[flash['status']], 'SETTLED_WON')  # SportyBet's early payout
 
     def test_combined_bet_is_submitted_as_one_multiple_and_reconciled(self):
         now = datetime.now(timezone.utc)

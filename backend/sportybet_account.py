@@ -471,10 +471,12 @@ async def check_session_async(capture_history=False):
                 if not state.get('logged_in'):
                     raise SessionExpired('SportyBet shows the login form. The saved session has expired.')
                 history = None
+                settled_text = None
                 if capture_history:
                     await page.goto(BASE_URL + HISTORY_PATH, wait_until='domcontentloaded', timeout=45000)
                     await page.wait_for_timeout(4000)
                     history = bet_list_text(await page.locator('body').inner_text(timeout=10000))
+                    settled_text = await _settled_history(page)
                 save_session(await context.storage_state())
             finally:
                 await browser.close()
@@ -501,7 +503,11 @@ async def check_session_async(capture_history=False):
         if history is not None:
             connection.execute('INSERT INTO sports_ai_sportybet_history(id,captured_at,page,text) VALUES(?,?,?,?)',
                                (str(uuid.uuid4()), now.isoformat(), HISTORY_PATH, history))
-            reconcile(connection, history, now)
+            if settled_text:
+                connection.execute('INSERT INTO sports_ai_sportybet_history(id,captured_at,page,text) VALUES(?,?,?,?)',
+                                   (str(uuid.uuid4()), now.isoformat(), HISTORY_PATH + '#settled', settled_text))
+            # Won/Lost/Void bets are only on the Settled tab; Running ones on the default tab.
+            reconcile(connection, chr(10).join(t for t in (history, settled_text) if t), now)
     return {'status': 'CONNECTED', 'balance': state.get('balance'), 'history_captured': history is not None,
             'history_rows': len(parse_history(history)) if history else 0}
 
@@ -511,7 +517,51 @@ def check_session(capture_history=False):
 
 
 ROW_START = re.compile(r'^(\d{2})/(\d{2})/(\d{4}) (\d{2}):(\d{2})$')
-HISTORY_STATES = {'won': 'SETTLED_WON', 'lost': 'SETTLED_LOST', 'void': 'SETTLED_VOID', 'cancelled': 'SETTLED_VOID',
+SETTLED_PAGES = 10  # 5 bets per page: a 15-bet day plus the operator's own slips, and a day the PC was off
+
+SETTLED_TAB = r"""() => {
+  const tabs = [...document.querySelectorAll('a,li,span,div,button,p')]
+    .filter(e => e.children.length === 0 && (e.textContent || '').trim().toLowerCase() === 'settled');
+  if (!tabs.length) return false;
+  tabs[0].click();
+  return true;
+}"""
+
+PAGER_CLICK = r"""(n) => {
+  const digits = e => (e.innerText || '').replace(/\s/g, '');
+  const boxes = [...document.querySelectorAll('ul,div,nav')]
+    .filter(e => /^\d+$/.test(digits(e)) && digits(e).startsWith('12') && e.children.length >= 2);
+  if (!boxes.length) return false;
+  const box = boxes.sort((a, b) => digits(a).length - digits(b).length)[0];
+  const item = [...box.querySelectorAll('*')].find(e => e.children.length === 0 && (e.textContent || '').trim() === String(n));
+  if (!item) return false;
+  item.click();
+  return true;
+}"""
+
+
+async def _settled_history(page):
+    """Bet list text of the first SETTLED_PAGES pages of the Settled tab, or None when the tab is not found.
+    12 Nov 2026: only the Running tab was read, so no real-money bet was ever seen as won or lost."""
+    try:
+        if not await page.evaluate(SETTLED_TAB):
+            return None
+        await page.wait_for_timeout(3000)
+        parts = [bet_list_text(await page.locator('body').inner_text(timeout=10000))]
+        for number in range(2, SETTLED_PAGES + 1):
+            if not await page.evaluate(PAGER_CLICK, number):
+                break
+            await page.wait_for_timeout(2500)
+            parts.append(bet_list_text(await page.locator('body').inner_text(timeout=10000)))
+        text = chr(10).join(p for p in parts if p)
+        # Only keep it when it really is settled bets (a Won/Lost/Void status line).
+        return text if any(row['status'] in ('won', 'flashwin', 'lost', 'void', 'cancelled', 'refunded') for row in parse_history(text)) else None
+    except Exception:
+        return None
+
+
+HISTORY_STATES = {'won': 'SETTLED_WON', 'flashwin': 'SETTLED_WON',  # FlashWin = SportyBet's early payout
+'lost': 'SETTLED_LOST', 'void': 'SETTLED_VOID', 'cancelled': 'SETTLED_VOID',
                   'refunded': 'SETTLED_VOID', 'running': 'PLACED', 'unsettled': 'PLACED', 'pending': 'PLACED'}
 
 
@@ -520,7 +570,15 @@ def bet_list_text(page_text):
     lines = [line.strip() for line in (page_text or '').splitlines()]
     for index, line in enumerate(lines):
         if ROW_START.match(line):
-            return '\n'.join(item for item in lines[index:] if item)[:60000]
+            kept = []
+            for item in lines[index:]:
+                # The list ends at the page numbers ("12345678910") or the betslip sidebar; its
+                # "Team v Team" lines were read as extra events of the page's last bet (13 Nov 2026).
+                if re.fullmatch(r'\d{2,}', item) or re.fullmatch(r'Betslip\d*', item):
+                    break
+                if item:
+                    kept.append(item)
+            return '\n'.join(kept)[:60000]
     return ''
 
 
@@ -624,6 +682,17 @@ def reconcile(connection, history_text, now=None):
             'UPDATE sports_ai_single_live_orders SET status=?, payout=?, reconciled_at=?, updated_at=? WHERE id=?',
             (status, payout, current.isoformat(), current.isoformat(), order['id']),
         )
+        if status.startswith('SETTLED_'):
+            # SportyBet's own settlement is the result of a real-money bet: the matches of SportyBet-only
+            # leagues have no results provider, so the bet would otherwise stay "pending" for ever.
+            outcome = status.replace('SETTLED_', '')
+            paid = float(payout) if payout is not None else (0.0 if outcome == 'LOST' else None)
+            if paid is not None:
+                connection.execute(
+                    """UPDATE sports_ai_single_bets SET status=?, payout=?, profit=?, settled_at=?
+                       WHERE id=? AND status IN ('PLACED','QUEUED')""",
+                    (outcome, paid, round(paid - STAKE, 2), current.isoformat(), order['bet_id']),
+                )
         if order['status'] in ('UNKNOWN', 'SUBMITTING'):
             # The bet row may still be QUEUED when the process failed before recording the result.
             connection.execute(

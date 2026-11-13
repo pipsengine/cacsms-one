@@ -879,10 +879,11 @@ def unattended_status(connection, now=None):
             except (TypeError, ValueError):
                 authorized = False
     recent_cutoff = (now - timedelta(hours=6)).isoformat()
+    from odds_window import first_rowid_since
     recent = connection.execute(
-        """SELECT COUNT(*) FROM sports_ai_odds_snapshots
-           WHERE bookmaker=? AND observed_at>=?""",
-        (BOOKMAKER, recent_cutoff),
+        """SELECT COUNT(*) FROM sports_ai_odds_snapshots NOT INDEXED
+           WHERE rowid>=? AND bookmaker=? AND observed_at>=?""",  # rowid window: no full-table scan
+        (first_rowid_since(connection, recent_cutoff), BOOKMAKER, recent_cutoff),
     ).fetchone()[0]
     operational = bool(authorized and recent)
     if operational:

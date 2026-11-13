@@ -13,8 +13,12 @@ The record: settled engine predictions with a SportyBet price stored before kick
 (the range the products use), one per match and market. Basketball handicaps are left out: their
 stored prices carried the wrong sign until 12 Nov 2026. Recomputed at most every CACHE_SECONDS.
 """
+import json
+import os
 import re
+import threading
 import time
+from pathlib import Path
 
 LEAGUE_MIN_PICKS, LEAGUE_MAX_LOSS = 8, -0.10
 SPORT_MIN_PICKS, SPORT_MAX_LOSS = 25, -0.10
@@ -24,6 +28,39 @@ SIMULATED_SPORTS = {'efootball', 'ebasketball', 'vfootball', 'vbasketball', 'cou
 SIMULATED = re.compile(r'\b(srl|simulated|virtual|e-?sports?|esoccer|cyber|e-?football|e-?basketball)\b', re.I)
 
 _CACHE = {'at': 0.0, 'record': None}
+_LOCK = threading.Lock()
+
+
+def _cache_file():
+    """Shared by the API and the worker (and kept across restarts): computing the record takes about a minute
+    on the live database (13 Nov 2026), so each process must not compute it again in a page request."""
+    import db
+    return Path(db.DB).resolve().parent / 'league_quality_cache.json'
+
+
+def _load_file():
+    try:
+        path = _cache_file()
+        age = time.time() - path.stat().st_mtime
+        if age > CACHE_SECONDS:
+            return None
+        data = json.loads(path.read_text(encoding='utf8'))
+        data['blocked_sports'] = set(data['blocked_sports'])
+        data['blocked_leagues'] = {tuple(item) for item in data['blocked_leagues']}
+        return data, age
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _save_file(record_):
+    try:
+        path = _cache_file()
+        temp = path.with_name(f'{path.name}.{os.getpid()}.tmp')
+        temp.write_text(json.dumps({**record_, 'blocked_sports': sorted(record_['blocked_sports']),
+                                    'blocked_leagues': sorted(list(k) for k in record_['blocked_leagues'])}), encoding='utf8')
+        os.replace(temp, path)
+    except OSError:
+        pass
 
 
 def simulated(sport, competition, home='', away=''):
@@ -61,14 +98,24 @@ def _compute(connection):
 
 
 def record(connection, fresh=False):
-    if fresh or _CACHE['record'] is None or time.monotonic() - _CACHE['at'] > CACHE_SECONDS:
+    if not fresh and _CACHE['record'] is not None and time.monotonic() - _CACHE['at'] <= CACHE_SECONDS:
+        return _CACHE['record']
+    with _LOCK:  # one computation per process at a time
+        if not fresh and _CACHE['record'] is not None and time.monotonic() - _CACHE['at'] <= CACHE_SECONDS:
+            return _CACHE['record']
+        stored = None if fresh else _load_file()
+        if stored:
+            data, age = stored
+            _CACHE['record'], _CACHE['at'] = data, time.monotonic() - age
+            return data
         try:
             _CACHE['record'] = _compute(connection)
+            _save_file(_CACHE['record'])
         except Exception:  # never stop a product for want of the record; keep the last one
             if _CACHE['record'] is None:
                 _CACHE['record'] = {'sports': {}, 'blocked_sports': set(), 'blocked_leagues': set(), 'picks': 0}
         _CACHE['at'] = time.monotonic()
-    return _CACHE['record']
+        return _CACHE['record']
 
 
 def allowed(connection, sport, competition, home='', away=''):
@@ -86,3 +133,7 @@ def filter_legs(connection, legs):
 
 def clear():
     _CACHE.update(at=0.0, record=None)
+    try:
+        _cache_file().unlink(missing_ok=True)
+    except OSError:
+        pass

@@ -8,3 +8,4 @@ reports/private/
 backend/.secrets/
 backend/account_evidence/
 backend/logs/
+backend/league_quality_cache.json*

@@ -529,24 +529,24 @@ def measure_pipeline(connection, now=None):
             SELECT 1 FROM sports_ai_data_quality_issues i
             WHERE i.fixture_id=f.id AND i.resolved_at IS NULL AND i.severity IN ('high','critical')
           )""")
+    # EXISTS, not JOIN + COUNT(DISTINCT): every fixture has many prediction rows and thousands of price
+    # snapshots, and the joins multiplied them before de-duplicating (53 s on the live database, 13 Nov 2026).
+    active_prediction = """EXISTS (SELECT 1 FROM sports_ai_engine_predictions p
+                     JOIN sports_ai_model_registry m ON m.id=p.model_id AND m.active=1
+                     WHERE p.fixture_id=f.id AND p.created_at<f.starts_at{markets})"""
     predicted = _count(connection, f"""
-        SELECT COUNT(DISTINCT f.id) FROM sports_ai_fixtures f
+        SELECT COUNT(*) FROM sports_ai_fixtures f
         JOIN sports_ai_sports s ON s.code=f.sport AND s.prediction_status='modelled'
-        JOIN sports_ai_engine_predictions p ON p.fixture_id=f.id AND p.created_at<f.starts_at
-        JOIN sports_ai_model_registry m ON m.id=p.model_id AND m.active=1
-        WHERE {upcoming} AND p.market IN ('HOME','DRAW','AWAY','MONEYLINE_HOME','MONEYLINE_AWAY')""")
+        WHERE {upcoming} AND {active_prediction.format(markets=" AND p.market IN ('HOME','DRAW','AWAY','MONEYLINE_HOME','MONEYLINE_AWAY')")}""")
     odds_available = _count(connection, f"""
-        SELECT COUNT(DISTINCT f.id) FROM sports_ai_fixtures f
-        JOIN sports_ai_engine_predictions p ON p.fixture_id=f.id AND p.created_at<f.starts_at
-        JOIN sports_ai_model_registry m ON m.id=p.model_id AND m.active=1
-        JOIN sports_ai_odds_snapshots q ON q.fixture_id=f.id AND q.bookmaker='SportyBet'
-        WHERE {upcoming}""")
+        SELECT COUNT(*) FROM sports_ai_fixtures f
+        WHERE {upcoming} AND {active_prediction.format(markets='')}
+          AND EXISTS (SELECT 1 FROM sports_ai_odds_snapshots q WHERE q.fixture_id=f.id AND q.bookmaker='SportyBet')""")
     odds_fresh = _count(connection, f"""
-        SELECT COUNT(DISTINCT f.id) FROM sports_ai_fixtures f
-        JOIN sports_ai_engine_predictions p ON p.fixture_id=f.id AND p.created_at<f.starts_at
-        JOIN sports_ai_model_registry m ON m.id=p.model_id AND m.active=1
-        JOIN sports_ai_odds_snapshots q ON q.fixture_id=f.id AND q.bookmaker='SportyBet' AND q.observed_at>=?
-        WHERE {upcoming}""", (fresh_after,))
+        SELECT COUNT(*) FROM sports_ai_fixtures f
+        WHERE {upcoming} AND {active_prediction.format(markets='')}
+          AND EXISTS (SELECT 1 FROM sports_ai_odds_snapshots q
+                      WHERE q.fixture_id=f.id AND q.bookmaker='SportyBet' AND q.observed_at>=?)""", (fresh_after,))
     qualified = _count(connection, "SELECT COUNT(*) FROM sports_ai_qualification_decisions WHERE state='QUALIFIED'")
     ticket_ready = _count(connection, "SELECT COUNT(*) FROM sports_ai_accumulator_tickets WHERE status='qualified'")
     pending = _count(connection, "SELECT COUNT(*) FROM sports_ai_booking_jobs WHERE status IN ('QUEUED','PREPARING')")

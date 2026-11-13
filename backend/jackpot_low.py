@@ -92,23 +92,26 @@ def scan(connection, now=None, horizon_hours=None, keep=None):
     from accumulator_engine import _simulated_competition
     from prediction_engine import normalize_quote_market
     current = _now(now)
+    # Fixture-first with CROSS JOIN (forces the join order): the upcoming fixtures are a short list and each
+    # one's prices come from the (fixture_id, observed_at) index. Price-first scanned the whole odds history:
+    # 88 s versus 0.4 s for the same rows on the live database (13 Nov 2026).
     rows = connection.execute(
         """SELECT q.id, q.fixture_id, q.market, q.outcome, q.line, q.decimal_odds, q.observed_at,
                   f.sport, f.competition, f.home, f.away, f.starts_at
-           FROM sports_ai_odds_snapshots q
-           JOIN sports_ai_fixtures f ON f.id=q.fixture_id
-           WHERE q.bookmaker='SportyBet' AND q.observed_at>=?
-             AND f.status IN ('scheduled','not_started') AND f.starts_at>? AND f.starts_at<?
+           FROM sports_ai_fixtures f
+           CROSS JOIN sports_ai_odds_snapshots q ON q.fixture_id=f.id AND q.observed_at>=:since
+           WHERE f.status IN ('scheduled','not_started') AND f.starts_at>:earliest AND f.starts_at<:latest
+             AND q.bookmaker='SportyBet'
              -- The booking lane skips matches with no recent SportyBet page observation.
              AND EXISTS (SELECT 1 FROM sports_ai_sportybet_observations s
-                         WHERE s.fixture_id=f.id AND s.observed_at>=?)
+                         WHERE s.fixture_id=f.id AND s.observed_at>=:offered)
              AND q.observed_at=(SELECT MAX(q2.observed_at) FROM sports_ai_odds_snapshots q2
-                                WHERE q2.fixture_id=q.fixture_id AND q2.bookmaker='SportyBet'
+                                WHERE q2.fixture_id=q.fixture_id AND q2.observed_at>=:since AND q2.bookmaker='SportyBet'
                                   AND q2.market=q.market AND q2.outcome=q.outcome AND IFNULL(q2.line,-1)=IFNULL(q.line,-1))""",
-        ((current - timedelta(hours=PRICE_HOURS)).isoformat(),
-         (current + timedelta(minutes=LEAD_MINUTES)).isoformat(),
-         (current + timedelta(hours=horizon_hours or HORIZON_HOURS)).isoformat(),
-         (current - timedelta(hours=OFFER_HOURS)).isoformat()),
+        {'since': (current - timedelta(hours=PRICE_HOURS)).isoformat(),
+         'earliest': (current + timedelta(minutes=LEAD_MINUTES)).isoformat(),
+         'latest': (current + timedelta(hours=horizon_hours or HORIZON_HOURS)).isoformat(),
+         'offered': (current - timedelta(hours=OFFER_HOURS)).isoformat()},
     ).fetchall()
     margins = _margins(rows)
     from booking_policy import load as booking_policy

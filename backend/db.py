@@ -24,6 +24,11 @@ def connect(busy_timeout_ms=20000):
  c.row_factory=sqlite3.Row
  c.execute(f'PRAGMA busy_timeout={int(busy_timeout_ms)}')
  c.execute('PRAGMA foreign_keys=ON')
+ # Per-connection read tuning (no schema change). Defaults are a 2 MB page cache and on-disk temp
+ # B-trees; page builds over the 15 GB database re-read the same pages and spilled every DISTINCT.
+ c.execute('PRAGMA cache_size=-32768')      # 32 MB
+ c.execute('PRAGMA temp_store=MEMORY')
+ c.execute('PRAGMA mmap_size=268435456')    # 256 MB
  try:
   yield c
   c.commit()
