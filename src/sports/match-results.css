@@ -157,3 +157,7 @@
 @media(max-width:700px){.mr-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.mr-kpi.is-big{padding:12px}.mr-kpi.is-big .mr-kpi-value{font-size:21px}.mr-hero h1{font-size:20px}.mr-hero-icon{width:52px;height:52px}.mr-hero-stat{padding:0 10px}.mr-primary{width:100%}}
 .mr-page .mr-potential{font-weight:600;color:var(--mr-muted,#64748b)}
 .mr-page .mr-potential small{font-weight:500;font-size:11px;text-transform:lowercase}
+/* The bet table has 11 columns (stake, total return and profit before the result): below a large
+   monitor it takes the full width and the verification / trend panels sit side by side underneath,
+   instead of squeezing the money columns off-screen (13 Nov 2026, 13" laptop). */
+@media(max-width:1700px) and (min-width:1051px){.mr-grid{grid-template-columns:1fr}.mr-grid>.mr-stack{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start}}

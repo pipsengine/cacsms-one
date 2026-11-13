@@ -47,3 +47,15 @@
 .sp-side-foot{border-top:0;padding:8px 14px 14px}
 .sp-side-foot .sp-back{opacity:.6}
 .sp-nav-group-label{gap:10px!important;font-size:11.8px!important}
+
+/* Laptop density (13 Nov 2026): a 13" laptop at 125-150% Windows scaling gives a ~1230-1370 px viewport,
+   where the workspace drawn for wide monitors looked oversized. The whole Sports workspace (sidebar,
+   text, spacing, cards) is scaled together so proportions stay the same; heights given in vh are
+   divided by the same factor so the layout still fills the screen. Phones and tablets are unchanged. */
+.sp-app{--sp-zoom:1}
+@media (min-width:981px) and (max-width:1536px){.sp-app{--sp-zoom:.9}}
+@media (min-width:981px) and (max-width:1366px){.sp-app{--sp-zoom:.82}}
+@media (min-width:981px) and (max-width:1536px){
+  .sp-app{zoom:var(--sp-zoom);min-height:calc(100vh / var(--sp-zoom))}
+  .sp-sidebar{height:calc(100vh / var(--sp-zoom))}
+}
