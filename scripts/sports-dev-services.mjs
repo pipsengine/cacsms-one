@@ -11,6 +11,30 @@ const stateKey = Symbol.for('cacsms.sportsDevServices');
 const hooksKey = Symbol.for('cacsms.sportsDevServices.hooks');
 let resolvedPython;
 
+function resolveSystemPython() {
+  const probes = [
+    ['python', ['-c', 'import sys; print(sys.executable)']],
+    ['py', ['-3', '-c', 'import sys; print(sys.executable)']],
+  ];
+  let lastError;
+  for (const [command, args] of probes) {
+    try {
+      const found = execFileSync(command, args, {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: 20000,
+      }).trim();
+      if (found && fs.existsSync(found)) return found;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (lastError) {
+    console.error(`[sports] could not resolve Python: ${lastError.message}`);
+  }
+  return null;
+}
+
 function pythonCommand() {
   if (resolvedPython) return resolvedPython;
   const venv = path.join(backend, '.venv', 'Scripts', 'python.exe');
@@ -18,20 +42,7 @@ function pythonCommand() {
     resolvedPython = venv;
     return resolvedPython;
   }
-  try {
-    const found = execFileSync('python', ['-c', 'import sys; print(sys.executable)'], {
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: 20000,
-    }).trim();
-    if (found && fs.existsSync(found)) {
-      resolvedPython = found;
-      return resolvedPython;
-    }
-  } catch (error) {
-    console.error(`[sports] could not resolve Python: ${error.message}`);
-  }
-  resolvedPython = 'python';
+  resolvedPython = resolveSystemPython() || 'python';
   return resolvedPython;
 }
 
