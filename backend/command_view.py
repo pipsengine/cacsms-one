@@ -662,6 +662,9 @@ def _displayed_code(row, now):
 
 def _settlement(status, won, lost, pending, total):
     won, lost, pending, total = (int(won or 0), int(lost or 0), int(pending or 0), int(total or 0))
+    # One SportyBet code = one result (owner, 13 Nov 2026): one lost selection loses the code at once.
+    if lost:
+        return 'Lost'
     if status == 'settled':
         if total and lost == 0 and won == total:
             return 'Won'
@@ -862,5 +865,14 @@ def _attach_legs(connection, rows):
                 'result': leg['result'],
             })
     for row in rows:
-        row['legs'] = grouped.get(row['ticket_id'], [])
+        legs = grouped.get(row['ticket_id'], [])
+        # Selections show the code's result: in a lost code every selection is lost, and a selection
+        # that came through is never shown (or counted) as a win of its own.
+        code = 'lost' if any(leg['result'] == 'lost' for leg in legs) else (
+            'won' if legs and all(leg['result'] in ('won', 'void') for leg in legs)
+            and any(leg['result'] == 'won' for leg in legs) else None)
+        for leg in legs:
+            if code:
+                leg['match_result'], leg['result'] = leg['result'], code
+        row['legs'] = legs
     return rows

@@ -2760,32 +2760,44 @@ def _event_once(connection, ticket_id, run_id, event_type, current):
         _event(connection, ticket_id, run_id, event_type, {'detail': 'Kickoff has passed and no final score is stored'}, current)
 
 
+def _leg_result(connection, leg, current):
+    """A leg's own match result, or None while it is not known yet."""
+    if (_parse_time(leg['starts_at']) or current) > current:
+        return None
+    result = connection.execute(
+        """SELECT home_score,away_score,status,settled_at FROM sports_ai_results WHERE fixture_id=?""",
+        (leg['fixture_id'],),
+    ).fetchone()
+    fixture = connection.execute('SELECT status FROM sports_ai_fixtures WHERE id=?', (leg['fixture_id'],)).fetchone()
+    if fixture and fixture['status'] in ('cancelled', 'postponed', 'abandoned'):
+        return 'void'
+    if not result or result['status'] != 'final':
+        return None
+    settled_at = _parse_time(result['settled_at'])
+    if settled_at and settled_at < _parse_time(leg['starts_at']):
+        return None
+    return settle_result(leg['sport'], leg['market'], result['home_score'], result['away_score'])
+
+
 def _settle_if_ready(connection, ticket_id, legs, current):
-    scored = []
+    """One SportyBet code = one result (owner, 13 Nov 2026): the code is lost as soon as any selection
+    is lost, without waiting for the other matches; it is won only when every selection is won."""
+    scored, waiting = [], False
     for leg in legs:
-        if (_parse_time(leg['starts_at']) or current) > current:
-            return 'pending'
-        result = connection.execute(
-            """SELECT home_score,away_score,status,settled_at FROM sports_ai_results WHERE fixture_id=?""",
-            (leg['fixture_id'],),
-        ).fetchone()
-        fixture = connection.execute('SELECT status FROM sports_ai_fixtures WHERE id=?', (leg['fixture_id'],)).fetchone()
-        if fixture and fixture['status'] in ('cancelled', 'postponed', 'abandoned'):
-            leg_result = 'void'
-        elif not result or result['status'] != 'final':
-            return 'pending'
-        else:
-            settled_at = _parse_time(result['settled_at'])
-            if settled_at and settled_at < _parse_time(leg['starts_at']):
-                return 'pending'
-            leg_result = settle_result(leg['sport'], leg['market'], result['home_score'], result['away_score'])
-            if leg_result is None:
-                return 'pending'
+        leg_result = _leg_result(connection, leg, current)
+        if leg_result is None:
+            waiting = True
+            continue
         connection.execute(
             'UPDATE sports_ai_accumulator_legs SET result=? WHERE id=?', (leg_result, leg['id']),
         )
         scored.append({**leg, 'result': leg_result})
-    outcome, multiple = ticket_outcome(scored)
+    if any(leg['result'] == 'lost' for leg in scored):
+        outcome, multiple = 'lost', 0.0
+    elif waiting:
+        return 'pending'
+    else:
+        outcome, multiple = ticket_outcome(scored)
     if outcome == 'pending':
         return 'pending'
     profit = None if multiple is None else STAKE_ASSUMPTION * (multiple - 1)

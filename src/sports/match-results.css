@@ -155,3 +155,5 @@
 @media(max-width:1400px){.mr-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}.mr-grid{grid-template-columns:minmax(0,1.4fr) minmax(300px,1fr)}.mr-hero{flex-wrap:wrap}}
 @media(max-width:1050px){.mr-grid,.mr-bottom{grid-template-columns:1fr}.mr-hero{padding-right:18px}.mr-hero-right{width:100%;justify-content:space-between;flex-wrap:wrap;row-gap:10px}}
 @media(max-width:700px){.mr-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.mr-kpi.is-big{padding:12px}.mr-kpi.is-big .mr-kpi-value{font-size:21px}.mr-hero h1{font-size:20px}.mr-hero-icon{width:52px;height:52px}.mr-hero-stat{padding:0 10px}.mr-primary{width:100%}}
+.mr-page .mr-potential{font-weight:600;color:var(--mr-muted,#64748b)}
+.mr-page .mr-potential small{font-weight:500;font-size:11px;text-transform:lowercase}

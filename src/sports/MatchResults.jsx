@@ -71,11 +71,13 @@ function Trend({points}){
  </div>;
 }
 
+// Total return first: SportyBet's payout once settled, else the potential return (stake x odds).
+function Returned({r}){return r.payout!=null?naira(r.payout):r.potential_return!=null&&r.result!=='Unconfirmed'?<span className="mr-potential" title="Potential return if this bet wins">{naira(r.potential_return)} <small>potential</small></span>:'—'}
 function Fixture({r}){return <><span className="mr-sport" title={human(r.sport)}>{sportIcon(r.sport)}</span>{r.fixture}{r.extra_legs>0&&<small className="mr-legs"> + {r.extra_legs} more leg{r.extra_legs>1?'s':''}</small>}</>}
 
 function BetDetail({bet,onClose}){
  const facts=[['Bet',bet.kind_label],['Selection',bet.selection],['Odds',bet.odds?bet.odds.toFixed(2):'—'],['Stake',naira(bet.stake)],
-  ['Result',bet.result],['Payout',naira(bet.payout)],['Profit / loss',nairaSigned(bet.profit)],['Result source',bet.result_source||'Not settled yet'],
+  ['Total return',bet.payout!=null?naira(bet.payout):bet.potential_return!=null?`${naira(bet.potential_return)} (potential)`:'—'],['Profit / loss',nairaSigned(bet.profit)],['Result',bet.result],['Result source',bet.result_source||'Not settled yet'],
   ['SportyBet booking code',bet.codes?.length?bet.codes.join(', '):'—'],['SportyBet ticket ref',bet.bookmaker_ref||'—'],['Placed at',stamp(bet.placed_at)],['Settled at',stamp(bet.settled_at)]];
  return <div className="mr-modal-backdrop" onClick={onClose}><div className="mr-modal" role="dialog" aria-modal="true" onClick={e=>e.stopPropagation()}>
   <button className="mr-modal-close" onClick={onClose} aria-label="Close">×</button>
@@ -120,7 +122,7 @@ export default function MatchResults(){
   <div className="mr-kpis">
    <Kpi big icon={Ticket} tone="purple" label="Bets Placed" value={(s.placed??0).toLocaleString()} sub={`${s.settled??0} settled · ${s.awaiting??0} awaiting${s.unconfirmed?` · ${s.unconfirmed} unconfirmed`:''}`}/>
    <Kpi big icon={Target} tone="green" label="Win Rate" value={pct(s.win_rate)} sub={`${s.won??0} won · ${s.lost??0} lost${s.void?` · ${s.void} void`:''}`}/>
-   <Kpi big icon={Wallet} label="Total Staked" value={naira(s.staked)}/>
+   <Kpi big icon={Wallet} label="Total Staked (settled)" value={naira(s.staked)} sub={s.pending_staked?`+ ${naira(s.pending_staked)} awaiting result`:null}/>
    <Kpi big icon={Banknote} label="Total Returned" value={naira(s.returned)}/>
    <Kpi big icon={TrendingUp} tone={tone(s.profit)} label="Profit / Loss" value={nairaSigned(s.profit)}/>
    <Kpi big icon={Activity} tone={tone(s.roi)} label="Return on Stake" value={signed(s.roi)}/>
@@ -135,20 +137,21 @@ export default function MatchResults(){
   </form>
   <div className="mr-grid">
    <Panel title={<>Bet Results <span className="mr-count">({(view?.total??0).toLocaleString()})</span></>} icon={CheckCircle2} className="is-results" extra={<div className="mr-inline"><span className="mr-pill is-success"><RefreshCw size={12}/>Auto-updated</span>{isToday&&<span className="mr-pill">Today</span>}</div>}>
-    <div className="mr-table-scroll"><table><thead><tr><th>Date</th><th>Fixture</th><th>Bet</th><th>Selection</th><th>Odds</th><th>Stake</th><th>SportyBet Code</th><th>Result</th><th>Profit / Loss</th><th/></tr></thead><tbody>
+    <div className="mr-table-scroll"><table><thead><tr><th>Date</th><th>Fixture</th><th>Bet</th><th>SportyBet Code</th><th>Selection</th><th>Odds</th><th>Stake</th><th>Total Return</th><th>Profit / Loss</th><th>Result</th><th/></tr></thead><tbody>
      {rows.map(r=><tr key={r.id}>
       <td>{day(r.date)}</td>
       <td className="is-fixture"><Fixture r={r}/></td>
       <td>{r.kind_label}</td>
+      <td><Codes codes={r.codes}/></td>
       <td className="is-strong">{r.selection}</td>
       <td className="is-strong">{r.odds?r.odds.toFixed(2):'—'}</td>
       <td>{naira(r.stake)}</td>
-      <td><Codes codes={r.codes}/></td>
-      <td><Result value={r.result}/>{r.mismatch&&<span title="SportyBet settled this differently from the verified score" className="mr-mismatch"><AlertTriangle size={13}/></span>}</td>
+      <td className="is-strong"><Returned r={r}/></td>
       <td className={r.profit==null?'':r.profit>=0?'is-pos':'is-neg'}>{nairaSigned(r.profit)}</td>
+      <td><Result value={r.result}/>{r.mismatch&&<span title="SportyBet settled this differently from the verified score" className="mr-mismatch"><AlertTriangle size={13}/></span>}</td>
       <td><button className="mr-open" onClick={()=>setSelected(r)} aria-label={`Open ${r.fixture}`}><ExternalLink size={16}/></button></td>
      </tr>)}
-     {!rows.length&&<tr><td colSpan="10" className="mr-empty">{empty}</td></tr>}
+     {!rows.length&&<tr><td colSpan="11" className="mr-empty">{empty}</td></tr>}
     </tbody></table></div>
     <Pager page={view?.page||page} pages={view?.pages||1} total={view?.total||0} size={pageSize} onPage={setPage} onSize={n=>{setPageSize(n);setPage(1)}}/>
    </Panel>
@@ -170,8 +173,8 @@ export default function MatchResults(){
     </div>
    </Panel>
    <Panel title="By Bet Type" icon={Layers}>
-    <div className="mr-table-scroll"><table className="mr-breakdown"><thead><tr><th>Type</th><th>Placed</th><th>Won / Lost</th><th>Win rate</th><th>Profit / Loss</th></tr></thead><tbody>
-     {KINDS.map(([k,label])=>{const m=bd[k]||{};return <tr key={k}><td>{label}</td><td>{(m.placed??0).toLocaleString()}</td><td>{m.won??0} / {m.lost??0}</td><td>{pct(m.win_rate)}</td><td className={m.profit==null?'':m.profit>=0?'is-pos':'is-neg'}>{nairaSigned(m.profit)}</td></tr>})}
+    <div className="mr-table-scroll"><table className="mr-breakdown"><thead><tr><th>Type</th><th>Placed</th><th>Won / Lost</th><th>Win rate</th><th>Staked</th><th>Returned</th><th>Profit / Loss</th></tr></thead><tbody>
+     {KINDS.map(([k,label])=>{const m=bd[k]||{};return <tr key={k}><td>{label}</td><td>{(m.placed??0).toLocaleString()}</td><td>{m.won??0} / {m.lost??0}</td><td>{pct(m.win_rate)}</td><td>{naira(m.staked)}</td><td>{naira(m.returned)}</td><td className={m.profit==null?'':m.profit>=0?'is-pos':'is-neg'}>{nairaSigned(m.profit)}</td></tr>})}
     </tbody></table></div>
     <p className="mr-hint">A combined bet or ticket wins only when every leg wins.</p>
    </Panel>

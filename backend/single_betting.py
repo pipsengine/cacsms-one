@@ -819,6 +819,12 @@ def _fixture(bet, legs=None):
     return f"{bet['home']} vs {bet['away']}"
 
 
+def stamp_legs(connection, bet_id, status):
+    """One SportyBet code = one bet: every selection in it takes the code's result (owner, 13 Nov 2026).
+    A selection that came through inside a lost code is lost, never counted as a win."""
+    connection.execute('UPDATE sports_ai_single_bet_legs SET status=? WHERE bet_id=?', (status, bet_id))
+
+
 def _settle_combos(connection, current):
     from rollover_engine import _outcome
     settled = 0
@@ -854,6 +860,7 @@ def _settle_combos(connection, current):
                WHERE id=? AND status='PLACED'""",
             (status, payout, round(payout - bet['stake'], 2), current.isoformat(), bet['id']),
         )
+        stamp_legs(connection, bet['id'], status)
         _event(connection, bet['id'], 'SETTLED',
                f"Combined settled {status.lower()} – {_fixture(bet, legs)} (₦{payout - bet['stake']:+,.0f})", current)
         settled += 1
@@ -868,7 +875,7 @@ def settle(connection, now=None):
     for bet in connection.execute(
         """SELECT b.*, r.home_score, r.away_score FROM sports_ai_single_bets b
            JOIN sports_ai_results r ON r.fixture_id=b.fixture_id AND r.status='final'
-           WHERE b.status='PLACED' AND b.kind!='COMBO'""",
+           WHERE b.status='PLACED' AND COALESCE(b.kind,'SINGLE') NOT IN ('COMBO','TICKET')""",
     ).fetchall():
         outcome = _outcome(bet['sport'], bet['market'], int(bet['home_score']), int(bet['away_score']))
         if outcome is None:
@@ -1044,6 +1051,15 @@ def apply_execution(connection, bet, outcome, order_status, detail, kind, now=No
              detail[:300], bet['probability'], bet['id']),
         )
         _apply_fresh_legs(connection, bet['id'], bet)
+        if outcome == 'LIVE_PLACED':
+            # The price SportyBet accepted on the betslip, not the quote the bet was queued at
+            # (12 Nov 2026: Benin v CAR was stored at 1.63 but accepted, and paid, at 1.68).
+            connection.execute(
+                """UPDATE sports_ai_single_bets SET decimal_odds=COALESCE((
+                       SELECT page_odds FROM sports_ai_single_live_orders
+                       WHERE bet_id=? AND kind='SUBMISSION' AND page_odds>1), decimal_odds) WHERE id=?""",
+                (bet['id'], bet['id']),
+            )
         action = {'PAPER_PLACED': 'REHEARSED', 'LIVE_PLACED': 'LIVE_PLACED', 'UNKNOWN': 'EXCEPTION'}[outcome]
         _event(connection, bet['id'], action, f"{_fixture(bet, bet.get('legs'))} {bet['selection']} – {detail}", current)
         if outcome == 'UNKNOWN':
@@ -1110,11 +1126,18 @@ def _heartbeat(connection, current):
             'fresh': bool(seen) and (current - seen).total_seconds() < 120}
 
 
+_REAL_BET = """ AND EXISTS (SELECT 1 FROM sports_ai_single_live_orders o WHERE o.bet_id=sports_ai_single_bets.id
+                 AND o.kind='SUBMISSION' AND o.status NOT IN ('REJECTED','FAILED','PENDING'))"""
+
+
 def dashboard(connection, now=None):
     current = _now(now)
     day = local_date(current)
+    # In LIVE mode the figures are real money only, as on Match Results: paper bets and rehearsals
+    # made the 30-day profit +113.70 (8 won / 3 lost) when real money was +9.70 (4 / 3), 13 Nov 2026.
+    real = _REAL_BET if _live(connection) else ''
     today = connection.execute(
-        f"SELECT * FROM sports_ai_single_bets WHERE local_date=? AND status IN ({','.join('?' * len(COUNTED))})",
+        f"SELECT * FROM sports_ai_single_bets WHERE local_date=? AND status IN ({','.join('?' * len(COUNTED))})" + real,
         (day, *COUNTED),
     ).fetchall()
     wins = sum(1 for b in today if b['status'] == 'WON')
@@ -1128,7 +1151,7 @@ def dashboard(connection, now=None):
     days = [(start + timedelta(days=i)).isoformat() for i in range(30)]
     history = connection.execute(
         f"""SELECT local_date, status, profit, stake FROM sports_ai_single_bets
-            WHERE local_date>=? AND status IN ({','.join('?' * len(COUNTED))})""",
+            WHERE local_date>=? AND status IN ({','.join('?' * len(COUNTED))})""" + real,
         (days[0], *COUNTED),
     ).fetchall()
     per_day = {d: {'date': d, 'profit': 0.0, 'wins': 0, 'losses': 0, 'bets': 0} for d in days}

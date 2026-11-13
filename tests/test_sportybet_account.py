@@ -307,7 +307,7 @@ class AccountTests(unittest.TestCase):
             # The same bet can never be submitted twice.
             with self.assertRaises(Exception):
                 acct._order(c, bet, 'SUBMISSION', None, now)
-            placed = acct._now(now).astimezone(acct.WAT).strftime('%d/%m/%Y %H:%M')
+            placed = acct._parse(c.execute("SELECT submitted_at FROM sports_ai_single_live_orders WHERE kind='SUBMISSION'").fetchone()[0]).astimezone(acct.WAT).strftime('%d/%m/%Y %H:%M')  # Bet History lists the submission's minute
             # The operator's own manual slip on another match, and a multiple on this match, are never claimed.
             history = f'''{placed}
 Singles
@@ -378,7 +378,7 @@ Total Return
             self.assertEqual(order['bookmaker_ref'], 'TK87654321')
             sb.apply_execution(c, bet, outcome, status, detail, 'SUBMISSION', now)
             self.assertEqual(c.execute("SELECT status FROM sports_ai_single_bets WHERE id='combo-1'").fetchone()[0], 'PLACED')
-            placed = acct._now(now).astimezone(acct.WAT).strftime('%d/%m/%Y %H:%M')
+            placed = acct._parse(c.execute("SELECT submitted_at FROM sports_ai_single_live_orders WHERE kind='SUBMISSION'").fetchone()[0]).astimezone(acct.WAT).strftime('%d/%m/%Y %H:%M')  # Bet History lists the submission's minute
             # A single on one leg is never claimed; the Multiple with exactly both legs is.
             history = f'''{placed}
 Singles
@@ -400,6 +400,16 @@ Total Return
             self.assertEqual(acct.reconcile(c, history, now), 1)
             order = c.execute("SELECT status, payout FROM sports_ai_single_live_orders WHERE kind='SUBMISSION'").fetchone()
             self.assertEqual((order['status'], order['payout']), ('SETTLED_WON', 224.75))
+            # One code = one result: every selection takes the code's result.
+            legs = [r[0] for r in c.execute("SELECT status FROM sports_ai_single_bet_legs WHERE bet_id='combo-1'")]
+            self.assertEqual(legs, ['WON', 'WON'])
+
+    def test_one_lost_selection_loses_the_code_at_once(self):
+        import command_view
+        # Two selections still to play, one lost: the code is lost now, not "in progress".
+        self.assertEqual(command_view._settlement('qualified', 0, 1, 2, 3), 'Lost')
+        self.assertEqual(command_view._settlement('settled', 3, 0, 0, 3), 'Won')
+        self.assertEqual(command_view._settlement('qualified', 1, 0, 2, 3), 'In progress')
 
     def test_no_edge_ticket_is_submitted_in_live_mode(self):
         now = datetime.now(timezone.utc)

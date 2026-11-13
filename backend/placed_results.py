@@ -105,21 +105,26 @@ def collect(connection):
         result, payout, profit, source, mismatch = _result(bet, order)
         ticket_id = bet['id'][len('ticket:'):] if str(bet['id']).startswith('ticket:') else None
         first = bet_legs[0]
+        sports = {leg['sport'] for leg in bet_legs}
+        code_status = {'Won': 'WON', 'Lost': 'LOST', 'Void': 'VOID'}.get(result)
         rows.append({
             'id': bet['id'], 'date': local_day(last_kickoff), 'starts_at': last_kickoff,
             'kind': kind, 'kind_label': KIND_LABEL.get(kind, kind.title()), 'group': KIND_GROUP.get(kind, 'single'),
-            'sport': first['sport'], 'competition': first['competition'] or '—',
+            'sport': first['sport'] if len(sports) == 1 else 'mixed', 'competition': first['competition'] or '—',
             'fixture': f"{first['home']} vs {first['away']}", 'extra_legs': len(bet_legs) - 1,
             'selection': bet['selection'], 'odds': _money(bet['decimal_odds']), 'stake': _money(bet['stake']),
             'codes': sorted(codes.get(ticket_id, ())) if ticket_id else [],
             'result': result, 'payout': payout, 'profit': profit,
+            # Shown as the total return of a bet that has not settled yet (stake x accepted odds).
+            'potential_return': None if result in SETTLED else round((_money(bet['stake']) or 0) * (_money(bet['decimal_odds']) or 0), 2),
             'result_source': source, 'mismatch': mismatch,
             'bookmaker_ref': order.get('bookmaker_ref'), 'order_status': order['status'],
             'placed_at': order.get('submitted_at') or order.get('created_at'),
             'settled_at': order.get('reconciled_at') if order['status'].startswith('SETTLED_') else bet['settled_at'],
             'legs': [{'fixture': f"{leg['home']} vs {leg['away']}", 'sport': leg['sport'], 'competition': leg['competition'],
                       'selection': leg['selection'], 'odds': _money(leg['decimal_odds']), 'starts_at': leg['starts_at'],
-                      'status': leg.get('status')} for leg in bet_legs],
+                      # One code = one result: a settled code's selections all show the code's result.
+                      'status': code_status or leg.get('status')} for leg in bet_legs],
         })
     rows.sort(key=lambda row: (str(row['starts_at']), str(row['placed_at'] or '')), reverse=True)
     return rows
@@ -137,7 +142,9 @@ def metrics(rows):
         'awaiting': sum(r['result'] == 'Awaiting result' for r in rows),
         'unconfirmed': sum(r['result'] == 'Unconfirmed' for r in rows),
         'win_rate': won / (won + lost) if won + lost else None,
-        'staked': round(sum(r['stake'] or 0 for r in rows), 2),
+        # Staked, returned and profit cover the same (settled) codes, so returned - staked = profit.
+        'staked': round(staked_settled, 2),
+        'pending_staked': round(sum(r['stake'] or 0 for r in rows if r['result'] not in SETTLED), 2),
         'returned': round(sum(r['payout'] or 0 for r in settled), 2),
         'profit': round(profit, 2) if settled else None,
         'roi': profit / staked_settled if staked_settled else None,

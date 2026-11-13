@@ -688,11 +688,15 @@ def reconcile(connection, history_text, now=None):
             outcome = status.replace('SETTLED_', '')
             paid = float(payout) if payout is not None else (0.0 if outcome == 'LOST' else None)
             if paid is not None:
+                # SportyBet's settlement of the code is final: it replaces a result the system worked out itself.
                 connection.execute(
                     """UPDATE sports_ai_single_bets SET status=?, payout=?, profit=?, settled_at=?
-                       WHERE id=? AND status IN ('PLACED','QUEUED')""",
+                       WHERE id=? AND status IN ('PLACED','QUEUED','WON','LOST','VOID')""",
                     (outcome, paid, round(paid - STAKE, 2), current.isoformat(), order['bet_id']),
                 )
+                from single_betting import stamp_legs
+                stamp_legs(connection, order['bet_id'], outcome)
+                _settle_booked_code(connection, order['bet_id'], outcome, paid, current)
         if order['status'] in ('UNKNOWN', 'SUBMITTING'):
             # The bet row may still be QUEUED when the process failed before recording the result.
             connection.execute(
@@ -707,6 +711,29 @@ def reconcile(connection, history_text, now=None):
         updated += 1
     _resume_after_reconcile(connection, current)
     return updated
+
+
+def _settle_booked_code(connection, bet_id, outcome, paid, now):
+    """A booking code that was also bet: SportyBet's settlement of the bet settles the code itself.
+    Its matches are often in leagues no results provider covers, so it would otherwise stay pending."""
+    if not str(bet_id).startswith('ticket:'):
+        return
+    ticket_id = str(bet_id)[len('ticket:'):]
+    if connection.execute('SELECT 1 FROM sports_ai_ticket_settlements WHERE ticket_id=?', (ticket_id,)).fetchone():
+        return
+    if not connection.execute('SELECT 1 FROM sports_ai_accumulator_tickets WHERE id=?', (ticket_id,)).fetchone():
+        return
+    multiple = round(float(paid) / STAKE, 4)
+    connection.execute(
+        """INSERT INTO sports_ai_ticket_settlements
+           (id,ticket_id,outcome,payout_multiple,stake_assumption,hypothetical_profit,settled_at,details_json)
+           VALUES(?,?,?,?,?,?,?,?)""",
+        # Same unit as accumulator_engine (STAKE_ASSUMPTION = 1): profit per 1 staked.
+        (str(uuid.uuid4()), ticket_id, outcome.lower(), multiple, 1.0, round(multiple - 1, 4), now.isoformat(),
+         json.dumps({'source': 'SportyBet Bet History', 'bet_id': bet_id, 'payout': paid})),
+    )
+    connection.execute("UPDATE sports_ai_accumulator_tickets SET status=? WHERE id=?",
+                       ('void' if outcome == 'VOID' else 'settled', ticket_id))
 
 
 AUTO_PAUSE_ACTORS = ('live-recovery', 'live-execution')

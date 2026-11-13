@@ -43,7 +43,9 @@ class MetricTests(unittest.TestCase):
                         row('Void', payout=100, profit=0), row('Awaiting result')])
         self.assertEqual((m['placed'], m['settled'], m['won'], m['lost'], m['awaiting']), (4, 3, 1, 1, 1))
         self.assertAlmostEqual(m['win_rate'], 0.5)
-        self.assertEqual((m['staked'], m['returned'], m['profit']), (400, 350, 50))
+        # Staked covers the same settled codes as returned and profit: 350 - 300 = +50.
+        self.assertEqual((m['staked'], m['returned'], m['profit']), (300, 350, 50))
+        self.assertEqual(m['pending_staked'], 100)
         self.assertAlmostEqual(m['roi'], 50 / 300)
 
     def test_nothing_settled_is_none_not_zero(self):
