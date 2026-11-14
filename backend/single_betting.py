@@ -32,9 +32,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from db import connect
 
 STAKE = 100.0
-DAILY_TARGET = (10, 15)
-DAILY_LIMIT = 15            # 10 singles + 5 Sure Odds combined bets (owner, 12 Nov 2026)
-DAILY_STAKE_LIMIT = 1500.0
+DAILY_TARGET = (10, 10)
+DAILY_LIMIT = 10            # 5 singles + 5 Sure Odds combined bets (owner, 13 Nov 2026: compare the two)
+DAILY_STAKE_LIMIT = 1000.0
 MIN_EV = float(os.environ.get('SINGLE_MIN_EXPECTED_VALUE', '0.03'))
 # Owner's structure (12 Nov 2026), objective 1:
 #   singles   one selection priced 1.60-1.99;
@@ -43,7 +43,7 @@ MIN_EV = float(os.environ.get('SINGLE_MIN_EXPECTED_VALUE', '0.03'))
 # band measured (-3.4%). Override with SINGLE_MIN_ODDS / SINGLE_MAX_ODDS.
 MIN_ODDS = max(1.2, float(os.environ.get('SINGLE_MIN_ODDS', '1.60')))
 MAX_ODDS = max(MIN_ODDS, float(os.environ.get('SINGLE_MAX_ODDS', '1.99')))
-COMBINED_MIN_ODDS, COMBINED_MAX_ODDS = 2.00, 2.95
+COMBINED_MIN_ODDS, COMBINED_MAX_ODDS = 2.50, 2.95   # = Sure Odds range (owner, 14 Nov 2026)
 # The engine no longer builds its own combined selections from sub-minimum legs: combined bets
 # are the Sure Odds tickets, so every one carries a SportyBet booking code.
 ENGINE_COMBOS = False
@@ -53,7 +53,7 @@ COMBO_MIN_PROBABILITY = float(os.environ.get('SINGLE_COMBO_MIN_PROBABILITY', '0.
 # do not fill the day. They follow the execution mode like every bet: paper in PAPER, rehearsed
 # in LIVE_REHEARSAL, and real money in LIVE under authorization (owner's decision, 2026-11-11).
 # Real-money bets: SINGLES_DAILY singles + COMBINED_DAILY combined, within sportybet_account.DAILY_COUNT.
-FAVOURITE_DAILY_LIMIT = 10
+FAVOURITE_DAILY_LIMIT = 5   # never more than the singles quota
 FAVOURITE_NOTICE = 'Favourite (no edge) - expected to lose money over time.'
 # Coded accumulator tickets are followed as ₦100 paper bets (kind TICKET), the same way as singles.
 # Only codes SportyBet displayed before the first kickoff, from this date (WAT) on, are imported.
@@ -166,12 +166,12 @@ def day_limits(connection):
 
 
 # Singles held for a sport each day (owner, 13 Nov 2026: basketball every day). Its games are mostly in the
-# evening and night, while the morning's football favourites used to fill all 10 singles by 09:30 WAT.
+# evening and night, while the morning's football favourites used to fill all the singles by 09:30 WAT.
 # Unfilled reserved slots are released to every sport at SPORT_RESERVE_RELEASE_HOUR (WAT).
-SPORT_RESERVE = {'basketball': 3}
+SPORT_RESERVE = {'basketball': 1}   # of the 5 singles (owner, 13 Nov 2026)
 SPORT_RESERVE_RELEASE_HOUR = 21
-SINGLES_DAILY = 10            # owner's structure (12 Nov 2026): 10 singles at 1.60-1.99 ...
-COMBINED_DAILY = 5            # ... plus the day's 5 Sure Odds combined bets at 2.00-2.95 = 15 a day
+SINGLES_DAILY = 5             # owner's structure (13 Nov 2026): 5 singles at 1.60-1.99 ...
+COMBINED_DAILY = 5            # ... plus the day's 5 Sure Odds combined bets at 2.00-2.95 = 10 a day
 COMBINED_KINDS = ('TICKET', 'COMBO')
 
 
@@ -239,7 +239,7 @@ def _group_usage(connection, day, group):
 
 def room_today(connection, day, group=None):
     """Bets that may still be queued today. The day's total (15 / ₦1,500, or the authorization's
-    lower limits in LIVE mode) and, with `group`, that product's own quota (10 singles, 5 combined)
+    lower limits in LIVE mode) and, with `group`, that product's own quota (5 singles, 5 combined)
     must both have room. In LIVE mode real-money orders already sent count as well as the queue."""
     count_limit, stake_limit = day_limits(connection)
     count, staked = _day_usage(connection, day)

@@ -32,7 +32,8 @@ def made_today(connection, current):
     counts = {}
     for row in connection.execute(
         """SELECT json_extract(parameters_json,'$.category') c, COUNT(*) n FROM sports_ai_accumulator_tickets
-           WHERE json_extract(parameters_json,'$.product')=? AND created_at>=? GROUP BY 1""",
+           WHERE json_extract(parameters_json,'$.product')=? AND created_at>=?
+             AND json_extract(parameters_json,'$.retired') IS NULL GROUP BY 1""",
         (PRODUCT, _day_start(current)),
     ):
         counts[row[0]] = row[1]
@@ -62,7 +63,10 @@ def market_pool(connection, current):
     earliest = (current + timedelta(hours=MIN_LEAD_HOURS)).isoformat()
     legs = filter_legs(connection, [l for l in scanned if l['sport'] in prize_ladder.LADDER_SPORTS])
     legs = prize_ladder.reliable(legs, prize_ladder.hit_rates(connection))
-    return [l for l in legs if str(l['starts_at']) >= earliest and LEG_MIN <= l['decimal_odds'] <= LEG_MAX]
+    import pick_scoring
+    history = pick_scoring.table()
+    return [l for l in legs if str(l['starts_at']) >= earliest and LEG_MIN <= l['decimal_odds'] <= LEG_MAX
+            and pick_scoring.proven(l, history)]   # evidence-backed selection types only (14 Nov 2026)
 
 
 def build(connection, actor='sports-ai-worker', now=None, pool=None):
@@ -89,7 +93,8 @@ def build(connection, actor='sports-ai-worker', now=None, pool=None):
     for card in sorted(due, key=lambda c: c['min_odds']):
         low, high = float(card['min_odds']), float(card['max_odds'])
         legs = prize_ladder.pick_range([l for l in pool if l['fixture_id'] not in used], low, high,
-                                       math.sqrt(low * high), {}, current, min_legs=2)
+                                       math.sqrt(low * high), {}, current, min_legs=2,
+                                       max_legs=min(8, prize_ladder.leg_cap(math.sqrt(low * high))))
         if not legs:
             skipped.append(card['id'])
             continue
@@ -116,8 +121,9 @@ def build(connection, actor='sports-ai-worker', now=None, pool=None):
             'combined_odds': odds, 'joint_probability': joint, 'estimated_edge': joint * odds - 1,
             'probability_basis': 'independent', 'sport_mode': 'mixed',
             'explanation': (f"Category {card['label']}: {len(legs)} selections priced {LEG_MIN:.2f}-{LEG_MAX:.2f}, "
-                            f"combined {odds:,.2f}; estimated chance {one_in}. Probabilities are SportyBet prices with "
-                            'the margin removed. A booking code, not a wager.'),
+                            f"combined {odds:,.2f}; estimated chance {one_in}{prize_ladder.one_cut_note(legs)}. "
+                            'Selections are proven types only (history); chances are SportyBet prices without the '
+                            'margin, corrected by history. A booking code, not a wager.'),
             'status': 'qualified',
         }
         try:
@@ -127,6 +133,8 @@ def build(connection, actor='sports-ai-worker', now=None, pool=None):
             continue
         row = connection.execute('SELECT parameters_json FROM sports_ai_accumulator_tickets WHERE id=?', (ticket_id,)).fetchone()
         parameters = json.loads(row['parameters_json'] or '{}')
+        import pick_scoring
+        parameters.update(one_cut_probability=pick_scoring.one_cut_chance([l['probability'] for l in legs]))
         parameters.update(product=PRODUCT, category=card['id'], positive_edge=False, places_wager=False,
                           reserve=prize_ladder.reserves(pool, legs, prize_ladder.hit_rates(connection)))
         connection.execute('UPDATE sports_ai_accumulator_tickets SET parameters_json=?, finalized=1 WHERE id=?',

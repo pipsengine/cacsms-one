@@ -662,7 +662,8 @@ def _apply_displayed_prices(connection, ticket_id, seen):
 
 
 def _sure_odds_ticket(connection, ticket_id):
-    """A sure-odds ticket is at least two analyzed selections, combined from 2.00 to 2.95."""
+    """A sure-odds ticket is 2-4 analyzed selections, combined from 2.50 to 2.95 (high_odds_board limits)."""
+    from high_odds_board import SURE_COMBINED_MAX, SURE_COMBINED_MIN, SURE_MAX_LEGS
     row = connection.execute(
         'SELECT parameters_json FROM sports_ai_accumulator_tickets WHERE id=?',
         (ticket_id,),
@@ -679,7 +680,7 @@ def _sure_odds_ticket(connection, ticket_id):
         'SELECT sport, market, decimal_odds, probability, bookmaker FROM sports_ai_accumulator_legs WHERE ticket_id=?',
         (ticket_id,),
     ).fetchall()
-    if not 2 <= len(legs) <= 3:   # owner's structure (12 Nov 2026): 2-3 selections
+    if not 2 <= len(legs) <= SURE_MAX_LEGS:   # owner, 14 Nov 2026: 2-4 selections
         return False
     from market_registry import holdout_ready
     # Model-priced legs need a calibrated market and an 80% model chance; SportyBet-favourite legs
@@ -698,7 +699,7 @@ def _sure_odds_ticket(connection, ticket_id):
         if probability < floor or leg['bookmaker'] != 'SportyBet' or not (1 < odds <= 2.95):
             return False
         product *= odds
-    return 2 <= product <= 2.95
+    return SURE_COMBINED_MIN - 1e-9 <= product <= SURE_COMBINED_MAX + 1e-9
 
 
 def create_high_odds_job(connection, ticket_id):
@@ -714,7 +715,7 @@ def create_high_odds_job(connection, ticket_id):
 def create_sure_odds_job(connection, ticket_id):
     """Queue one sure-odds ticket. No operator selection and no wager."""
     if not _sure_odds_ticket(connection, ticket_id):
-        raise ValueError('A sure-odds booking needs at least two selections of 80% or more, combined from 2.00 to 2.95')
+        raise ValueError('A sure-odds booking needs 2-4 selections of 70-80% or more, combined from 2.50 to 2.95')
     selections = ticket_selections(connection, ticket_id)
     for item in selections:
         item['ticket_id'] = ticket_id
@@ -1591,8 +1592,9 @@ async def _top_up_from_reserves(page, booked, seen, policy, limit=50, chunk=3):
 
 def _sure_price_problem(booked, seen):
     """Reject a Sure Odds slip before requesting a code if dropped/moved legs break its band."""
-    if not 2 <= len(booked) <= 3:
-        return 'Sure Odds needs 2–3 selections still offered by SportyBet.'
+    from high_odds_board import SURE_COMBINED_MAX, SURE_COMBINED_MIN, SURE_MAX_LEGS
+    if not 2 <= len(booked) <= SURE_MAX_LEGS:
+        return f'Sure Odds needs 2–{SURE_MAX_LEGS} selections still offered by SportyBet.'
     shown = {(item.get('fixture_id'), item.get('market')): item.get('page_odds') for item in seen}
     product = 1.0
     for leg in booked:
@@ -1603,8 +1605,9 @@ def _sure_price_problem(booked, seen):
         if not 1 < odds <= 2.95:
             return 'A displayed Sure Odds selection price is invalid.'
         product *= odds
-    if not 2 <= product <= 2.95:
-        return f'Displayed Sure Odds total {product:.2f} is outside 2.00–2.95. No code was requested.'
+    if not SURE_COMBINED_MIN <= product <= SURE_COMBINED_MAX:
+        return (f'Displayed Sure Odds total {product:.2f} is outside {SURE_COMBINED_MIN:.2f}–{SURE_COMBINED_MAX:.2f}. '
+                'No code was requested.')
     return None
 
 

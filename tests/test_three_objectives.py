@@ -35,12 +35,12 @@ class ObjectiveOne(unittest.TestCase):
 
     def test_combined_bets_are_sure_odds_tickets_only(self):
         self.assertEqual(sb.TICKET_PRODUCTS, ('sure_odds',))
-        self.assertEqual((sb.COMBINED_MIN_ODDS, sb.COMBINED_MAX_ODDS), (2.00, 2.95))
+        self.assertEqual((sb.COMBINED_MIN_ODDS, sb.COMBINED_MAX_ODDS), (2.50, 2.95))   # owner, 14 Nov 2026
         self.assertFalse(sb.ENGINE_COMBOS)
 
 
 class DailyQuotas(unittest.TestCase):
-    """15 a day: 10 singles + 5 Sure Odds combined bets, each product within its own quota."""
+    """10 a day: 5 singles + 5 Sure Odds combined bets, each product within its own quota."""
 
     def setUp(self):
         import tempfile
@@ -64,9 +64,9 @@ class DailyQuotas(unittest.TestCase):
 
     def test_totals_and_split(self):
         import db
-        self.assertEqual((sb.DAILY_LIMIT, sb.DAILY_STAKE_LIMIT, sb.SINGLES_DAILY, sb.COMBINED_DAILY), (15, 1500.0, 10, 5))
+        self.assertEqual((sb.DAILY_LIMIT, sb.DAILY_STAKE_LIMIT, sb.SINGLES_DAILY, sb.COMBINED_DAILY), (10, 1000.0, 5, 5))
         with db.connect() as c:
-            self._bets(c, 'FAVOURITE', 10)
+            self._bets(c, 'FAVOURITE', 5)
             self.assertEqual(sb.room_today(c, '2026-11-12', 'single'), 0)     # singles full ...
             self.assertEqual(sb.room_today(c, '2026-11-12', 'combined'), 5)   # ... combined keep their 5
             self._bets(c, 'TICKET', 2, status='QUEUED')
@@ -75,7 +75,7 @@ class DailyQuotas(unittest.TestCase):
 
 
 class BasketballReserve(unittest.TestCase):
-    """3 of the 10 singles are held for basketball (evening games) until 21:00 WAT."""
+    """1 of the 5 singles is held for basketball (evening games) until 21:00 WAT."""
 
     def test_reserved_slots_are_kept_for_basketball(self):
         items = [{'sport': 'football', 'id': i} for i in range(12)] + [{'sport': 'basketball', 'id': 'b'}]
@@ -93,12 +93,12 @@ class BasketballReserve(unittest.TestCase):
             db.initialize()
             with db.connect() as c:
                 morning = datetime(2026, 11, 13, 8, 0, tzinfo=timezone.utc)      # 09:00 WAT
-                self.assertEqual(sb.sport_reserve_left(c, '2026-11-13', morning), {'basketball': 3})
+                self.assertEqual(sb.sport_reserve_left(c, '2026-11-13', morning), {'basketball': 1})
                 c.execute("""INSERT INTO sports_ai_single_bets(id,fixture_id,sport,competition,home,away,market,selection,
                              decimal_odds,probability,expected_value,stake,mode,status,local_date,starts_at,created_at,kind)
                              VALUES('b1','fb','basketball','NBA','H','A','MONEYLINE_HOME','Home',1.7,0.58,0,100,'PAPER',
                              'PLACED','2026-11-13',?,?,'FAVOURITE')""", (morning.isoformat(), morning.isoformat()))
-                self.assertEqual(sb.sport_reserve_left(c, '2026-11-13', morning), {'basketball': 2})
+                self.assertEqual(sb.sport_reserve_left(c, '2026-11-13', morning), {'basketball': 0})
                 night = datetime(2026, 11, 13, 20, 30, tzinfo=timezone.utc)      # 21:30 WAT
                 self.assertEqual(sb.sport_reserve_left(c, '2026-11-13', night), {})
         finally:
@@ -115,18 +115,24 @@ class ObjectiveTwo(unittest.TestCase):
         self.assertGreater(len(tickets), 0)
         used = set()
         for t in tickets:
-            self.assertIn(len(t['legs']), (2, 3))
-            self.assertTrue(2.0 - 1e-9 <= t['combined_odds'] <= 2.95 + 1e-9, t['combined_odds'])
+            self.assertIn(len(t['legs']), (2, 3, 4))
+            self.assertTrue(2.50 - 1e-9 <= t['combined_odds'] <= 2.95 + 1e-9, t['combined_odds'])
             ids = {l['fixture_id'] for l in t['legs']}
             self.assertFalse(ids & used)  # a match is used once
             used |= ids
 
+    def test_four_selections_when_three_cannot_reach_the_range(self):
+        # 1.28 x 3 = 2.10 (too short), 1.28 x 4 = 2.68: a 4-selection code in 2.50-2.95.
+        tickets = board.pack_sure_tickets([leg(i, 1.28) for i in range(8)], DAY, limit=1)
+        self.assertEqual([len(t['legs']) for t in tickets], [4])
+        self.assertTrue(2.50 <= tickets[0]['combined_odds'] <= 2.95)
+
     def test_short_prices_alone_never_make_a_long_ticket(self):
-        # Five 1.15s cannot reach 2.00 within 3 legs: no ticket rather than a 5-leg one.
+        # Five 1.15s cannot reach 2.50 within 4 legs: no ticket rather than a 5-leg one.
         self.assertEqual(board.pack_sure_tickets([leg(i, 1.15) for i in range(5)], DAY), [])
 
     def test_limit_counts_tickets_already_made(self):
-        pool = [leg(i, 1.45) for i in range(12)]
+        pool = [leg(i, 1.62) for i in range(12)]        # two make 2.62
         self.assertEqual(len(board.pack_sure_tickets(pool, DAY, limit=2)), 2)
         self.assertEqual(board.pack_sure_tickets(pool, DAY, limit=0), [])
 

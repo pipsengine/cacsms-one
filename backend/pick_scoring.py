@@ -182,3 +182,32 @@ def calibrated(leg, data=None):
     """Fair probability of a scanned leg corrected by history (never more than FACTOR_RANGE)."""
     factor, _, _ = history_factor(leg.get('sport'), leg.get('competition'), leg.get('market'), leg['decimal_odds'], data)
     return min(MAX_PROBABILITY, float(leg['probability']) * factor)
+
+
+# ---------------------------------------------------------------- proven selection types (codes)
+
+PROVEN_MIN_SAMPLE = 30      # graded selections of this sport + market family + price band
+PROVEN_MIN_FACTOR = 1.02    # must have won at least 2% more often than priced (after shrinkage)
+
+
+def proven(leg, data=None):
+    """A code selection is used only where history shows its kind wins more often than priced
+    (owner, 14 Nov 2026: category and jackpot codes had a 0 win record built from unproven legs,
+    tennis winners above all: 63.7% won against 68.7% priced)."""
+    data = data if data is not None else table()
+    if not data:
+        return False
+    stats = (data.get('buckets') or {}).get(f"{leg.get('sport')}|{family(leg.get('market'))}|{band(leg['decimal_odds'])}")
+    if not stats or stats[0] < PROVEN_MIN_SAMPLE:
+        return False
+    factor, _, _ = history_factor(leg.get('sport'), leg.get('competition'), leg.get('market'), leg['decimal_odds'], data)
+    return factor >= PROVEN_MIN_FACTOR
+
+
+def one_cut_chance(probabilities):
+    """Chance that at most one selection loses (SportyBet's One Cut still pays, at reduced odds)."""
+    import math
+    probabilities = [float(p) for p in probabilities]
+    every = math.prod(probabilities)
+    one_lost = sum((1 - p) * math.prod(q for j, q in enumerate(probabilities) if j != i) for i, p in enumerate(probabilities))
+    return every + one_lost

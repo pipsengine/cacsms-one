@@ -8,6 +8,7 @@ only when SportyBet displays it. No wager is placed.
 """
 
 import json
+import math
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -30,9 +31,11 @@ ODDS_BANDS = (
 BOOKABLE_SPORTS = {'football', 'basketball'}
 HIGHER_ODDS_BANDS = ('2-3', '3-4', '4-5', 'above-5')
 MAX_TICKETS_PER_BAND = 4
-SURE_COMBINED_MIN = 2.0
+SURE_COMBINED_MIN = 2.50        # owner, 14 Nov 2026: Sure Odds codes land in 2.50-2.95 (was 2.00-2.95)
 SURE_COMBINED_MAX = 2.95
-SURE_PACK_RANGE = (2.10, 2.80)   # build target inside 2.00-2.95, leaving room for price drift before booking
+SURE_PACK_RANGE = (2.55, 2.90)   # build target inside 2.50-2.95, leaving room for price drift before booking
+SURE_COMBO_POOL = 70            # candidate legs for two- and three-selection combinations
+SURE_FOUR_LEG_POOL = 30         # four-selection combinations are searched among 30 legs (27k combinations)
 SURE_RETIRE_REASONS = ('SURE_ODDS_OUT_OF_RANGE', 'LEGS_NOT_OFFERED')
 
 
@@ -345,13 +348,13 @@ def build_slip(candidates, count, at_most=False, minimum=None, minimum_product=N
     return chosen, product, joint
 
 
-SURE_MAX_LEGS = 3        # owner's structure (12 Nov 2026): Sure Odds tickets have 2-3 selections
+SURE_MAX_LEGS = 4        # owner, 14 Nov 2026: up to 4 selections so codes reach 2.50-2.95
 SURE_DAILY_MAX = 5       # at most 5 Sure Odds tickets per Africa/Lagos day
 SURE_SEARCH_POOL = 40    # most likely selections searched for 2-3 leg combinations
 
 
 def pack_sure_tickets(candidates, day, limit=SURE_DAILY_MAX, floor=None, sports=None):
-    """Up to `limit` tickets of 2-3 selections whose combined price is 2.00-2.95.
+    """Up to `limit` tickets of 2-4 selections whose combined price is in SURE_PACK_RANGE (2.50-2.95 band).
 
     Every selection is at least SELECTION_FLOOR likely; there is no minimum price per selection.
     Each ticket is the 2- or 3-leg combination of different matches with the highest joint
@@ -368,33 +371,69 @@ def pack_sure_tickets(candidates, day, limit=SURE_DAILY_MAX, floor=None, sports=
         and 1 < float(row['decimal_odds']) <= SURE_COMBINED_MAX
     ], floor=floor)
     ordered = sorted(pool, key=lambda leg: (-float(leg['probability']), float(leg['decimal_odds']), leg.get('starts_at') or ''))
-    band = {'id': '2-2.95', 'odds_label': '2.00–2.95'}
+    band = {'id': '2-2.95', 'odds_label': '2.50–2.95'}
     used = set()
     tickets = []
     while len(tickets) < max(0, limit):
         open_legs = [leg for leg in ordered if not event_keys(leg) & used]
-        # The likeliest selections are often all priced ~1.15, and three of those reach only ~1.6, so the
-        # search also takes the likeliest legs priced >= 1.26 (three of them reach 2.00).
-        free = open_legs[:SURE_SEARCH_POOL]
-        free += [leg for leg in open_legs if float(leg['decimal_odds']) >= 1.26 and leg not in free][:SURE_SEARCH_POOL]
         best = None
         for size in range(2, SURE_MAX_LEGS + 1):
-            for combo in combinations(free, size):
-                keys = [event_keys(leg) for leg in combo]
-                if any(a & b for i, a in enumerate(keys) for b in keys[i + 1:]):
-                    continue  # two legs from the same match
+            # For each size, the legs priced near the per-leg share of the range (4 legs: ~1.20-1.41;
+            # 3 legs: ~1.30-1.54; 2 legs: ~1.52-1.84). The likeliest legs overall are ~1.15-1.20 and
+            # never reach 2.55 together (14 Nov 2026: that search packed 0 tickets from 297 legs).
+            # The pool is spread across that window: the likeliest leg of each 0.02 price step, then the
+            # second likeliest of each, and so on. Ranking the whole window by chance filled it with the
+            # cheapest legs, and four of those (~1.20) still miss 2.55.
+            low = SURE_PACK_RANGE[0] ** (1 / size) * 0.95
+            high = SURE_PACK_RANGE[1] ** (1 / size) * 1.08
+            steps = {}
+            for leg in open_legs:  # open_legs is already likeliest first
+                odds = float(leg['decimal_odds'])
+                if low <= odds <= high:
+                    steps.setdefault(int(odds / 0.02), []).append(leg)
+            cap = SURE_FOUR_LEG_POOL if size >= 4 else SURE_COMBO_POOL
+            # (capped: 120 candidate legs made one build take 128 s on the live data, 14 Nov 2026)
+            sized = []
+            for rank in range(max((len(group) for group in steps.values()), default=0)):
+                sized += [group[rank] for _, group in sorted(steps.items()) if rank < len(group)]
+                if len(sized) >= cap:
+                    break
+            sized = sized[:cap]
+            if len(sized) < cap and open_legs:
+                # Room left: legs outside the window that can still reach the range with the others
+                # (one short price with a longer one, e.g. 1.30 x 1.70), nearest the per-leg target first.
+                prices = [float(leg['decimal_odds']) for leg in open_legs]
+                reach_low = SURE_PACK_RANGE[0] / max(prices) ** (size - 1)
+                reach_high = SURE_PACK_RANGE[1] / min(prices) ** (size - 1)
+                target = math.sqrt(SURE_PACK_RANGE[0] * SURE_PACK_RANGE[1]) ** (1 / size)
+                taken = {id(leg) for leg in sized}
+                extra = sorted((leg for leg in open_legs if id(leg) not in taken
+                                and reach_low <= float(leg['decimal_odds']) <= reach_high),
+                               key=lambda leg: (abs(math.log(float(leg['decimal_odds']) / target)),
+                                                -float(leg['probability'])))
+                sized += extra[:cap - len(sized)]
+            # Odds, chance and match keys are read once per leg; per combination the cheap checks come first
+            # (price range, then chance against the best so far) and the same-match check only for a new best
+            # (14 Nov 2026: four-leg search took ~1 min per build otherwise).
+            facts = [(float(leg['decimal_odds']), float(leg['probability']), event_keys(leg)) for leg in sized]
+            low_end, high_end = SURE_PACK_RANGE[0] - 1e-9, SURE_PACK_RANGE[1] + 1e-9
+            for picked in combinations(range(len(sized)), size):
                 product = 1.0
                 joint = 1.0
-                for leg in combo:
-                    product *= float(leg['decimal_odds'])
-                    joint *= float(leg['probability'])
-                # Packed inside SURE_PACK_RANGE, not at the 2.00 edge: SportyBet's displayed prices drift
+                for index in picked:
+                    product *= facts[index][0]
+                    joint *= facts[index][1]
+                # Packed inside SURE_PACK_RANGE, not at the range edge: SportyBet's displayed prices drift
                 # a few percent before booking, and 12 Nov tickets packed at 2.00-2.01 showed 1.98-1.99.
-                if not SURE_PACK_RANGE[0] - 1e-9 <= product <= SURE_PACK_RANGE[1] + 1e-9:
+                if not low_end <= product <= high_end:
                     continue
                 rank = (joint, -size, -product)
-                if best is None or rank > best[0]:
-                    best = (rank, list(combo), product, joint)
+                if best is not None and rank <= best[0]:
+                    continue
+                keys = [facts[index][2] for index in picked]
+                if any(a & b for i, a in enumerate(keys) for b in keys[i + 1:]):
+                    continue  # two legs from the same match
+                best = (rank, [sized[index] for index in picked], product, joint)
         if best is None:
             break
         _, chosen, product, joint = best
@@ -853,7 +892,7 @@ def _stored_slips(connection, day, product, now=None):
         band_id = parameters.get('band')
         band = next((item for item in ODDS_BANDS if item['id'] == band_id), None)
         if product == 'sure_odds':
-            band = {'id': '2-2.95', 'odds_label': '2.00–2.95'}
+            band = {'id': '2-2.95', 'odds_label': '2.50–2.95'}
         if not band:
             continue
         legs = [dict(item) for item in connection.execute('SELECT * FROM sports_ai_accumulator_legs WHERE ticket_id=?', (row['id'],))]
@@ -1170,7 +1209,7 @@ def retire_failed_sure(connection, now):
 
 
 def prepare_sure_odds_booking(now=None):
-    """Store today's 2.00–2.95 tickets and return the next code request.
+    """Store today's 2.50–2.95 tickets and return the next code request.
 
     The worker selects the legs. A code is kept only when SportyBet displays it.
     No wager is placed.

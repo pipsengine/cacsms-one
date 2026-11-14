@@ -153,11 +153,11 @@ class SingleBettingTests(unittest.TestCase):
         self.assertIn('INSUFFICIENT_EDGE', sb.evaluate(1.50, 0.60, NOW, NOW + timedelta(hours=1), NOW)['reasons'])
 
     def test_capacity_respects_count_and_stake_caps(self):
-        # 15 a day / ₦1,500 (10 singles + 5 Sure Odds combined bets, owner 12 Nov 2026)
-        self.assertEqual(sb.capacity(0, 0), 15)
-        self.assertEqual(sb.capacity(14, 1400), 1)
-        self.assertEqual(sb.capacity(15, 1500), 0)
-        self.assertEqual(sb.capacity(3, 1450), 0)
+        # 10 a day / ₦1,000 (5 singles + 5 Sure Odds combined bets, owner 13 Nov 2026)
+        self.assertEqual(sb.capacity(0, 0), 10)
+        self.assertEqual(sb.capacity(9, 900), 1)
+        self.assertEqual(sb.capacity(10, 1000), 0)
+        self.assertEqual(sb.capacity(3, 950), 0)
 
     def test_queue_then_paced_placement_then_settlement(self):
         with self.conn() as c:

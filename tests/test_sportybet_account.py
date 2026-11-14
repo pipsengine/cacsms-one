@@ -431,7 +431,7 @@ Total Return
             self.assertTrue(all(json.loads(order['checks_json'])['checks'].values()))
             self.assertEqual(acct.grant_authorization.__module__, 'sportybet_account')
             reasons, grant = acct.submission_gate(c, now)
-            self.assertEqual(grant['daily_count'], 15)
+            self.assertEqual(grant['daily_count'], 10)
 
     def test_combined_bet_on_singles_tab_is_never_placed(self):
         now = datetime.now(timezone.utc)
@@ -531,6 +531,28 @@ Total Return
         rows = acct.parse_history(kept)
         self.assertEqual((rows[0]['type'], rows[0]['status'], rows[0]['stake'], rows[0]['events']), ('single', 'running', 100.0, ['A v B']))
 
+
+
+# These tests check booking, de-duplication and submission logic with Sure Odds data built for the
+# earlier 2.00-2.95 range; that logic does not depend on the range, so the old range is pinned here.
+# The current 2.50-2.95 / 2-4 selection rules are tested in test_three_objectives.py.
+_OLD_RANGE = []
+
+
+def setUpModule():
+    from unittest.mock import patch as _patch
+    import high_odds_board as _hb
+    import single_betting as _sb
+    for target, name, value in ((_hb, 'SURE_COMBINED_MIN', 2.0), (_hb, 'SURE_PACK_RANGE', (2.10, 2.80)),
+                                (_sb, 'COMBINED_MIN_ODDS', 2.0)):
+        pinned = _patch.object(target, name, value)
+        pinned.start()
+        _OLD_RANGE.append(pinned)
+
+
+def tearDownModule():
+    while _OLD_RANGE:
+        _OLD_RANGE.pop().stop()
 
 if __name__ == '__main__':
     unittest.main()

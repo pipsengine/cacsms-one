@@ -294,6 +294,28 @@ class BookingPolicyTests(unittest.TestCase):
         self.assertEqual(low['daily_verified'], 1)
 
 
+
+# These tests check booking, de-duplication and submission logic with Sure Odds data built for the
+# earlier 2.00-2.95 range; that logic does not depend on the range, so the old range is pinned here.
+# The current 2.50-2.95 / 2-4 selection rules are tested in test_three_objectives.py.
+_OLD_RANGE = []
+
+
+def setUpModule():
+    from unittest.mock import patch as _patch
+    import high_odds_board as _hb
+    import single_betting as _sb
+    for target, name, value in ((_hb, 'SURE_COMBINED_MIN', 2.0), (_hb, 'SURE_PACK_RANGE', (2.10, 2.80)),
+                                (_sb, 'COMBINED_MIN_ODDS', 2.0)):
+        pinned = _patch.object(target, name, value)
+        pinned.start()
+        _OLD_RANGE.append(pinned)
+
+
+def tearDownModule():
+    while _OLD_RANGE:
+        _OLD_RANGE.pop().stop()
+
 if __name__ == '__main__':
     unittest.main()
 
@@ -360,7 +382,7 @@ class SureOddsDuplicateTests(SureOddsTodayTests):
         from unittest.mock import patch
         import high_odds_board as hb
         stored = {'signature': 'sure-odds|Monday|2-2.95|a|b|c', 'legs': [{'fixture_id': f} for f in 'abc'], 'status': 'ready'}
-        with patch.object(hb, '_candidates', lambda c, day, now: self._legs()),                 patch.object(hb, '_stored_slips', lambda c, day, product: [dict(stored)] if product == 'sure_odds' else []):
+        with patch.object(hb, '_candidates', lambda c, day, now: self._legs()),                 patch.object(hb, '_stored_slips', lambda c, day, product, now=None: [dict(stored)] if product == 'sure_odds' else []):
             with db.connect() as c:
                 tickets = hb.sure_odds_board(c, self.monday)['sure_tickets']
         self.assertEqual(len(tickets), 1)

@@ -26,16 +26,18 @@ STAKE = 100
 # 1.60-2.95, matches from Monday to Sunday of the current week, one set per week.
 PRIZES = (1_000_000, 10_000_000, 20_000_000, 50_000_000, 100_000_000, 200_000_000)
 LEG_MIN, LEG_MAX = 1.60, 2.95
-LEG_AIM = 1.95            # preferred per-leg odds: the ticket length follows from it
+LEG_AIM = 2.60            # preferred per-leg odds (14 Nov 2026: was 1.95): fewer legs, less margin paid
 WEEKLY_RUNS = 1
-LADDER_VERSION = 2       # the six-prize, 1.60-2.95 design of 12 Nov 2026
+LADDER_VERSION = 3       # 14 Nov 2026: proven selection types only, ~2.6 per leg, capped leg count
 # Sports whose results the system collects and settles; the league record filter applies on top.
 LADDER_SPORTS = ('football', 'basketball', 'ice_hockey', 'tennis')
 MAX_LEGS = 45             # SportyBet accepts 50; 45 leaves room
 MIN_LEGS = 6
 MAX_PER_LEAGUE = 3
-MAX_SHARE = 2             # a match may sit on at most two ladder tickets
-BUILD_LOW, BUILD_HIGH, BUILD_AIM = 1.15, 1.50, 1.30   # built odds as a multiple of the prize odds
+JACKPOT_EXTRA_LEGS = 3    # when the longest proven legs run out, a jackpot may use up to 3 more, shorter legs
+MAX_SHARE = 3             # a match may sit on at most three ladder tickets (14 Nov 2026: long proven legs are scarce)
+BUILD_LOW, BUILD_HIGH, BUILD_AIM = 1.15, 1.95, 1.45   # built odds as a multiple of the prize odds; the window is wider
+# than the smallest leg (1.60), so a build cannot jump over it (14 Nov 2026: 1.15-1.50 failed 4 of 6 prizes)
 DAILY_RUNS = 1
 RESERVES = 30            # spare legs tried on the page when SportyBet does not show a ticket leg
 RESERVE_KEYS = ('opportunity_id', 'fixture_id', 'sport', 'competition', 'home', 'away', 'starts_at', 'market',
@@ -43,7 +45,7 @@ RESERVE_KEYS = ('opportunity_id', 'fixture_id', 'sport', 'competition', 'home', 
                 'quote_market', 'quote_outcome', 'quote_line', 'model_id', 'model_version', 'settlement_kind')
 # Football has the best settled record (12 Nov 2026), so it may fill up to 60% of a ticket; the long
 # ₦200M ticket (~22 legs at 1.60-2.95) still needs a second sport.
-MAX_SPORT_SHARE = 0.60
+MAX_SPORT_SHARE = 1.0    # evidence decides the sports now (proven types), not a fixed share
 MAX_HOURS_AHEAD = 48      # pages list near matches; hit rate fell to 60% beyond 24 h
 # Every leg must start at least this long after the ticket is built: booking a long ladder takes
 # time, and the owner needs time to stake the code. (2026-11-11: 15 of 17 codes had a leg kick off
@@ -143,17 +145,25 @@ def _days_ahead(leg, now):
 def pick(pool, prize, uses, now=None):
     """Legs for one prize: odds near the required per-leg average, landing in the build band."""
     target = prize_odds(prize)
-    return pick_range(pool, target * BUILD_LOW, target * BUILD_HIGH, target * BUILD_AIM, uses, now)
+    return pick_range(pool, target * BUILD_LOW, target * BUILD_HIGH, target * BUILD_AIM, uses, now,
+                      max_legs=leg_cap(target * BUILD_AIM) + JACKPOT_EXTRA_LEGS)
 
 
-def pick_range(pool, low, high, aim, uses, now=None, min_legs=MIN_LEGS):
+def leg_cap(aim):
+    """Most legs a code may have: the count at LEG_AIM per leg, plus two. Every leg pays SportyBet's
+    margin again, so long tickets of short legs had almost no chance (median 38 legs before 14 Nov 2026)."""
+    return max(2, round(math.log(aim) / math.log(LEG_AIM)) + 2)
+
+
+def pick_range(pool, low, high, aim, uses, now=None, min_legs=MIN_LEGS, max_legs=None):
     """Legs whose combined odds land in [low, high], close to `aim`. Used by the jackpot ladder and,
     with min_legs=2, by the category cards (category_market.py)."""
-    slots = max(min_legs, min(MAX_LEGS - 3, round(math.log(aim) / math.log(LEG_AIM))))
+    cap = min(MAX_LEGS, max_legs or leg_cap(aim))
+    slots = max(min_legs, min(cap, round(math.log(aim) / math.log(LEG_AIM))))
     chosen, odds, teams, leagues, sports = [], 1.0, set(), {}, {}
-    sport_cap = max(2, math.ceil(MAX_SPORT_SHARE * slots))
+    sport_cap = max(2, math.ceil(MAX_SPORT_SHARE * cap))   # of the cap, not the target: the target is not a ceiling
     available = [leg for leg in pool if uses.get(leg['fixture_id'], 0) < MAX_SHARE]
-    while (odds < low or len(chosen) < min_legs) and len(chosen) < MAX_LEGS:
+    while (odds < low or len(chosen) < min_legs) and len(chosen) < cap:
         left = max(1, slots - len(chosen))
         want = (aim / odds) ** (1 / left)
         best, score = None, None
@@ -282,6 +292,12 @@ def _built_this_week(connection, current):
     ).fetchone()[0]
 
 
+def one_cut_note(legs):
+    import pick_scoring
+    chance = pick_scoring.one_cut_chance([l['probability'] for l in legs])
+    return f" (with SportyBet One Cut: 1 in {1 / chance:,.0f}, at reduced odds)" if chance > 0 else ''
+
+
 def _naira(value):
     return f'₦{value:,.0f}'
 
@@ -307,6 +323,9 @@ def build(connection, actor='sports-ai-worker', now=None, force=False, prizes=No
     earliest = (current + timedelta(hours=MIN_LEAD_HOURS)).isoformat()
     from league_quality import filter_legs
     pool = filter_legs(connection, [leg for leg in pool if leg['sport'] in LADDER_SPORTS])
+    import pick_scoring
+    history = pick_scoring.table()
+    pool = [leg for leg in pool if pick_scoring.proven(leg, history)]   # evidence-backed selection types only
     candidates = [leg for leg in reliable(pool, rates)
                   if leg['fixture_id'] not in set(exclude) and str(leg['starts_at']) >= earliest]
     # Matches on other products' active tickets stay out; matches on ladder tickets may be shared
@@ -326,7 +345,8 @@ def build(connection, actor='sports-ai-worker', now=None, force=False, prizes=No
                WHERE json_extract(t.parameters_json,'$.product')=? AND t.status='qualified'""", (PRODUCT,),
         ).fetchall():
             uses[row['fixture_id']] = uses.get(row['fixture_id'], 0) + 1
-    for prize in sorted(prizes or PRIZES, reverse=True):          # longest tickets first
+    # Smallest prizes first (14 Nov 2026): they have the realistic chances, so they get the best legs.
+    for prize in sorted(prizes or PRIZES):
         legs = pick(pool, prize, uses, current)
         if not legs:
             skipped.append(prize)
@@ -354,13 +374,16 @@ def build(connection, actor='sports-ai-worker', now=None, force=False, prizes=No
             'probability_basis': 'independent', 'sport_mode': 'mixed',
             'explanation': (f"Prize ladder: ₦{STAKE} pays at least {_naira(prize)} (built at {odds:,.0f}x, "
                             f"{_naira(odds * STAKE)}). {len(legs)} legs across "
-                            f"{len({l['competition'] for l in legs})} leagues; estimated chance {one_in}. "
-                            'Probabilities are SportyBet prices with the margin removed. A booking code, not a wager.'),
+                            f"{len({l['competition'] for l in legs})} leagues; estimated chance {one_in}"
+                            f"{one_cut_note(legs)}. Selections are proven types only (history); chances are SportyBet "
+                            'prices without the margin, corrected by history. A booking code, not a wager.'),
             'status': 'qualified',
         }
         ticket_id = _insert_ticket(connection, run_id, ticket, config, current, 'created', f'Prize ladder {_naira(prize)}')
         row = connection.execute('SELECT parameters_json FROM sports_ai_accumulator_tickets WHERE id=?', (ticket_id,)).fetchone()
         parameters = json.loads(row['parameters_json'] or '{}')
+        import pick_scoring
+        parameters.update(one_cut_probability=pick_scoring.one_cut_chance([l['probability'] for l in legs]))
         parameters.update(product=PRODUCT, ladder_version=LADDER_VERSION, prize=prize, stake=STAKE,
                           min_odds=prize_odds(prize), positive_edge=False,
                           reserve=reserves(pool, legs, rates))

@@ -44,8 +44,8 @@ HOME_PATH = '/ng/'
 HISTORY_PATH = '/ng/my_accounts/bet_history/sport_bets?isSettled=10'
 STAKE = 100.0
 # Owner's limit (2026-11-11): at most 10 real-money bets a day, combined bets and tickets included.
-DAILY_COUNT = 15        # 10 singles + 5 Sure Odds combined bets (owner, 12 Nov 2026)
-DAILY_STAKE = 1500.0
+DAILY_COUNT = 10        # 5 singles + 5 Sure Odds combined bets (owner, 13 Nov 2026)
+DAILY_STAKE = 1000.0
 # Kinds that are favourites by design (no positive edge): their live checks are price and kickoff,
 # not expected value. They exist only because the owner explicitly chose real money on favourites.
 NO_EDGE_KINDS = ('FAVOURITE', 'TICKET')

@@ -181,7 +181,7 @@ class FavouriteSinglesTests(unittest.TestCase):
 
     def test_real_money_cap_is_fifteen_a_day_including_combined(self):
         import sportybet_account as acct
-        self.assertEqual((acct.DAILY_COUNT, acct.DAILY_STAKE), (15, 1500.0))
+        self.assertEqual((acct.DAILY_COUNT, acct.DAILY_STAKE), (10, 1000.0))
         self.assertIn('TICKET', acct.NO_EDGE_KINDS)
         legs = [{'home': 'A', 'away': 'B'}, {'home': 'C', 'away': 'D'}]
         self.assertEqual(len(acct._bet_legs({'kind': 'TICKET', 'legs': legs})), 2)
@@ -239,8 +239,15 @@ class TicketFollowTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         db.DB = Path(self.temp.name) / 'sports.sqlite3'
         db.initialize()
+        # The follow logic does not depend on the price range; these tickets (~2.25) were built for the
+        # earlier 2.00-2.95 range, so that minimum is pinned here (2.50-2.95 is tested in test_three_objectives).
+        from unittest.mock import patch
+        import single_betting as sb
+        self.pinned = patch.object(sb, 'COMBINED_MIN_ODDS', 2.0)
+        self.pinned.start()
 
     def tearDown(self):
+        self.pinned.stop()
         db.DB = self.previous
         self.temp.cleanup()
 

@@ -771,6 +771,7 @@ def coded_accumulator_tickets(connection, now=None, cats=None, limit=500):
            LEFT JOIN sports_ai_ticket_settlements s ON s.ticket_id=t.id
            WHERE b.verification_method='displayed' AND TRIM(COALESCE(b.code,''))<>'' AND b.verified_at IS NOT NULL
              AND NOT EXISTS (SELECT 1 FROM sports_ai_high_odds_tickets h WHERE h.ticket_id=t.id)
+             AND json_extract(t.parameters_json,'$.retired') IS NULL
            ORDER BY b.verified_at DESC LIMIT ?""", (limit,),
     ).fetchall()
     tickets, seen_codes = [], set()

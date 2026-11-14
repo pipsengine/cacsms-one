@@ -356,7 +356,7 @@ def sure_odds_view(connection, now=None):
 
 
 def _sure_tickets(board, now):
-    """Today's tickets whose combined price is from 2.00 to 2.95."""
+    """Today's tickets whose combined price is in the Sure Odds range (2.50-2.95)."""
     current = now if getattr(now, 'tzinfo', None) else now.replace(tzinfo=timezone.utc)
     tickets = []
     for ticket in board.get('sure_tickets') or []:
@@ -368,7 +368,8 @@ def _sure_tickets(board, now):
             price = float(combined)
         except (TypeError, ValueError):
             continue
-        if price < 2 or price > 2.95:
+        from high_odds_board import SURE_COMBINED_MAX, SURE_COMBINED_MIN
+        if price < SURE_COMBINED_MIN or price > SURE_COMBINED_MAX:
             continue
         if any(_started(leg.get('starts_at'), current) for leg in selections):
             continue
