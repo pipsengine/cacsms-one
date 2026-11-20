@@ -301,7 +301,8 @@ class OperationsEngineTests(unittest.TestCase):
         self.assertEqual(count, 1)
         self.assertEqual(centre['fixtures'], 0)
         self.assertIn('not evidence of positive expected return', centre['hit_rate_note'])
-        self.assertEqual(str(mode).lower(), 'wal')
+        # SQLite must run in WAL mode for concurrent readers; PostgreSQL always allows them.
+        self.assertEqual(str(mode).lower(), 'postgresql' if db.is_postgres() else 'wal')
 
     def test_browser_research_stays_manual_and_secrets_are_redacted(self):
         with db.connect() as connection:

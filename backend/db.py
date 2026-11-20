@@ -105,7 +105,8 @@ def _sqlite_connect(busy_timeout_ms=20000):
 
 
 def _sqlite_initialize():
-    migrations = sorted((_HERE.parent / 'migrations').glob('*.sql'))
+    # Resolved per call (not from _HERE): tests point db.__file__ at a temporary tree.
+    migrations = sorted((Path(__file__).parent.parent / 'migrations').glob('*.sql'))
     with _migration_lock, _process_migration_lock():
         existed = DB.exists() and DB.stat().st_size > 0
         DB.parent.mkdir(parents=True, exist_ok=True)
@@ -552,7 +553,8 @@ class PgConnection:
         self.schema = schema
         self._lock_timeout_ms = lock_timeout_ms
         self._locked = False
-        self._savepoints = 0
+        self._savepoint_names = []
+        self._savepoint_opened = None
         self.row_factory = None
         self.isolation_level = ''
         self.foreign_keys_off = False
@@ -580,6 +582,8 @@ class PgConnection:
         if not self.in_transaction:
             self._run('BEGIN')
             self._locked = False
+            self._savepoint_names = []
+            self._savepoint_opened = None
         if lock and SERIAL_WRITES and not self._locked:
             self._run('SELECT pg_advisory_xact_lock(%s)', (WRITER_LOCK_KEY,))
             self._locked = True
@@ -588,6 +592,8 @@ class PgConnection:
         if self.in_transaction:
             self._run('COMMIT')
         self._locked = False
+        self._savepoint_names = []
+        self._savepoint_opened = None
 
     def rollback(self):
         if self.in_transaction:
@@ -596,6 +602,8 @@ class PgConnection:
             except Exception:
                 pass
         self._locked = False
+        self._savepoint_names = []
+        self._savepoint_opened = None
 
     def close(self):
         self._raw.close()
@@ -615,11 +623,28 @@ class PgConnection:
             self.rollback()
             return _Static([], [])
         if upper.startswith('SAVEPOINT') or upper.startswith('RELEASE') or upper.startswith('ROLLBACK TO'):
+            name = head.split()[-1].strip('"').lower()
             if upper.startswith('SAVEPOINT'):
+                opened = not self.in_transaction
                 self._begin(lock=True)
-            if not self.in_transaction:
+                cursor = _Cursor(self._run(head))
+                self._savepoint_names.append(name)
+                if opened:
+                    self._savepoint_opened = name
+                return cursor
+            if not self.in_transaction or name not in self._savepoint_names:
+                # SQLite raises without harming the transaction; PostgreSQL would abort it.
+                raise sqlite3.OperationalError(f'no such savepoint: {name}')
+            if upper.startswith('RELEASE') and self._savepoint_names[0] == name and self._savepoint_opened == name:
+                # Releasing the savepoint that opened the transaction commits it (SQLite).
+                self.commit()
                 return _Static([], [])
-            return _Cursor(self._run(head))
+            cursor = _Cursor(self._run(head))
+            if upper.startswith('RELEASE'):
+                del self._savepoint_names[len(self._savepoint_names) - 1 - self._savepoint_names[::-1].index(name):]
+            else:   # ROLLBACK TO keeps the savepoint itself, drops the ones opened after it
+                del self._savepoint_names[len(self._savepoint_names) - self._savepoint_names[::-1].index(name):]
+            return cursor
         if upper.startswith('PRAGMA'):
             return self._pragma(head)
         return None
@@ -672,6 +697,49 @@ class PgConnection:
             _PRIMARY_KEYS[key] = [row[0] for row in rows]
         return _PRIMARY_KEYS[key]
 
+    def _unique_keys(self, table):
+        key = ('unique', self.schema, table)
+        if key not in _PRIMARY_KEYS:
+            rows = self._raw.execute(
+                """SELECT i.indexrelid, array_agg(a.attname ORDER BY a.attnum) FROM pg_index i
+                   JOIN pg_class c ON c.oid = i.indrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+                   JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(i.indkey)
+                   WHERE i.indisunique AND i.indpred IS NULL AND n.nspname = %s AND c.relname = %s
+                     AND a.attname <> 'rowid'
+                   GROUP BY i.indexrelid""", (self.schema, table)).fetchall()
+            _PRIMARY_KEYS[key] = [list(row[1]) for row in rows]
+        return _PRIMARY_KEYS[key]
+
+    def _replace(self, sql, parameters):
+        """SQLite REPLACE: delete every row that conflicts on any unique key, then insert.
+        Handles INSERT OR REPLACE INTO t(cols) VALUES(?, ...); returns None for other shapes."""
+        match = re.match(r'\s*(?:INSERT\s+OR\s+REPLACE|REPLACE)\s+INTO\s+"?(\w+)"?\s*\(([^)]*)\)\s*VALUES\s*\(([^()]*)\)\s*;?\s*$',
+                         sql, re.I | re.S)
+        if not match or isinstance(parameters, dict):
+            return None
+        table = match.group(1)
+        columns = [c.strip().strip('"') for c in match.group(2).split(',')]
+        values = [v.strip() for v in match.group(3).split(',')]
+        simple = re.compile(r"^(\?|'(?:[^']|'')*'|-?\d+(?:\.\d+)?|NULL)$", re.I)
+        if len(values) != len(columns) or not all(simple.match(v) for v in values) \
+                or values.count('?') != len(parameters):
+            return None
+        bound, position = {}, 0
+        for column, value in zip(columns, values):
+            if value == '?':
+                bound[column] = ('%s', parameters[position])
+                position += 1
+            else:
+                bound[column] = (value, None)
+        self._begin(lock=True)
+        for unique in self._unique_keys(table):
+            if all(column in bound for column in unique):
+                where = ' AND '.join(f'"{column}" IS NOT DISTINCT FROM {bound[column][0]}' for column in unique)
+                self._write(f'DELETE FROM {table}', f'DELETE FROM "{table}" WHERE {where}',
+                            tuple(bound[column][1] for column in unique if bound[column][0] == '%s'))
+        insert = f'INSERT INTO {table} ({match.group(2)}) VALUES ({match.group(3)})'
+        return self._write(insert, translate(insert), tuple(parameters))
+
     def _replace_to_upsert(self, sql):
         """INSERT OR REPLACE INTO t(cols) ... -> INSERT ... ON CONFLICT (primary key) DO UPDATE."""
         match = re.match(r'\s*(?:INSERT\s+OR\s+REPLACE|REPLACE)\s+INTO\s+"?(\w+)"?\s*\(([^)]*)\)(.*)$', sql, re.I | re.S)
@@ -685,11 +753,20 @@ class PgConnection:
         return (f'INSERT INTO {table} ({", ".join(columns)}){rest.rstrip().rstrip(";")} '
                 f'ON CONFLICT ({", ".join(keys)}) DO UPDATE SET {updates}')
 
+    def set_trace_callback(self, callback):
+        """sqlite3-compatible statement tracing (the callback receives each SQL statement)."""
+        self._trace = callback
+
     def execute(self, sql, parameters=()):
+        if getattr(self, '_trace', None):
+            self._trace(sql)
         special = self._special(sql)
         if special is not None:
             return special
         if re.match(r'\s*(INSERT\s+OR\s+REPLACE|REPLACE\s+INTO)\b', sql, re.I):
+            replaced = self._replace(sql, parameters)
+            if replaced is not None:
+                return replaced
             sql = self._replace_to_upsert(sql)
         named = isinstance(parameters, dict)
         statement = translate(sql, named)
@@ -961,8 +1038,17 @@ def _reset_schema(raw, schema):
     with raw.transaction():
         raw.execute('SET LOCAL session_replication_role = replica')   # skip FK and immutability triggers
         raw.execute('SET LOCAL synchronous_commit = off')
+        # Evidence tables keep their immutability triggers even in replica mode; TRUNCATE skips
+        # row triggers, plain DELETE (cheaper for the many small tables) is used elsewhere.
+        guarded = {row[0] for row in raw.execute(
+            """SELECT DISTINCT c.relname FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+               JOIN pg_namespace n ON n.oid = c.relnamespace
+               WHERE n.nspname = %s AND NOT t.tgisinternal AND t.tgenabled = 'A'""", (schema,)).fetchall()}
+        if guarded:
+            raw.execute('TRUNCATE ' + ', '.join(f'"{schema}"."{table}"' for table in sorted(guarded)))
         for table in tables:
-            raw.execute(f'DELETE FROM "{schema}"."{table}"')
+            if table not in guarded:
+                raw.execute(f'DELETE FROM "{schema}"."{table}"')
         _insert_seed(raw, seed)
         stamp = datetime.now(timezone.utc).isoformat()
         with raw.cursor() as cursor:

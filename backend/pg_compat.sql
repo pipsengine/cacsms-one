@@ -190,6 +190,18 @@ BEGIN
   RETURN result::text;
 END $$;
 
+CREATE OR REPLACE FUNCTION sqlite_compat.json_remove(document text, VARIADIC paths text[]) RETURNS text
+LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
+DECLARE
+  result jsonb := document::jsonb; p text;
+BEGIN
+  IF document IS NULL THEN RETURN NULL; END IF;
+  FOREACH p IN ARRAY paths LOOP
+    result := result #- sqlite_compat._json_path(p);
+  END LOOP;
+  RETURN result::text;
+END $$;
+
 -- Booleans assigned to the BIGINT flag columns (SET enabled = (id = 'x')), as SQLite stored 1/0.
 CREATE OR REPLACE FUNCTION sqlite_compat.bool_to_bigint(value boolean) RETURNS bigint
 LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$ SELECT value::int::bigint $$;

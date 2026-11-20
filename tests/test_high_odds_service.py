@@ -149,6 +149,7 @@ class HighOddsServiceTests(unittest.TestCase):
                 service.save_settings(c, {}, [{'id':'jackpot','enabled':True}], 'operator')
             self.assertFalse(next(row for row in service.categories(c) if row['id']=='jackpot')['enabled'])
 
+    @unittest.skipIf(db.is_postgres(), 'replays the SQLite table rebuild of migration 042')
     def test_jackpot_migration_preserves_existing_ticket_references(self):
         with db.connect() as c:
             # Emulate an existing database before migration 042, including a stored ticket.
