@@ -10,6 +10,10 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / 'backend'))
 import db
+import pytest
+
+# These tests exercise SQLite's migration, locking and backup machinery on .sqlite3 files.
+pytestmark = pytest.mark.skipif(db.is_postgres(), reason='SQLite migration machinery')
 
 
 def initialize_together(root, barrier):

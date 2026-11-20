@@ -1,12 +1,15 @@
 import {useEffect, useState} from 'react';
 import {get} from './api';
+import {useLiveReload} from './live';
 
 export default function ProductionGuide({tab = 0}) {
   const [report, setReport] = useState(null);
   const [error, setError] = useState('');
-  useEffect(() => {
-    get('/autonomous/readiness').then(setReport).catch(requestError => setError(requestError.message));
-  }, []);
+  const load = () => get('/autonomous/readiness')
+    .then(value => { setReport(value); setError(''); })
+    .catch(requestError => setError(requestError.message));
+  useEffect(() => { load(); }, []);
+  useLiveReload(load);
   if (error) return <p className="sp-ops-error" role="alert">{error}</p>;
   if (!report) return <p className="sp-muted">Loading the stored readiness report…</p>;
   if (tab === 1) return <div className="sp-grid two">

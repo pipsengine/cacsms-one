@@ -1633,7 +1633,7 @@ def load_opportunity_rows(connection, now=None, keep_markets=False):
                   m.version AS model_version, m.model_name, m.sport AS model_sport, m.lifecycle AS model_lifecycle,
                   m.status AS model_status, m.active AS model_active,
                   m.metrics_json, m.calibration_status,
-                  json_extract(d.evidence_json,'$.anchored_probability') AS anchored_probability
+                  CAST(json_extract(d.evidence_json,'$.anchored_probability') AS REAL) AS anchored_probability
            FROM sports_ai_value_opportunities o
            JOIN sports_ai_engine_predictions p ON p.id=o.prediction_id
            JOIN sports_ai_fixtures f ON f.id=p.fixture_id

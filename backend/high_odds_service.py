@@ -502,7 +502,7 @@ def monitor(connection, now=None):
         JOIN sports_ai_accumulator_tickets t ON t.id=h.ticket_id JOIN sports_ai_accumulator_legs l ON l.ticket_id=t.id
         WHERE t.status IN ('qualified','review_required','awaiting_odds','expired')
         AND NOT EXISTS (SELECT 1 FROM sports_ai_ticket_settlements s WHERE s.ticket_id=t.id)
-        GROUP BY h.ticket_id""").fetchall()
+        GROUP BY h.ticket_id,h.registration_state,t.status""").fetchall()
     for row in rows:
         started = _parse_time(row['kickoff'])<=current
         if started:

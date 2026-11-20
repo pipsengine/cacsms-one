@@ -247,7 +247,7 @@ def heal(connection, actor='sports-ai-worker', now=None):
     start = current.astimezone(WAT).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
     healed = []
     for ticket in connection.execute(
-        """SELECT t.id, json_extract(t.parameters_json,'$.prize') AS prize FROM sports_ai_accumulator_tickets t
+        """SELECT t.id, CAST(json_extract(t.parameters_json,'$.prize') AS INTEGER) AS prize FROM sports_ai_accumulator_tickets t
            WHERE json_extract(t.parameters_json,'$.product')=? AND t.status='qualified'
              AND NOT EXISTS (SELECT 1 FROM sports_ai_booking_codes b WHERE b.accumulator_ticket_id=t.id
                              AND b.verification_method='displayed' AND TRIM(COALESCE(b.code,''))<>'')""",

@@ -128,7 +128,8 @@ def enqueue_odds_refresh(connection, now=None, limit=80):
     fresh_after = (current - timedelta(minutes=minutes)).isoformat()
     from prediction_engine import upcoming_fixture_sql
     rows = connection.execute(
-        f"""SELECT f.id AS fixture_id, f.starts_at, o.expected_edge, q.observed_at
+        f"""SELECT f.id AS fixture_id, f.starts_at, MAX(o.expected_edge) AS expected_edge,
+                   MAX(q.observed_at) AS observed_at
             FROM sports_ai_fixtures f
             JOIN sports_ai_engine_predictions p ON p.fixture_id=f.id
             JOIN sports_ai_model_registry m ON m.id=p.model_id AND m.active=1

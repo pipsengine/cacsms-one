@@ -433,12 +433,12 @@ def _store_ticket(connection, mode, size, chosen, policy, current_week, current,
         'explanation': explanation,
     }
     ticket_id = _insert_ticket(connection, run_id, ticket, {'targets': [20000 + size], 'min_legs': size, 'max_legs': size}, current, 'created', 'Weekly draw category')
-    connection.execute(
-        """UPDATE sports_ai_accumulator_tickets
-           SET parameters_json=json_set(parameters_json,'$.product','weekly_draw','$.mode',?,'$.pick_count',?,'$.week_id',?)
-           WHERE id=?""",
-        (mode, size, current_week, ticket_id),
-    )
+    stored = connection.execute(
+        'SELECT parameters_json FROM sports_ai_accumulator_tickets WHERE id=?', (ticket_id,)).fetchone()
+    parameters = json.loads(stored['parameters_json'] or '{}') if stored else {}
+    parameters.update({'product': 'weekly_draw', 'mode': mode, 'pick_count': size, 'week_id': current_week})
+    connection.execute('UPDATE sports_ai_accumulator_tickets SET parameters_json=? WHERE id=?',
+                       (json.dumps(parameters), ticket_id))
     connection.execute(
         """INSERT INTO sports_ai_ticket_monitoring_events(id,ticket_id,run_id,event_type,details_json,created_at)
            VALUES(?,?,?,?,?,?)""",

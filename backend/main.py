@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Literal
 from fastapi import BackgroundTasks
-from db import connect, initialize, DB
+from db import connect, initialize, DB, describe as describe_database
 from engine import evaluate
 from acquisition import CollectionError, import_basketball_rows
 from acquisition_api import build_acquisition_router
@@ -406,7 +406,8 @@ def _build_sure_odds():
 def dashboard(user=Depends(auth)):
     # ~12 s to build on the live database; served from a 30 s background-refreshed copy (view_cache).
     from view_cache import cached_view
-    return cached_view('dashboard', lambda: _build_dashboard(user), ttl=30)
+    result = cached_view('dashboard', lambda: _build_dashboard(user), ttl=30)
+    return {**result, 'database': describe_database()} if isinstance(result, dict) else result
 
 def _odds_rowid_since(connection, since_iso):
     from odds_window import first_rowid_since
@@ -1370,7 +1371,7 @@ def opportunities(
                JOIN sports_ai_fixtures f ON f.id=p.fixture_id
                JOIN sports_ai_model_registry m ON m.id=p.model_id
                LEFT JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id"""
-            +where+' ORDER BY CASE o.status WHEN "qualified" THEN 0 ELSE 1 END,'
+            +where+" ORDER BY CASE o.status WHEN 'qualified' THEN 0 ELSE 1 END,"
             +'o.rank_score IS NULL,o.rank_score DESC,o.expected_edge DESC,o.evaluated_at DESC LIMIT ?',
             tuple(args+[limit]))
 

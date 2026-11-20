@@ -191,7 +191,7 @@ function ProviderRegistry({ reload, onReload }) {
   return (
     <div className="sp-acq-stack">
       <div className="sp-panel-head">
-        <div><h3>Provider Registry</h3><p>Credentials are referenced by environment-variable name only; secrets are never stored in SQLite.</p></div>
+        <div><h3>Provider Registry</h3><p>Credentials are referenced by environment-variable name only; secrets are never stored in the database.</p></div>
         <button className="sp-secondary" onClick={refresh}><RefreshCw size={15} />Refresh Registry</button>
       </div>
       {errors.load && <Feedback error={errors.load} />}

@@ -135,8 +135,8 @@ def _expected_goals(connection):
     leagues, teams = {}, {}
     for row in connection.execute(
         f"""SELECT f.sport, f.competition, f.home, f.away,
-                  json_extract(s.features_json,'$.expected_home_goals') AS home_goals,
-                  json_extract(s.features_json,'$.expected_away_goals') AS away_goals
+                  CAST(json_extract(s.features_json,'$.expected_home_goals') AS REAL) AS home_goals,
+                  CAST(json_extract(s.features_json,'$.expected_away_goals') AS REAL) AS away_goals
            FROM sports_ai_feature_snapshots s
            JOIN sports_ai_fixtures f ON f.id=s.fixture_id
            WHERE f.sport IN ({sql_in(GOAL_SPORTS)})""",

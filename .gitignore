@@ -10,3 +10,6 @@ backend/account_evidence/
 backend/logs/
 backend/league_quality_cache.json*
 backend/pick_calibration.json*
+backend/.env.local
+backend/.env
+backend/.env.local.pending

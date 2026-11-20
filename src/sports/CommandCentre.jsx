@@ -70,7 +70,7 @@ function integrationRows(data) {
   };
   return [
     ['Sports AI API', data ? 'ok' : 'bad', data ? 'Connected' : 'Unavailable'],
-    ['SQLite database', 'ok', 'Connected'],
+    [data?.database?.backend === 'postgresql' ? `PostgreSQL · ${data.database.database}` : 'Database', data ? 'ok' : 'bad', data ? 'Connected' : 'Unavailable'],
     ['football-data.org', ...providerLine('football-data')],
     ['OpenLigaDB', ...providerLine('openligadb')],
     ['OpenFootball dataset', ...providerLine('openfootball')],

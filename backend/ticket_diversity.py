@@ -92,16 +92,18 @@ def reconcile(connection, now=None):
     if not connection.in_transaction:
         connection.execute('BEGIN IMMEDIATE')
     tickets = connection.execute(
-        """SELECT t.*,
-             (SELECT MIN(b.verified_at) FROM sports_ai_booking_codes b WHERE b.accumulator_ticket_id=t.id
-               AND b.verification_method='displayed' AND TRIM(COALESCE(b.code,''))<>'') AS coded_at
-           FROM sports_ai_accumulator_tickets t
-           WHERE t.status IN ('qualified','unverified_probability','awaiting_odds','review_required')
-             AND COALESCE(json_extract(t.parameters_json,'$.tier_mode'),'standard')!='simulation'
-             AND NOT EXISTS (SELECT 1 FROM sports_ai_accumulator_tickets newer
-               WHERE newer.family_id=t.family_id AND newer.version>t.version)
-           ORDER BY CASE WHEN coded_at IS NOT NULL THEN 0 WHEN t.status='qualified' THEN 1 ELSE 2 END,
-                    COALESCE(coded_at,t.created_at),t.id""",
+        """SELECT * FROM (
+             SELECT t.*,
+               (SELECT MIN(b.verified_at) FROM sports_ai_booking_codes b WHERE b.accumulator_ticket_id=t.id
+                 AND b.verification_method='displayed' AND TRIM(COALESCE(b.code,''))<>'') AS coded_at
+             FROM sports_ai_accumulator_tickets t
+             WHERE t.status IN ('qualified','unverified_probability','awaiting_odds','review_required')
+               AND COALESCE(json_extract(t.parameters_json,'$.tier_mode'),'standard')!='simulation'
+               AND NOT EXISTS (SELECT 1 FROM sports_ai_accumulator_tickets newer
+                 WHERE newer.family_id=t.family_id AND newer.version>t.version)
+           ) ranked
+           ORDER BY CASE WHEN ranked.coded_at IS NOT NULL THEN 0 WHEN ranked.status='qualified' THEN 1 ELSE 2 END,
+                    COALESCE(ranked.coded_at,ranked.created_at),ranked.id""",
     ).fetchall()
     occupied, retired = {}, []
     for ticket in tickets:
