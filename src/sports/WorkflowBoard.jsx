@@ -11,16 +11,17 @@ function statusClass(status) {
   return String(status || 'waiting').toLowerCase().replace(/\s+/g, '-');
 }
 
-export default function WorkflowBoard({ workflow, nav }) {
+export default function WorkflowBoard({ workflow, loading, error, nav }) {
   const [mode, setMode] = useState('pipeline');
   const [selected, setSelected] = useState(null);
   const stages = workflow?.stages || [];
   const metrics = workflow?.metrics || [];
   const current = selected == null ? null : stages[selected];
   if (!stages.length) {
-    return <section className="ccx-card ccx-flow"><p className="ccx-empty">The workflow snapshot is not on this response yet.</p></section>;
+    return <section className="ccx-card ccx-flow"><p className="ccx-empty" role="status">{error ? `Workflow unavailable: ${error}` : loading ? 'Loading the workflow snapshot...' : 'The workflow snapshot is unavailable.'}</p></section>;
   }
   return <section className="ccx-card ccx-flow" aria-label="Autonomous execution pipeline">
+    {error && <p className="ccx-high-note" role="status">{error} Showing the last available workflow snapshot.</p>}
     <header className="ccx-flow-head">
       <div>
         <strong><Network size={16}/>Autonomous Execution Pipeline <small>(9 Stages)</small></strong>

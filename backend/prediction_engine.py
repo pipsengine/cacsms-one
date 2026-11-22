@@ -2822,8 +2822,9 @@ def price_quoted_board(connection, now=None, limit=40):
             seen.add(market)
             existing = connection.execute(
                 """SELECT id, probability, settlement_json FROM sports_ai_engine_predictions
-                   WHERE fixture_id=? AND market=? ORDER BY created_at DESC LIMIT 1""",
-                (fixture['id'], market),
+                   WHERE fixture_id=? AND market=? AND model_id=? AND feature_id=?
+                   ORDER BY created_at DESC LIMIT 1""",
+                (fixture['id'], market, fixture['model_id'], snapshot['id']),
             ).fetchone()
             if existing:
                 prediction_id = existing['id']

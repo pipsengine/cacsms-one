@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 
 from booking_schedule import WAT, opportunity_week
-from command_view import _opportunities, _sports, _sure_odds, _sure_quote, _sure_tickets, readable_league, ticket_confidence, ticket_probability
+from command_view import _opportunities, _sports, _sure_odds, _sure_odds_status, _sure_quote, _sure_tickets, readable_league, ticket_confidence, ticket_probability
 import db
 
 
@@ -158,6 +158,67 @@ class OpportunityWeekTests(unittest.TestCase):
 
 
 class SureOddsTests(unittest.TestCase):
+    def test_status_includes_all_bookable_sports_and_excludes_other_sports(self):
+        previous = db.DB
+        temp = tempfile.TemporaryDirectory()
+        db.DB = Path(temp.name) / 'sports.sqlite3'
+        try:
+            db.initialize()
+            now = datetime(2026, 11, 6, 9, 0, tzinfo=timezone.utc)
+            kickoff = (now + timedelta(hours=2)).isoformat()
+            with db.connect() as connection:
+                connection.execute(
+                    """INSERT INTO sports_ai_analysis_runs
+                       (id,fixture_count,selection_count,ticket_count,status,details_json)
+                       VALUES('run',0,0,0,'complete','{}')"""
+                )
+                for sport in ('football', 'basketball', 'tennis', 'ice_hockey', 'volleyball'):
+                    connection.execute(
+                        """INSERT INTO sports_ai_fixtures
+                           (id,external_id,source,sport,competition,home,away,starts_at,status,
+                            statistics_json,odds_json,observed_at)
+                           VALUES(?,?,'test',?,'League','Home','Away',?,'scheduled','{}','{}',?)""",
+                        (sport, sport, sport, kickoff, now.isoformat()),
+                    )
+                    connection.execute(
+                        """INSERT INTO sports_ai_training_runs
+                           (id,sport,model_name,version,status,training_window_json,parameters_json,metrics_json,sample_size)
+                           VALUES(?,?,?,'1','validated','{}','{}','{}',40)""",
+                        (sport, sport, sport),
+                    )
+                    connection.execute(
+                        """INSERT INTO sports_ai_model_registry
+                           (id,training_run_id,sport,model_name,version,status,active,parameters_json,
+                            metrics_json,calibration_status)
+                           VALUES(?,?,?,?,'1','active',1,'{}','{}','validated')""",
+                        (sport, sport, sport, sport),
+                    )
+                    connection.execute(
+                        """INSERT INTO sports_ai_feature_snapshots
+                           (id,fixture_id,sport,cutoff_at,features_json,source_refs_json,generated_at)
+                           VALUES(?,?,?,?,'{}','[]',?)""",
+                        (sport, sport, sport, now.isoformat(), now.isoformat()),
+                    )
+                    connection.execute(
+                        """INSERT INTO sports_ai_engine_predictions
+                           (id,run_id,fixture_id,model_id,feature_id,market,outcome,probability,settlement_json,explanation_json)
+                           VALUES(?,'run',?,?,?,'HOME','HOME',0.9,'{}','{}')""",
+                        (sport, sport, sport, sport),
+                    )
+                    connection.execute(
+                        """INSERT INTO sports_ai_qualification_decisions
+                           (id,prediction_id,fixture_id,sport,market,state,reason_code,reason,evidence_json,
+                            products_json,policy_version,decision_version,fingerprint,created_at,updated_at)
+                           VALUES(?,?,?,?,'HOME','MONITORING','ODDS_STALE','stale','{}','[]',1,1,?,?,?)""",
+                        (sport, sport, sport, sport, sport, now.isoformat(), now.isoformat()),
+                    )
+                status = _sure_odds_status(connection, now)
+            self.assertEqual(status['blockers'][0]['code'], 'ODDS_STALE')
+            self.assertEqual(status['blockers'][0]['count'], 4)
+        finally:
+            db.DB = previous
+            temp.cleanup()
+
     def test_today_keeps_prices_from_1_50_through_3_00(self):
         previous = db.DB
         temp = tempfile.TemporaryDirectory()
@@ -248,8 +309,8 @@ class SureOddsTests(unittest.TestCase):
     def test_the_card_shows_a_combined_ticket_and_leaves_a_single_leg_out(self):
         board = {'sure_tickets': [
             {
-                'status': 'ready', 'label': '4 selections', 'odds_band': '2.00–2.95',
-                'combined_odds': 2.48, 'joint_probability': 66.4, 'confidence': 91.0, 'booking_code': None,
+                'status': 'ready', 'label': '4 selections', 'odds_band': '2.50–2.95',
+                'combined_odds': 2.52, 'joint_probability': 66.4, 'confidence': 91.0, 'booking_code': None,
                 'selections': [
                     {'fixture': 'Holstein Kiel vs DSC Arminia Bielefeld', 'competition': '2. Fußball-Bundesliga 2026/2027', 'market': 'Home', 'probability': 88.0, 'odds': 1.2, 'confidence': 91.0, 'starts_at': '2026-11-07T15:00:00+00:00'},
                     {'fixture': 'VfL Osnabrück vs 1. FC Kaiserslautern', 'competition': '2. Bundesliga', 'market': 'Over 2.5', 'probability': 86.0, 'odds': 1.3, 'confidence': 92.0, 'starts_at': '2026-11-07T16:00:00+00:00'},
@@ -268,6 +329,8 @@ class SureOddsTests(unittest.TestCase):
         self.assertEqual(tickets[0]['selection_count'], 2)
         self.assertEqual(tickets[0]['selections'][0]['league'], '2. Bundesliga')
         self.assertIsNone(tickets[0]['code'])
+        board['sure_tickets'][0]['combined_odds'] = 2.48
+        self.assertEqual(_sure_tickets(board, datetime(2026, 11, 7, 10, tzinfo=timezone.utc)), [])
 
     def test_a_handicap_price_does_not_become_the_match_result(self):
         teams = {'id': 'leipzig', 'home': 'RB Leipzig', 'away': 'FC Augsburg', 'competition': '1. Fußball-Bundesliga', 'starts_at': '2026-11-07T14:30:00+00:00', 'metrics_json': '{"calibration_error":0.047}'}

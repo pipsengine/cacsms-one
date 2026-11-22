@@ -214,6 +214,15 @@ function ProbBar({value}) {
   const tone = value == null ? 'empty' : width >= 65 ? 'high' : width >= 30 ? 'mid' : 'low';
   return <span className={`ccx-prob ${tone}`}><i style={{width: `${width}%`}}/><b>{value == null ? '—' : `${Number(value).toFixed(1)}%`}</b></span>;
 }
+function SureOddsTable({tickets, children}) {
+  return <div className="ccx-table-scroll ccx-card-scroll"><table className="ccx-table compact"><colgroup><col className="ccx-sure-num"/><col className="ccx-sure-fixture"/><col className="ccx-sure-league"/><col className="ccx-sure-code"/><col className="ccx-sure-time"/><col className="ccx-sure-price"/><col className="ccx-sure-confidence"/></colgroup><thead><tr><th>#</th><th>Fixture</th><th>League</th><th>Booking code</th><th>Match Date/time</th><th>Odds</th><th>AI Confidence</th></tr></thead><tbody>
+    {tickets.map(ticket => <React.Fragment key={ticket.id || (ticket.selections || []).map(leg => `${leg.fixture}-${leg.starts_at}`).join('|')}>
+      <tr className="ccx-sure-ticket"><td colSpan="7"><b>{ticket.label}</b><span>{ticket.odds_band} · {ticket.selection_count} selections · {ticket.probability_source !== 'model' ? 'stored combined' : 'combined'} {ticket.combined_odds == null ? '—' : Number(ticket.combined_odds).toFixed(2)} · joint {ticket.joint_probability == null ? '—' : `${Number(ticket.joint_probability).toFixed(1)}%`} · {ticket.code || ticket.booking_note || 'Awaiting SportyBet booking code'}</span>{ticket.probability_source !== 'model' && <small className="ccx-wat">Not model-rated; any probabilities shown are not verified AI predictions.</small>}</td></tr>
+      {(ticket.selections || []).map((row, index) => <tr key={`${row.fixture}-${row.starts_at}-${index}`}><td>{index + 1}</td><td className="ccx-sure-match"><b>{row.fixture}</b><small>{row.selection || 'Selection not stored'}{row.probability == null ? '' : ` · ${Number(row.probability).toFixed(1)}%`}</small>{ticket.probability_source === 'model' && <small>{row.model_summary || 'Model explanation not recorded.'}</small>}</td><td>{row.league || '—'}</td><td>{ticket.code || '—'}</td><td>{wat(row.starts_at)}{row.starts_at ? <small className="ccx-wat">WAT</small> : null}</td><td className="ccx-odds">{row.odds == null ? '—' : Number(row.odds).toFixed(2)}</td><td>{ticket.probability_source !== 'model' ? <small>Not model-rated</small> : <ProbBar value={row.confidence}/>}</td></tr>)}
+    </React.Fragment>)}
+    {!tickets.length && children && <tr><td colSpan="7">{children}</td></tr>}
+  </tbody></table></div>;
+}
 function stillToPlay(row) {
   const legs = row.legs || [];
   const pending = legs.length ? legs : [{starts_at: row.starts_at, result: 'pending'}];
@@ -284,7 +293,10 @@ export function KeyAlerts({data, nav}) {
 export default function CommandCentre({data, nav, run, loading, refresh}) {
   const view = data?.command_view || {};
   const sure = useLiveResource('/sure-odds');
+  const workflow = useLiveResource('/workflow', 30000);
   const sureView = sure.data || view;
+  const modelTickets = (sureView.sure_odds || []).filter(ticket => ticket.probability_source === 'model');
+  const previousTickets = (sureView.sure_odds || []).filter(ticket => ticket.probability_source !== 'model');
   const [now, setNow] = React.useState(lagosClock);
   React.useEffect(() => {
     const timer = setInterval(() => setNow(lagosClock()), 30000);
@@ -301,29 +313,28 @@ export default function CommandCentre({data, nav, run, loading, refresh}) {
       <div className="ccx-top-side">
         <span className="ccx-clock"><Clock3 size={15}/>{now}</span>
         <span className="ccx-env">{view.environment || 'Development'}</span>
-        <button className="ccx-refresh" onClick={() => { refresh(); sure.refresh(); }}><RefreshCw size={15}/>Refresh</button>
+        <button className="ccx-refresh" onClick={() => { refresh(); sure.refresh(); workflow.refresh(); }}><RefreshCw size={15}/>Refresh</button>
         <span className="ccx-env">Live · worker</span>
       </div>
     </header>
-    <WorkflowBoard workflow={view.workflow} nav={nav} />
+    <WorkflowBoard workflow={workflow.data || view.workflow} loading={workflow.loading} error={workflow.error} nav={nav} />
     <div className="ccx-sure-row">
       <section className="ccx-card ccx-sure">
         <header><strong><Goal size={16}/>Sure Odds For (Today) <small>{sureView.sure_odds_date || 'Today'}</small></strong><button className="ccx-link" onClick={() => nav('tickets')}>View All</button></header>
         {sure.error && <p className="ccx-high-note" role="status">{sure.error}{sure.data ? ' Showing the last successful update.' : ''}</p>}
-        <div className="ccx-table-scroll ccx-card-scroll"><table className="ccx-table compact"><colgroup><col className="ccx-sure-num"/><col className="ccx-sure-fixture"/><col className="ccx-sure-league"/><col className="ccx-sure-code"/><col className="ccx-sure-time"/><col className="ccx-sure-price"/><col className="ccx-sure-confidence"/></colgroup><thead><tr><th>#</th><th>Fixture</th><th>League</th><th>Booking code</th><th>Match Date/time</th><th>Odds</th><th>AI Confidence</th></tr></thead><tbody>
-          {(sureView.sure_odds || []).map(ticket => <React.Fragment key={ticket.id || ticket.selections.map(leg => `${leg.fixture}-${leg.starts_at}`).join('|')}>
-            <tr className="ccx-sure-ticket"><td colSpan="7"><b>{ticket.label}</b><span>{ticket.odds_band} · {ticket.selection_count} selections · {ticket.probability_source === 'market' ? 'stored combined' : 'combined'} {ticket.combined_odds == null ? '—' : Number(ticket.combined_odds).toFixed(2)} · joint {ticket.joint_probability == null ? '—' : `${Number(ticket.joint_probability).toFixed(1)}%`} · {ticket.code || ticket.booking_note || 'Awaiting SportyBet booking code'}</span>{ticket.probability_source === 'market' && <small className="ccx-wat">Market-priced ticket; probabilities are derived from bookmaker prices; AI confidence is unavailable.</small>}</td></tr>
-            {(ticket.selections || []).map((row, index) => <tr key={`${row.fixture}-${row.starts_at}-${index}`}><td>{index + 1}</td><td className="ccx-sure-match"><b>{row.fixture}</b><small>{row.selection || 'Selection not stored'}{row.probability == null ? '' : ` · ${Number(row.probability).toFixed(1)}%`}</small>{ticket.probability_source !== 'market' && <small>{row.model_summary || 'Model explanation not recorded.'}</small>}</td><td>{row.league || '—'}</td><td>{ticket.code || '—'}</td><td>{wat(row.starts_at)}{row.starts_at ? <small className="ccx-wat">WAT</small> : null}</td><td className="ccx-odds">{row.odds == null ? '—' : Number(row.odds).toFixed(2)}</td><td>{ticket.probability_source === 'market' ? <small>Not model-rated</small> : <ProbBar value={row.confidence}/>}</td></tr>)}
-          </React.Fragment>)}
-          {!(sureView.sure_odds || []).length && <tr><td colSpan="7">
+        <SureOddsTable tickets={modelTickets}>
             {!sure.data && !data?.command_view ? <p>{sure.loading ? "Checking today's qualified tickets..." : 'Ticket data is currently unavailable. Retrying automatically.'}</p> : <>
             <p>{sureView.sure_odds_status?.message || 'No ready ticket priced from 2.50 to 2.95 is still to play today.'}</p>
             {!!sureView.sure_odds_status?.blockers?.length && <p>{sureView.sure_odds_status.blockers.slice(0, 4).map(item => `${item.label}: ${item.count}`).join(' · ')}<small className="ccx-wat">Latest decisions per match and market; counts are not matches.</small></p>}
             <p>Last source collection: {sureView.sure_odds_status?.last_collection_at ? `${wat(sureView.sure_odds_status.last_collection_at)} WAT` : 'Not recorded'} · Last Sure Odds ticket: {sureView.sure_odds_status?.last_ticket_at ? `${wat(sureView.sure_odds_status.last_ticket_at)} WAT` : 'Not recorded'}</p>
             <small>Tickets disappear once their first match starts. Model validation and price checks still apply.</small>
             </>}
-          </td></tr>}
-        </tbody></table></div>
+        </SureOddsTable>
+        {!!previousTickets.length && <details className="ccx-sure-previous">
+          <summary>Previous non-model-rated tickets ({previousTickets.length})</summary>
+          <p>These older tickets are not new AI picks. Their booking codes remain available below.</p>
+          <SureOddsTable tickets={previousTickets}/>
+        </details>}
       </section>
     </div>
     <div className="ccx-bottom ccx-bottom-summary">

@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 from booking_schedule import WAT, opportunity_week
-from high_odds_board import sure_odds_board
+from high_odds_board import BOOKABLE_SPORTS, sure_odds_board
 from high_odds_service import dashboard as high_odds_dashboard, live_opportunities
 from workflow_status import workflow_board
 from display_policy import DRAW_PROBABILITY, LIVE_LIMIT, LIVE_PROBABILITY, SLIP_PROBABILITY, confidence_from_metrics
@@ -96,6 +96,21 @@ def market_parts(market):
     if '_OVER_' in name or '_UNDER_' in name:
         return 'Team Total', name.replace('_', ' ').title()
     return name.replace('_', ' ').title(), name.replace('_', ' ').title()
+
+
+def workflow_view(connection, now=None):
+    current = now or datetime.now(timezone.utc)
+    live = live_opportunities(connection, current)
+    centre = _booking_centre(connection, current)
+    from placed_results import collect as placed_bets, metrics as bet_metrics
+    stats = bet_metrics(placed_bets(connection))
+    won, lost = stats['won'], stats['lost']
+    return workflow_board(
+        connection, current,
+        ready_slips=centre['counts']['slips'],
+        qualified_visible=live['qualified_count'],
+        win_rate=round(100 * won / (won + lost), 1) if won + lost else None,
+    )
 
 
 def command_view(connection, now=None):
@@ -295,7 +310,7 @@ def _sure_odds_status(connection, now):
     end = (now.astimezone(WAT).replace(hour=0, minute=0, second=0, microsecond=0)
            + timedelta(days=1)).astimezone(timezone.utc)
     rows = connection.execute(
-        """SELECT state, reason_code, COUNT(*) AS count FROM (
+        f"""SELECT state, reason_code, COUNT(*) AS count FROM (
              SELECT d.state, d.reason_code, ROW_NUMBER() OVER (
                PARTITION BY d.fixture_id,d.market
                ORDER BY m.active DESC,p.created_at DESC,d.updated_at DESC,d.id DESC
@@ -304,7 +319,7 @@ def _sure_odds_status(connection, now):
              JOIN sports_ai_fixtures f ON f.id=d.fixture_id
              JOIN sports_ai_engine_predictions p ON p.id=d.prediction_id
              JOIN sports_ai_model_registry m ON m.id=p.model_id
-             WHERE f.sport IN ('football','basketball')
+             WHERE f.sport IN ({sql_in(BOOKABLE_SPORTS)})
                AND f.status IN ('scheduled','not_started')
                AND julianday(f.starts_at)>julianday(?)
                AND julianday(f.starts_at)<julianday(?)

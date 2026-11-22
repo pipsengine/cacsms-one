@@ -282,6 +282,52 @@ class HighOddsServiceTests(unittest.TestCase):
                                  WHERE fixture_id=? AND market LIKE 'OVER_%'""", (fixture,)).fetchone()[0]
             self.assertEqual(count, 20)
 
+    def test_quoted_board_uses_active_model_and_latest_features(self):
+        from prediction_engine import price_quoted_board
+        import uuid
+        current = datetime.now(timezone.utc)
+        with db.connect() as c:
+            fixture = self.seed(c, 1)[0]['fixture_id']
+            c.execute('UPDATE sports_ai_fixtures SET starts_at=? WHERE id=?',
+                      ((current + timedelta(days=2)).isoformat(), fixture))
+            c.execute('UPDATE sports_ai_feature_snapshots SET completeness=.8 WHERE fixture_id=?', (fixture,))
+            c.execute("""INSERT INTO sports_ai_odds_snapshots
+                         (id,fixture_id,provider_id,bookmaker,market,outcome,line,decimal_odds,source_url,observed_at)
+                         VALUES(?,?,'provider-manual-odds','SportyBet','totals','over',2.5,1.5,?,?)""",
+                      (str(uuid.uuid4()), fixture, 'https://www.sportybet.com/ng/sport/football', current.isoformat()))
+            settlement = {'p_win': .9, 'p_loss': .1, 'p_push': 0, 'p_half_win': 0, 'p_half_loss': 0}
+            with patch('accumulator_engine.supported_market', return_value=True), \
+                 patch('prediction_engine.settle_market', return_value=({}, settlement)):
+                price_quoted_board(c, now=current)
+                price_quoted_board(c, now=current)
+                rows = c.execute("""SELECT model_id,feature_id FROM sports_ai_engine_predictions
+                                    WHERE fixture_id=? AND market='OVER_2.5'""", (fixture,)).fetchall()
+                self.assertEqual(len(rows), 1)
+                old_feature = rows[0]['feature_id']
+                c.execute("UPDATE sports_ai_model_registry SET active=0,status='inactive' WHERE id=?",
+                          (self.football_model,))
+                c.execute("""UPDATE sports_ai_training_runs SET version='old'
+                             WHERE id=(SELECT training_run_id FROM sports_ai_model_registry WHERE id=?)""",
+                          (self.football_model,))
+                c.execute("UPDATE sports_ai_model_registry SET version='old' WHERE id=?", (self.football_model,))
+                new_model = self._model(c, 'football')
+                price_quoted_board(c, now=current)
+                rows = c.execute("""SELECT model_id,feature_id FROM sports_ai_engine_predictions
+                                    WHERE fixture_id=? AND market='OVER_2.5'""", (fixture,)).fetchall()
+                self.assertEqual({row['model_id'] for row in rows}, {self.football_model, new_model})
+                new_feature = str(uuid.uuid4())
+                c.execute("""INSERT INTO sports_ai_feature_snapshots
+                             (id,fixture_id,sport,cutoff_at,features_json,source_refs_json,generated_at,completeness)
+                             VALUES(?,?,'football',?,'{}','[]',?,.8)""",
+                          (new_feature, fixture, current.isoformat(), (current + timedelta(seconds=1)).isoformat()))
+                price_quoted_board(c, now=current + timedelta(seconds=1))
+                rows = c.execute("""SELECT model_id,feature_id FROM sports_ai_engine_predictions
+                                    WHERE fixture_id=? AND market='OVER_2.5'""", (fixture,)).fetchall()
+                self.assertEqual(len(rows), 3)
+                self.assertEqual({(row['model_id'], row['feature_id']) for row in rows},
+                                 {(self.football_model, old_feature), (new_model, old_feature),
+                                  (new_model, new_feature)})
+
     def test_quoted_board_batches_rotate_persistently_between_fixtures(self):
         from prediction_engine import _quoted_board_batch
         fixtures = [{'id': f'fixture-{i}', 'sport': 'football', 'competition': 'League'} for i in range(5)]

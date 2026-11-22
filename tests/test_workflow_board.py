@@ -3,11 +3,13 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 
 import db
 from workflow_status import workflow_board
+from command_view import workflow_view
 
 
 class WorkflowBoardTests(unittest.TestCase):
@@ -20,6 +22,20 @@ class WorkflowBoardTests(unittest.TestCase):
     def tearDown(self):
         db.DB = self.previous
         self.temp.cleanup()
+
+    def test_independent_view_uses_current_qualified_slips_and_bet_results(self):
+        now = datetime(2026, 11, 6, 12, 0, tzinfo=timezone.utc)
+        with db.connect() as connection, \
+             patch('command_view.live_opportunities', return_value={'qualified_count': 3}), \
+             patch('command_view._booking_centre', return_value={'counts': {'slips': 2}}), \
+             patch('placed_results.collect', return_value=[{'result': 'Won'}, {'result': 'Lost'}]), \
+             patch('placed_results.metrics', return_value={'won': 1, 'lost': 1}):
+            board = workflow_view(connection, now)
+        self.assertEqual(len(board['stages']), 9)
+        metrics = {item['label']: item['value'] for item in board['metrics']}
+        self.assertEqual(metrics['Qualified opportunities'], '3')
+        self.assertEqual(metrics['Ready slips'], '2')
+        self.assertEqual(metrics['Bet win rate'], '50.0%')
 
     def test_nine_stages_keep_rollover_beside_settlement(self):
         now = datetime(2026, 11, 6, 12, 0, tzinfo=timezone.utc)

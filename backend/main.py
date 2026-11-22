@@ -402,6 +402,18 @@ def _build_sure_odds():
         return sure_odds_view(connection)
 
 
+@router.get('/workflow')
+def workflow(user=Depends(auth)):
+    from view_cache import cached_view
+    return cached_view('workflow', _build_workflow, ttl=30)
+
+
+def _build_workflow():
+    from command_view import workflow_view
+    with connect() as connection:
+        return workflow_view(connection)
+
+
 @router.get('/dashboard')
 def dashboard(user=Depends(auth)):
     # ~12 s to build on the live database; served from a 30 s background-refreshed copy (view_cache).
