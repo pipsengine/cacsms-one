@@ -52,11 +52,21 @@ MAX_HOURS_AHEAD = 48      # pages list near matches; hit rate fell to 60% beyond
 # before they could be used, because legs from 45 minutes ahead were allowed.)
 MIN_LEAD_HOURS = 3
 LATER_PENALTY = 0.04      # per day ahead, on the odds-fit distance: sooner matches first
-# Booking reliability. Over/under and BTTS lines are often not shown or not switchable on the page
-# (football totals 50%, women's totals 20% on 2026-11-11), so the ladder uses result, double chance
-# and winner markets only, and drops any sport/market the page found < MIN_HIT_RATE of the time.
-RELIABLE_FAMILIES = ('result', 'double', 'winner')
+# Booking reliability. The ladder now uses result, double chance, winner, totals (over/under),
+# BTTS, and handicap markets. Each family has its own reliability threshold based on historical
+# booking page hit rates. Any sport/market the page found < MIN_HIT_RATE is dropped.
+RELIABLE_FAMILIES = ('result', 'double', 'winner', 'total', 'btts', 'handicap')
 MIN_HIT_RATE = 0.55
+# Family-specific reliability thresholds: more lenient for established markets, stricter for
+# markets that have lower page availability. Used in reliable() function.
+FAMILY_HIT_RATES = {
+    'result': 0.90,         # match result: nearly always shown
+    'double': 0.85,         # double chance: usually shown
+    'winner': 0.90,         # moneyline/winner: nearly always shown
+    'total': 0.70,          # over/under: variable (50-70% based on sport)
+    'btts': 0.65,           # BTTS: less reliable but enough quotes (198k+)
+    'handicap': 0.70,       # handicap/spreads: 1M+ quotes, moderate reliability
+}
 MIN_HIT_SAMPLES = 5    # no sport may fill more than 30% of a ticket
 FOOTBALL = ('football', 'frauenfussball')
 FOOTBALL_BONUS = 0.15     # football wins ties on fit (log-odds distance)
@@ -86,6 +96,12 @@ def family(market):
         return 'winner'
     if name in ('HOME', 'AWAY', 'DRAW'):
         return 'result'
+    if 'OVER' in name or 'UNDER' in name or name in ('TOTALS', 'O/U'):
+        return 'total'
+    if name in ('BTTS', 'GG/NG'):
+        return 'btts'
+    if 'HANDICAP' in name or 'SPREAD' in name or name == 'EUROPEAN_HANDICAP':
+        return 'handicap'
     return 'other'
 
 
@@ -114,14 +130,16 @@ def hit_rates(connection, days=7):
 
 
 def reliable(legs, rates):
-    """Keep legs the booking page reliably shows."""
+    """Keep legs the booking page reliably shows. Each market family has its own reliability threshold."""
     kept = []
     for leg in legs:
         fam = family(leg['market'])
         if fam not in RELIABLE_FAMILIES:
             continue
+        # Use family-specific threshold if available, otherwise fall back to MIN_HIT_RATE
+        threshold = FAMILY_HIT_RATES.get(fam, MIN_HIT_RATE)
         hit, total = rates.get((leg['sport'], fam), (0, 0))
-        if total >= MIN_HIT_SAMPLES and hit / total < MIN_HIT_RATE:
+        if total >= MIN_HIT_SAMPLES and hit / total < threshold:
             continue
         kept.append(leg)
     return kept
