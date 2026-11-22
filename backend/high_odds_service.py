@@ -24,7 +24,8 @@ PRODUCT = 'autonomous_high_odds'
 _WORK_LOCK=threading.Lock()
 _BACKGROUND=None
 _WAKE=threading.Event()
-PRIMARY = '2-4.99'
+PRIMARY = '100-200'
+REGULAR_CATEGORIES = ('100-200', '201-500', '501-1000')
 JACKPOT = 'jackpot'
 JACKPOT_TARGET = 2_000_000
 JACKPOT_MAX = 2_200_000
@@ -72,7 +73,8 @@ def config(connection):
 
 def categories(connection):
     return [{**dict(r), **({'enabled': 0} if r['id'] == JACKPOT else {})}
-            for r in connection.execute('SELECT * FROM sports_ai_high_odds_categories ORDER BY min_odds')]
+            for r in connection.execute('SELECT * FROM sports_ai_high_odds_categories ORDER BY min_odds')
+            if r['id'] in REGULAR_CATEGORIES or r['id'] == JACKPOT]
 
 
 def save_settings(connection, updates, category_updates, actor):
@@ -138,14 +140,21 @@ def enqueue(connection, event_type, payload, event_key, now=None):
 def eligible(connection, now=None, ignore_family=None, exclude_allocated=True):
     current = now_utc(now)
     settings = config(connection)
-    rows = load_opportunity_rows(connection,current,keep_markets=True)
+    rows = load_opportunity_rows(connection,current,keep_markets=True,end=current + timedelta(days=30))
     blocked = _blocked_fixtures(connection)
     accepted, rejected = [], Counter()
+    from market_anchor import anchor, load as load_anchors
+    anchors = load_anchors(connection)
     # Central decisions are necessary but the latest model, market and price
     # are checked again. No hard-coded list of sports or leagues is used here.
     enabled = {r[0] for r in connection.execute("SELECT code FROM sports_ai_sports WHERE prediction_status='modelled'")}
     for row in rows:
         reason = _reject_reason(row,settings,current,blocked,set(),set(),{'sportybet'},'mixed')
+        decision_expiry = _parse_time(row.get('decision_expires_at'))
+        if not decision_expiry or decision_expiry <= current:
+            reason = 'Qualification decision has expired'
+        if 'booking' not in json.loads(row.get('decision_products_json') or '[]'):
+            reason = 'Qualification does not permit booking'
         metrics = json.loads(row.get('metrics_json') or '{}')
         error = metrics.get('calibration_error')
         if row['sport'] not in enabled:
@@ -176,6 +185,9 @@ def eligible(connection, now=None, ignore_family=None, exclude_allocated=True):
             rejected[reason] += 1
             continue
         leg = _candidate(row,current,settings)
+        leg['model_probability'] = float(row.get('model_probability', row['probability']))
+        leg['model_weight'] = anchor(anchors, leg['sport'], leg['competition'],
+                                     leg['model_probability'], leg['decimal_odds'])['weight']
         latest=connection.execute("""SELECT decimal_odds,observed_at FROM sports_ai_odds_snapshots
             WHERE fixture_id=? AND bookmaker=? AND market=? AND outcome=? AND line IS ?
             ORDER BY julianday(observed_at) DESC,rowid DESC LIMIT 1""",
@@ -234,11 +246,49 @@ def inside(odds, category):
     if not category or not math.isfinite(odds):
         return False
     ceiling = JACKPOT_MAX if category.get('id') == JACKPOT else 1000
-    return odds <= ceiling and category['min_odds'] <= round(odds,2) <= category['max_odds']
+    return odds <= ceiling and category['min_odds'] <= odds <= category['max_odds']
 
 
 def category_settings(settings, category):
-    return {**settings, 'max_legs': settings['jackpot_max_legs']} if category['id'] == JACKPOT else settings
+    return {**settings, 'max_legs': settings['jackpot_max_legs']} if category['id'] == JACKPOT else {**settings, 'max_legs': 50}
+
+
+def model_market_pool(connection, pool, start, end):
+    """Keep the strongest validated, model-influenced outcome per fixture in a time window."""
+    from high_odds_board import choose_one_per_fixture
+    from market_registry import holdout_ready
+    from sportybet_booking import page_market_supported
+    ready = {}
+    candidates = []
+    for leg in pool:
+        kickoff = _parse_time(leg.get('starts_at'))
+        if not kickoff or not start < kickoff < end:
+            continue
+        if leg['probability'] < 0.80 or leg['model_probability'] < 0.80 or leg['model_weight'] <= 0:
+            continue
+        if not page_market_supported(leg['sport'], leg['market']):
+            continue
+        if leg['sport'] == 'ice_hockey' and leg.get('quote_market') != 'full_match_winner':
+            continue
+        key = (leg['sport'], leg['market'])
+        if key not in ready:
+            ready[key] = holdout_ready(connection, *key)
+        if ready[key]:
+            candidates.append({**leg, 'confidence': leg.get('reliability')})
+    return choose_one_per_fixture(candidates)
+
+
+def category_pool(connection, pool, category, current):
+    if category['id'] == '100-200':
+        end = current + timedelta(days=5)
+    elif category['id'] == '201-500':
+        from booking_schedule import opportunity_week
+        _, end = opportunity_week(current)
+    elif category['id'] == '501-1000':
+        end = current + timedelta(days=14)
+    else:
+        return []
+    return model_market_pool(connection, pool, current, end)
 
 
 def optimize(pool, category, settings):
@@ -248,9 +298,6 @@ def optimize(pool, category, settings):
     only after searching alternatives, so a failed category cannot stop others.
     """
     deadline = time.monotonic()+float(settings['timeout_seconds'])
-    # Owner's structure (12 Nov 2026), objective 3: every selection on a category ticket is priced
-    # 1.60-2.95; tickets reach a card's range by combining such legs. Fixed, not a stored setting.
-    pool = [l for l in pool if CATEGORY_LEG_MIN_ODDS - 1e-9 <= float(l['decimal_odds']) <= CATEGORY_LEG_MAX_ODDS + 1e-9]
     pool = sorted(pool,key=lambda l:(-l['probability'],-l['edge'],l['fixture_id'],l['market']))
     beam = [((),1.0,1.0,frozenset(),frozenset(),frozenset())]
     found = {}
@@ -370,8 +417,7 @@ def generate_event(connection, event_id, now=None):
     settings = config(connection)
     pool, rejected, total = eligible(connection,current)
     reports = []
-    # The 2.00–4.99 core is reserved first. Every other enabled category is
-    # still searched in this same pass, using the selections the core did not take.
+    # Reserve the first category before searching the remaining categories.
     for category in sorted(categories(connection),key=lambda c:(c['id']!=PRIMARY,c['priority'],c['min_odds'])):
         if connection.execute('SELECT 1 FROM sports_ai_high_odds_runs WHERE event_id=? AND category_id=?',(event_id,category['id'])).fetchone():
             continue
@@ -385,12 +431,12 @@ def generate_event(connection, event_id, now=None):
             daily_created = connection.execute("""SELECT COUNT(*) FROM sports_ai_high_odds_tickets
                 WHERE category_id=? AND date(created_at,'+1 hour')=date(?,'+1 hour')""",
                 (category['id'],current.isoformat())).fetchone()[0]
-            if category['id']==JACKPOT:
-                slots=min(slots,max(0,DAILY_TARGET-daily_created))
+            slots=min(slots,max(0,DAILY_TARGET-daily_created))
             search_settings=category_settings(settings,category)
             report = {'rejections':rejected,'qualified_inputs':total,'unused_inputs':len(pool),
                 'created_ids':[],'priority':category['priority'],'policy':'one_active_ticket_per_match'}
-            candidates, search = optimize(pool,category,search_settings) if slots else ([],{'candidate_count':0,'evaluated':0,'truncated':False})
+            candidate_pool = category_pool(connection, pool, category, current) if slots else []
+            candidates, search = optimize(candidate_pool,category,search_settings) if slots else ([],{'candidate_count':0,'evaluated':0,'truncated':False})
             report.update(search)
             if not connection.in_transaction: connection.execute('BEGIN IMMEDIATE')
             connection.execute('SAVEPOINT high_odds_category')
@@ -476,6 +522,9 @@ def validate_snapshot(connection, ticket_id, now=None):
     snapshot = json.loads(row['snapshot_json'])
     if digest(snapshot)!=row['snapshot_hash']: return ['Final selection snapshot integrity failed']
     pool, _rejected, _total = eligible(connection,current,row['family_id'])
+    if row['category_id'] in REGULAR_CATEGORIES:
+        category_for_window = {'id': row['category_id']}
+        pool = category_pool(connection, pool, category_for_window, _parse_time(row['created_at']))
     available = {(l['fixture_id'],l['market']):l for l in pool}
     errors = []
     stored = [dict(l) for l in connection.execute('SELECT * FROM sports_ai_accumulator_legs WHERE ticket_id=?',(ticket_id,))]
@@ -557,7 +606,8 @@ def queue_registration(connection, now=None):
     from booking_policy import load as booking_policy
     accept_displayed = booking_policy(connection)['accept_displayed_odds']
     for row in rows:
-        problems = [] if accept_displayed else validate_snapshot(connection,row['ticket_id'],current)
+        problems = validate_snapshot(connection,row['ticket_id'],current) if (
+            row['category_id'] in REGULAR_CATEGORIES or not accept_displayed) else []
         if problems: continue
         # The existing booking API and browser restrictions remain authoritative.
         try:
@@ -750,9 +800,24 @@ def _worker_tick(now=None):
 
 def _category_for(odds, cats):
     for category in cats:
-        if category['min_odds'] <= round(float(odds), 2) <= category['max_odds']:
+        if inside(float(odds), category):
             return category['id']
     return None
+
+
+def _explain_legs(connection, legs):
+    ids = list({leg.get('opportunity_id') for leg in legs if leg.get('opportunity_id')})
+    if not ids:
+        return legs
+    marks = ','.join('?' for _ in ids)
+    explanations = {
+        row['opportunity_id']: row['summary']
+        for row in connection.execute(
+            f"""SELECT o.id AS opportunity_id,e.summary FROM sports_ai_value_opportunities o
+                JOIN sports_ai_prediction_explanations e ON e.prediction_id=o.prediction_id
+                WHERE o.id IN ({marks})""", ids)
+    }
+    return [{**leg, 'model_summary': explanations.get(leg.get('opportunity_id'))} for leg in legs]
 
 
 def coded_accumulator_tickets(connection, now=None, cats=None, limit=500):
@@ -763,6 +828,9 @@ def coded_accumulator_tickets(connection, now=None, cats=None, limit=500):
     """
     current = now_utc(now)
     cats = cats or categories(connection)
+    legacy_cats = [dict(row) for row in connection.execute(
+        'SELECT * FROM sports_ai_high_odds_categories ORDER BY min_odds')
+        if row['id'] not in REGULAR_CATEGORIES and row['id'] != JACKPOT]
     rows = connection.execute(
         """SELECT t.id,t.combined_odds,t.joint_probability,t.estimated_edge,t.leg_count,t.status,t.created_at ticket_created_at,t.parameters_json,
                   b.code,b.status code_status,b.verified_at,s.outcome,s.hypothetical_profit
@@ -779,7 +847,13 @@ def coded_accumulator_tickets(connection, now=None, cats=None, limit=500):
         if row['code'] in seen_codes:
             continue  # one row per displayed code (newest first)
         seen_codes.add(row['code'])
-        category = _category_for(row['combined_odds'] or 0, cats)
+        try:
+            parameters = json.loads(row['parameters_json'] or '{}')
+        except (TypeError, ValueError):
+            parameters = {}
+        category = parameters.get('category') if parameters.get('product') == 'category_market' else None
+        if not category:
+            category = _category_for(row['combined_odds'] or 0, legacy_cats)
         if not category and float(row['combined_odds'] or 0) > 1000:
             # Lottery-style tickets (e.g. the prize ladder) above every regular range are shown with the
             # jackpot, where the page states their real chance of winning, instead of being hidden.
@@ -787,7 +861,7 @@ def coded_accumulator_tickets(connection, now=None, cats=None, limit=500):
         if not category:
             continue
         legs = [dict(l) for l in connection.execute(
-            """SELECT home,away,competition,starts_at,market,selection,decimal_odds,probability,reliability model_reliability
+            """SELECT opportunity_id,home,away,competition,starts_at,market,selection,decimal_odds,probability,reliability model_reliability
                FROM sports_ai_accumulator_legs WHERE ticket_id=? ORDER BY starts_at""", (row['id'],),
         )]
         if not legs:
@@ -799,10 +873,7 @@ def coded_accumulator_tickets(connection, now=None, cats=None, limit=500):
         # Jackpot-range codes are the weekly jackpot ladder (prize_ladder), enabled since 12 Nov 2026;
         # only stopped products are shown as disabled.
         booking_disabled = is_stopped(connection, row['id'])
-        try:
-            prize = json.loads(row['parameters_json'] or '{}').get('prize')
-        except (TypeError, ValueError):
-            prize = None
+        prize = parameters.get('prize')
         if booking_disabled or row['status'] == 'expired' or row['code_status'] == 'expired':
             state = 'expired'
         tickets.append({
@@ -811,9 +882,10 @@ def coded_accumulator_tickets(connection, now=None, cats=None, limit=500):
             'created_at': row['verified_at'], 'ticket_created_at': row['ticket_created_at'],
             'registration_state': state, 'status': row['status'], 'combined_odds': row['combined_odds'],
             'joint_probability': row['joint_probability'], 'estimated_edge': row['estimated_edge'],
-            'leg_count': len(legs), 'legs': legs, 'start_at': start, 'booking_code': row['code'],
+            'leg_count': len(legs), 'legs': _explain_legs(connection, legs), 'start_at': start, 'booking_code': row['code'],
             'code_status': row['code_status'], 'outcome': row['outcome'], 'hypothetical_profit': row['hypothetical_profit'],
             'stake_assumption': 100 if prize else None, 'prize': prize, 'source': 'accumulator',
+            'probability_source': 'model' if parameters.get('leg_source') == 'model' else 'unknown',
         })
     return tickets
 
@@ -835,10 +907,11 @@ def dashboard(connection, now=None, date_from=None, date_to=None, status=None, c
         item=dict(row); snapshot=json.loads(item.pop('snapshot_json'))
         code=connection.execute("""SELECT code,status,verification_method FROM sports_ai_booking_codes
             WHERE accumulator_ticket_id=? AND verification_method='displayed' ORDER BY created_at DESC LIMIT 1""",(item['ticket_id'],)).fetchone()
-        item.update(ticket_no=f"HO-{item['ticket_no']:06}",legs=snapshot['legs'],
+        item.update(ticket_no=f"HO-{item['ticket_no']:06}",legs=_explain_legs(connection,snapshot['legs']),
             start_at=min(l['starts_at'] for l in snapshot['legs']),booking_code=code['code'] if code else None,
             code_status=code['status'] if code else None,model_uncertainty=snapshot['model_uncertainty'],
-            dependency_policy=snapshot['dependency_policy'],stake_assumption=snapshot.get('stake_assumption'))
+            dependency_policy=snapshot['dependency_policy'],stake_assumption=snapshot.get('stake_assumption'),
+            probability_source='model')
         if item['category_id'] == JACKPOT:
             item.update(booking_disabled=True, registration_state='expired')
         tickets.append(item)
@@ -885,4 +958,4 @@ def dashboard(connection, now=None, date_from=None, date_to=None, status=None, c
         'kpis':{'total':sum(c['total'] for c in summaries),'active':sum(c['active'] or 0 for c in summaries),
             'registered':registrations.get('registered',0),'pending':sum(registrations.get(k,0) for k in ('pending','queued','retry')),
             'settled':sum(c['settled'] for c in summaries)},'places_wager':False,
-        'note':'All nine categories are searched in the same pass. Regular categories retain a 1,000 combined-odds limit. Jackpot targets 2,000,000–2,200,000 with a hypothetical NGN100 stake and at most five new tickets per Africa/Lagos day. Each match is used on one active ticket. Only verified displayed bookmaker codes count as registered. No wager is placed.'}
+        'note':'Regular categories use model-backed selections rated at least 80%, subject to qualification and available prices. Only verified displayed bookmaker codes count as registered. No wager is placed.'}

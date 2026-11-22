@@ -225,11 +225,20 @@ def create_job(connection, selections, high_odds=False):
     product = _ticket_product(connection, selections[0]['ticket_id']) if selections and selections[0].get('ticket_id') else None
     # Low-odds jackpots use SportyBet's own price, not the (quarantined) basketball model.
     market = bool(selections) and _market_priced(connection, selections[0].get('ticket_id'))
+    if market and product in ('sure_odds', 'prize_ladder', 'category_market'):
+        raise ValueError('This older ticket uses bookmaker-only probabilities and cannot be booked as a model prediction')
+    category_ticket = _new_category_ticket(connection, selections[0].get('ticket_id') if selections else None)
+    if category_ticket:
+        from high_odds_service import validate_snapshot
+        problems = validate_snapshot(connection, selections[0]['ticket_id'], _now())
+        if problems:
+            raise ValueError('; '.join(problems))
     guarded = [] if market else (
-        selections if high_odds else [item for item in selections if item.get('sport') == 'basketball'])
+        selections if high_odds or product == 'prize_ladder'
+        else [item for item in selections if item.get('sport') == 'basketball'])
     if guarded:
         require_current_qualification(connection, guarded, _now())
-    if not high_odds and policy['require_live_qualification']:
+    if not high_odds and product != 'prize_ladder' and policy['require_live_qualification']:
         require_bookable(connection, selections)
     # Hard gate for every product; booking_policy relaxations cannot switch it off.
     # The one exception is the labelled no-edge favourites product (favourites.py): it is
@@ -243,7 +252,7 @@ def create_job(connection, selections, high_odds=False):
     else:
         from prediction_integrity import require_bookable as require_integrity
         integrity = require_integrity(connection, selections, _now())
-    limit = 50 if market else 30 if high_odds else 25
+    limit = 50 if market or product in ('sure_odds', 'prize_ladder') or category_ticket else 30 if high_odds else 25
     if not selections or len(selections) > limit:
         raise ValueError(f'A booking needs 1 to {limit} selections')
     sports = {item['sport'] for item in selections}
@@ -575,6 +584,10 @@ def next_ticket_id(connection, now):
              -- weekly jackpot ladder (objective 3; product prize_ladder).
              AND (json_extract(t.parameters_json, '$.product') IN ('sure_odds','prize_ladder','category_market')
                   OR EXISTS (SELECT 1 FROM sports_ai_high_odds_tickets h WHERE h.ticket_id=t.id))
+             AND NOT (
+               COALESCE(json_extract(t.parameters_json, '$.product'), '') IN ('sure_odds','prize_ladder','category_market')
+               AND COALESCE(json_extract(t.parameters_json, '$.leg_source'), 'market')='market'
+             )
              AND t.probability_basis='independent' AND t.joint_probability>0
              AND (SELECT COUNT(*) FROM sports_ai_booking_jobs j WHERE j.ticket_id=t.id
                   AND j.status IN ('FAILED','ODDS_CHANGED') AND j.updated_at>?) < ?
@@ -662,7 +675,7 @@ def _apply_displayed_prices(connection, ticket_id, seen):
 
 
 def _sure_odds_ticket(connection, ticket_id):
-    """A sure-odds ticket is 2-4 analyzed selections, combined from 2.50 to 2.95 (high_odds_board limits)."""
+    """Check the Sure Odds selection count, probabilities and combined price."""
     from high_odds_board import SURE_COMBINED_MAX, SURE_COMBINED_MIN, SURE_MAX_LEGS
     row = connection.execute(
         'SELECT parameters_json FROM sports_ai_accumulator_tickets WHERE id=?',
@@ -680,7 +693,7 @@ def _sure_odds_ticket(connection, ticket_id):
         'SELECT sport, market, decimal_odds, probability, bookmaker FROM sports_ai_accumulator_legs WHERE ticket_id=?',
         (ticket_id,),
     ).fetchall()
-    if not 2 <= len(legs) <= SURE_MAX_LEGS:   # owner, 14 Nov 2026: 2-4 selections
+    if not 2 <= len(legs) <= SURE_MAX_LEGS:
         return False
     from market_registry import holdout_ready
     # Model-priced legs need a calibrated market and an 80% model chance; SportyBet-favourite legs
@@ -715,7 +728,8 @@ def create_high_odds_job(connection, ticket_id):
 def create_sure_odds_job(connection, ticket_id):
     """Queue one sure-odds ticket. No operator selection and no wager."""
     if not _sure_odds_ticket(connection, ticket_id):
-        raise ValueError('A sure-odds booking needs 2-4 selections of 70-80% or more, combined from 2.50 to 2.95')
+        from high_odds_board import SURE_MAX_LEGS
+        raise ValueError(f'A sure-odds booking needs 2-{SURE_MAX_LEGS} eligible selections, combined from 2.50 to 2.95')
     selections = ticket_selections(connection, ticket_id)
     for item in selections:
         item['ticket_id'] = ticket_id
@@ -724,7 +738,18 @@ def create_sure_odds_job(connection, ticket_id):
 
 def _selection_limit(connection, ticket_id):
     """Selections a stored ticket may carry: SportyBet takes 50; long products use that room."""
-    return 50 if _market_priced(connection, ticket_id) else 25
+    return 50 if (_market_priced(connection, ticket_id) or _ticket_product(connection, ticket_id) in ('sure_odds', 'prize_ladder')
+                  or _new_category_ticket(connection, ticket_id)) else 25
+
+
+def _new_category_ticket(connection, ticket_id):
+    if not ticket_id:
+        return False
+    from high_odds_service import REGULAR_CATEGORIES
+    return bool(connection.execute(
+        'SELECT 1 FROM sports_ai_high_odds_tickets WHERE ticket_id=? AND category_id IN (?,?,?)',
+        (ticket_id, *REGULAR_CATEGORIES),
+    ).fetchone())
 
 
 MARKET_PRODUCTS = ('jackpot_low', 'prize_ladder', 'category_market')
@@ -741,7 +766,8 @@ def _market_priced(connection, ticket_id):
         params = json.loads(row['parameters_json'] or '{}') if row else {}
     except (TypeError, ValueError):
         return False
-    return params.get('product') in MARKET_PRODUCTS or (params.get('product') == 'sure_odds' and params.get('leg_source') == 'market')
+    return (params.get('product') in MARKET_PRODUCTS and params.get('leg_source') != 'model') or (
+        params.get('product') == 'sure_odds' and params.get('leg_source') == 'market')
 
 
 def _ticket_product(connection, ticket_id):
@@ -763,7 +789,7 @@ def _store_displayed_code(connection, ticket_id, code, evidence):
     from qualification_engine import require_current_qualification
     selections = ticket_selections(connection, ticket_id)
     stored_product = _ticket_product(connection, ticket_id)
-    guarded = [] if _market_priced(connection, ticket_id) else selections if stored_product in ('high_odds', 'sure_odds') else [
+    guarded = [] if _market_priced(connection, ticket_id) else selections if stored_product in ('high_odds', 'sure_odds', 'prize_ladder') else [
         item for item in selections if item.get('sport') == 'basketball'
     ]
     if guarded:
@@ -832,7 +858,9 @@ def _store_displayed_code(connection, ticket_id, code, evidence):
 
 FOCUS_MARKET = '''(args) => {
   const family = args.family || '';
-  const labels = family === 'handicap'
+  const labels = args.require_overtime
+    ? ['Winner (incl. overtime)']
+    : family === 'handicap'
     ? ['2 Way Handicap', 'Handicap', 'Asian Handicap', 'Spread']
     : family === 'winner'
       ? ['2 Way & O/U', '2 Way', 'Winner (incl. overtime)', 'Winner', 'Match Winner', 'Moneyline']
@@ -968,6 +996,18 @@ def _market_family(market):
     if name.startswith(('OVER_', 'UNDER_')) or '_OVER_' in name or '_UNDER_' in name:
         return 'total'
     return 'result'
+
+
+def page_market_supported(sport, market):
+    name = str(market or '').upper()
+    if sport == 'football' and name in ('HOME', 'AWAY', 'DRAW',
+                                        'DOUBLE_CHANCE_1X', 'DOUBLE_CHANCE_12', 'DOUBLE_CHANCE_X2'):
+        return True
+    if sport in ('basketball', 'ice_hockey', 'tennis') and name in ('MONEYLINE_HOME', 'MONEYLINE_AWAY'):
+        return True
+    if sport not in ('football', 'basketball'):
+        return False
+    return bool(re.fullmatch(r'(?:OVER|UNDER|(?:HOME|AWAY)_(?:HANDICAP|SPREAD))_-?\d+(?:\.\d+)?', name))
 
 
 def _market_line(market):
@@ -1306,6 +1346,7 @@ async def _focus_market(page, item):
     if isinstance(item, dict):
         payload['home'] = item.get('home') or ''
         payload['away'] = item.get('away') or ''
+        payload['require_overtime'] = item.get('sport') == 'ice_hockey' and family == 'winner'
     label = await page.evaluate(FOCUS_MARKET, payload)
     if label:
         await page.wait_for_timeout(800)
@@ -1317,6 +1358,9 @@ async def prepare_slip(page, selections, book=True, skip_unpriced=False, max_mov
 
     A high-odds ticket can leave out a line SportyBet is not showing, then book the rest.
     """
+    for item in selections:
+        if not page_market_supported(item.get('sport'), item.get('market')):
+            raise ValueError(f"SportyBet page mapping is not supported for {item.get('sport')} {item.get('market')}")
     await page.wait_for_selector('.match-row, article', timeout=20000)
     body = await page.locator('body').inner_text(timeout=8000)
     if blocked_page(body):
@@ -1328,15 +1372,17 @@ async def prepare_slip(page, selections, book=True, skip_unpriced=False, max_mov
         async def find_price(focus=True):
             family = _market_family(item.get('market'))
             if family != 'result':
-                if focus:
-                    await _focus_market(page, item)
+                if focus and not await _focus_market(page, item):
+                    return {'matched': 0, 'nearby': [], 'line_visible': None}
                 return await page.evaluate(FIND_LINE, {
                     'home': item['home'], 'away': item['away'], 'odds': float(item['decimal_odds']),
                     'line': item.get('_page_line') or _market_line(item.get('market')),
                     'side': _market_side(item.get('market')), 'marker': marker,
                 })
             if focus and str(item.get('market') or '').startswith('MONEYLINE_'):
-                await _focus_market(page, item)
+                focused = await _focus_market(page, item)
+                if item.get('sport') == 'ice_hockey' and focused != 'Winner (incl. overtime)':
+                    return {'matched': 0, 'nearby': [], 'line_visible': None}
             return await page.evaluate(FIND_ODDS, {
                 'home': item['home'], 'away': item['away'], 'selection': item.get('selection') or '',
                 'side': _market_side(item.get('market')), 'marker': marker,
@@ -1743,9 +1789,14 @@ async def _execute_job(job_id, page_url=None):
         from qualification_engine import require_current_qualification
         market_priced = any(_market_priced(connection, item.get('ticket_id'))
                             for item in selections if item.get('ticket_id'))
+        if market_priced and any(_ticket_product(connection, item.get('ticket_id')) in
+                                 ('sure_odds', 'prize_ladder', 'category_market') for item in selections):
+            error = 'This older ticket uses bookmaker-only probabilities and cannot be booked as a model prediction'
+            _set_job(connection, job_id, 'FAILED', error=error, reason_code='MODEL_PREDICTION_REQUIRED')
+            return {'id': job_id, 'status': 'FAILED', 'error': error, 'places_wager': False}
         # Jackpot and prize-ladder legs are priced by SportyBet itself, not by the quarantined basketball model.
         guarded = [] if market_priced else [item for item in selections if item.get('sport') == 'basketball'
-                   or _ticket_product(connection, item.get('ticket_id')) in ('high_odds', 'sure_odds')]
+                   or _ticket_product(connection, item.get('ticket_id')) in ('high_odds', 'sure_odds', 'prize_ladder')]
         try:
             if guarded:
                 require_current_qualification(connection, guarded, _now())
@@ -1757,7 +1808,8 @@ async def _execute_job(job_id, page_url=None):
         from high_odds_service import validate_snapshot
         optimized_id = next((item.get('ticket_id') for item in selections if item.get('ticket_id')),None)
         # With displayed odds accepted, a moved price or lapsed decision is not a reason to stop.
-        problems = validate_snapshot(connection,optimized_id) if optimized_id and not policy['accept_displayed_odds'] else []
+        strict_category = _new_category_ticket(connection, optimized_id)
+        problems = validate_snapshot(connection,optimized_id) if optimized_id and (strict_category or not policy['accept_displayed_odds']) else []
         if problems:
             _set_job(connection,job_id,'FAILED',error='; '.join(problems),reason_code='SNAPSHOT_REVALIDATION')
             return {'id':job_id,'status':'FAILED','error':'; '.join(problems),'places_wager':False}
@@ -1873,7 +1925,7 @@ async def _execute_job(job_id, page_url=None):
                             'error': f'After SportyBet dropped unavailable legs the ticket pays {shown:,.0f}x; '
                                      f'its prize needs at least {floor:,.0f}x. Not booked.',
                         }
-                    elif policy['accept_displayed_odds']:
+                    elif policy['accept_displayed_odds'] and not strict_category:
                         # Book at the prices on the page; they are stored on the ticket below.
                         result = await request_displayed_code(page, booked, seen)
                         result['skipped'] = [item for item in selections if item.get('fixture_id') not in clicked]
@@ -1964,7 +2016,7 @@ async def _execute_job(job_id, page_url=None):
                 _set_job(connection, job_id, 'CODE_GENERATED', code=result['code'], screenshot=str(shot), odds_json=json.dumps(result['seen']), reason_code='CODE_VERIFIED')
                 if ticket_id:
                     # Store before rewriting leg prices. Applying page odds first can
-                    # push a sure-odds total outside 2.00–2.95 and discard the code.
+                    # push a sure-odds total outside 2.50–2.95 and discard the code.
                     _store_displayed_code(connection, ticket_id, result['code'], str(shot))
                     _apply_displayed_prices(connection, ticket_id, result.get('seen') or [])
                     _record_diagnostic(connection, ticket_id, 'CODE_VERIFIED', 'SportyBet displayed one booking code and it matched the expected format.', _now())

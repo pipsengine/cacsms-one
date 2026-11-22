@@ -61,6 +61,17 @@ class PredictionEngineTests(unittest.TestCase):
         with db.connect() as connection:
             self._history(connection)
 
+    def test_match_report_keeps_all_generated_market_outcomes(self):
+        from match_analysis import _market_ratings
+        ratings = _market_ratings({
+            'HOME_HANDICAP_-1.5': {'probability': .83, 'summary': 'Expected goals'},
+            'UNDER_4.5': {'probability': .91, 'summary': 'Score distribution'},
+            'BTTS_NO': {'probability': .72, 'summary': None},
+        })
+        self.assertEqual([row['market'] for row in ratings],
+                         ['UNDER_4.5', 'HOME_HANDICAP_-1.5', 'BTTS_NO'])
+        self.assertEqual(ratings[0]['model_summary'], 'Score distribution')
+
     def _insert_match(self,connection,external_id,home,away,when,home_score,away_score,competition='Test League'):
         fixture_id=str(uuid.uuid4())
         kickoff=when.isoformat()

@@ -542,24 +542,7 @@ def analyze_fixture(connection, fixture_id, actor, audit):
                WHERE m.fixture_id=? ORDER BY m.observed_at DESC LIMIT 1""",
             (fixture_id,),
         ).fetchone()
-        markets = []
-        for name in (
-            'HOME', 'DRAW', 'AWAY', 'BTTS_YES', 'BTTS_NO', 'OVER_2.5', 'UNDER_2.5',
-            'OVER_1.5', 'UNDER_1.5', 'OVER_3.5', 'UNDER_3.5', 'DNB_HOME', 'DNB_AWAY',
-            'MONEYLINE_HOME', 'MONEYLINE_AWAY', 'OVER_219.5', 'UNDER_219.5',
-            'HOME_SPREAD_-5.5', 'AWAY_SPREAD_5.5',
-        ):
-            row = predictions.get(name)
-            if not row:
-                continue
-            markets.append({
-                'market': name,
-                'probability': row['probability'],
-                'decimal_odds': None,
-                'implied_probability': None,
-                'expected_edge': None,
-                'odds_status': 'Odds Unavailable',
-            })
+        markets = _market_ratings(predictions)
         if not markets:
             missing.append('No bookmaker odds are stored, and no model probability was produced for the supported markets.')
         else:
@@ -618,6 +601,14 @@ def analyze_fixture(connection, fixture_id, actor, audit):
         raise
 
 
+def _market_ratings(predictions):
+    return [{
+        'market': name, 'probability': row['probability'], 'model_summary': row.get('summary'),
+        'decimal_odds': None, 'implied_probability': None, 'expected_edge': None,
+        'odds_status': 'Odds Unavailable',
+    } for name, row in sorted(predictions.items(), key=lambda item: (-item[1]['probability'], item[0]))]
+
+
 def _latest_predictions(connection, fixture_id):
     run = connection.execute(
         """SELECT run_id FROM sports_ai_engine_predictions
@@ -628,9 +619,10 @@ def _latest_predictions(connection, fixture_id):
         return {}
     rows = {}
     for raw in connection.execute(
-        """SELECT market,probability,explanation_json,created_at
-           FROM sports_ai_engine_predictions
-           WHERE fixture_id=? AND run_id=?""",
+        """SELECT p.market,p.probability,p.explanation_json,p.created_at,e.summary
+           FROM sports_ai_engine_predictions p
+           LEFT JOIN sports_ai_prediction_explanations e ON e.prediction_id=p.id
+           WHERE p.fixture_id=? AND p.run_id=?""",
         (fixture_id, run['run_id']),
     ):
         item = dict(raw)
@@ -663,19 +655,29 @@ def attach_live_evidence(connection, report):
     fixture_id = report['fixture_id']
     sport_row = connection.execute('SELECT sport FROM sports_ai_fixtures WHERE id=?', (fixture_id,)).fetchone()
     sport = sport_row['sport'] if sport_row else 'football'
+    linked_quotes = set()
     for market in report.get('markets') or []:
         key = _QUOTE_KEYS.get(market['market'])
-        quote = None
-        if key:
+        quote = connection.execute(
+            """SELECT q.id,q.decimal_odds,q.bookmaker,q.observed_at,q.source_url
+               FROM sports_ai_value_opportunities o
+               JOIN sports_ai_engine_predictions p ON p.id=o.prediction_id
+               JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
+               WHERE p.fixture_id=? AND p.market=? AND q.bookmaker='SportyBet'
+               ORDER BY q.observed_at DESC LIMIT 1""",
+            (fixture_id, market['market']),
+        ).fetchone()
+        if not quote and key:
             book, outcome, line = key
             quote = connection.execute(
-                """SELECT decimal_odds, bookmaker, observed_at, source_url
+                """SELECT id, decimal_odds, bookmaker, observed_at, source_url
                    FROM sports_ai_odds_snapshots
                    WHERE fixture_id=? AND market=? AND outcome=? AND IFNULL(line,-999)=IFNULL(?, -999)
                    ORDER BY observed_at DESC LIMIT 1""",
                 (fixture_id, book, outcome, line),
             ).fetchone()
         if quote:
+            linked_quotes.add(quote['id'])
             market['decimal_odds'] = quote['decimal_odds']
             market['bookmaker'] = quote['bookmaker']
             market['odds_observed_at'] = quote['observed_at']
@@ -726,6 +728,22 @@ def attach_live_evidence(connection, report):
             market['suitability_rank'] = None
             market['booking_ready'] = False
             market['suitability_reason'] = 'No stored prediction exists for this market.'
+    report['unrated_quotes'] = []
+    seen_quotes = set()
+    for quote in connection.execute(
+        """SELECT id,market,outcome,line,decimal_odds,observed_at
+           FROM sports_ai_odds_snapshots WHERE fixture_id=? AND bookmaker='SportyBet'
+           ORDER BY julianday(observed_at) DESC, rowid DESC""", (fixture_id,),
+    ):
+        key = (quote['market'], quote['outcome'], quote['line'])
+        if key in seen_quotes:
+            continue
+        seen_quotes.add(key)
+        if quote['id'] not in linked_quotes:
+            report['unrated_quotes'].append({
+                'market': quote['market'], 'outcome': quote['outcome'], 'line': quote['line'],
+                'decimal_odds': quote['decimal_odds'], 'observed_at': quote['observed_at'],
+            })
     registry = connection.execute(
         """SELECT model_name, version, status, active, lifecycle, metrics_json
            FROM sports_ai_model_registry

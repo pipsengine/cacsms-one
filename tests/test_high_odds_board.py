@@ -45,6 +45,13 @@ class HighOddsBoardTests(unittest.TestCase):
         short.append(leg('city', 2.8, 0.43))
         self.assertIsNone(build_slip(short, 12))
 
+    def test_best_market_for_a_match_is_the_highest_probability_not_the_highest_odds(self):
+        choices = [
+            leg('same', 1.4, 0.90, market='UNDER_3.5'),
+            leg('same', 1.6, 0.86, market='OVER_1.5'),
+        ]
+        self.assertEqual(choose_one_per_fixture(choices)[0]['market'], 'UNDER_3.5')
+
     def test_sure_tickets_land_between_2_and_2_95(self):
         day = {'name': 'Saturday', 'date': '2026-11-07'}
         # Owner's structure (12 Nov 2026): 2-3 selections per ticket, at most 5 tickets a day.
@@ -64,8 +71,9 @@ class HighOddsBoardTests(unittest.TestCase):
         self.assertNotIn('long vs Opponent', used)
         self.assertNotIn('weak vs Opponent', used)
         self.assertEqual(pack_sure_tickets([leg('only', 1.4, 0.91)], day), [])
-        # 1.20 legs reach only 1.73 with three: no ticket rather than a four-leg one.
-        self.assertEqual(pack_sure_tickets([leg(f'short-{i}', 1.2, 0.95, competition=f'League {i}') for i in range(8)], day), [])
+        # With the pinned test range, five 1.20 legs can now form a ticket.
+        longer = pack_sure_tickets([leg(f'short-{i}', 1.2, 0.95, competition=f'League {i}') for i in range(8)], day)
+        self.assertEqual(len(longer[0]['legs']), 5)
         blocked = [leg('solo', 2.95, 0.99)]
         blocked.extend(leg(f'small-{index}', 1.45, 0.90, competition=f'League {index}') for index in range(2))
         opened = pack_sure_tickets(blocked, day)

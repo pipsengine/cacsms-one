@@ -8,6 +8,7 @@ only when SportyBet displays it. No wager is placed.
 """
 
 import json
+import logging
 import math
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -28,14 +29,12 @@ ODDS_BANDS = (
     {'id': '4-5', 'count': 8, 'odds_label': '4.00–5.00'},
     {'id': 'above-5', 'count': 8, 'at_most': True, 'minimum_product': COMBINED_TARGET, 'odds_label': 'above 5.00'},
 )
-BOOKABLE_SPORTS = {'football', 'basketball'}
+BOOKABLE_SPORTS = {'football', 'basketball', 'ice_hockey', 'tennis'}
 HIGHER_ODDS_BANDS = ('2-3', '3-4', '4-5', 'above-5')
 MAX_TICKETS_PER_BAND = 4
 SURE_COMBINED_MIN = 2.50        # owner, 14 Nov 2026: Sure Odds codes land in 2.50-2.95 (was 2.00-2.95)
 SURE_COMBINED_MAX = 2.95
 SURE_PACK_RANGE = (2.55, 2.90)   # build target inside 2.50-2.95, leaving room for price drift before booking
-SURE_COMBO_POOL = 70            # candidate legs for two- and three-selection combinations
-SURE_FOUR_LEG_POOL = 30         # four-selection combinations are searched among 30 legs (27k combinations)
 SURE_RETIRE_REASONS = ('SURE_ODDS_OUT_OF_RANGE', 'LEGS_NOT_OFFERED')
 
 
@@ -142,7 +141,8 @@ def _sure_today(connection, day, now, candidates=None):
     the stored ticket and both showed the same booking code.
     """
     stored = _stored_slips(connection, day, 'sure_odds', now=now)
-    used = {leg['fixture_id'] for ticket in stored for leg in ticket.get('legs') or []}
+    used = {leg['fixture_id'] for ticket in stored if ticket.get('leg_source') != 'market'
+            for leg in ticket.get('legs') or []}
     # Matches on a sure ticket that already got a code (or was retired as its duplicate) are never re-packed,
     # even if that ticket was later expired; SportyBet would only return the same code again.
     used |= {row[0] for row in connection.execute(
@@ -157,31 +157,18 @@ def _sure_today(connection, day, now, candidates=None):
     made_today = connection.execute(
         """SELECT COUNT(*) FROM sports_ai_accumulator_tickets
            WHERE json_extract(parameters_json,'$.product')='sure_odds' AND status!='expired'
+             AND COALESCE(json_extract(parameters_json,'$.leg_source'),'model')!='market'
              AND julianday(created_at)>=julianday(?) AND julianday(created_at)<julianday(?)""",
         (day['start'].isoformat(), day['end'].isoformat()),
     ).fetchone()[0]
-    room = max(0, SURE_DAILY_MAX - max(made_today, len(stored)))
+    model_stored = sum(ticket.get('leg_source') != 'market' for ticket in stored)
+    room = max(0, SURE_DAILY_MAX - max(made_today, model_stored))
     if not room:
         return stored
     pool = _sure_pool(connection, _candidates(connection, day, now), now) if candidates is None else candidates
     from league_quality import filter_legs
     pool = filter_legs(connection, pool)  # only sports and leagues with an acceptable record
     made = pack_sure_tickets([leg for leg in pool if leg['fixture_id'] not in used], day, limit=room)
-    if candidates is None and len(made) < room:
-        # Too few model picks today (12 Nov 2026: 10 of 107 matches had an 80% prediction, most of them
-        # stale-priced): fill the day with SportyBet's own strong favourites, margin removed.
-        taken = used | {leg['fixture_id'] for ticket in made for leg in ticket['legs']}
-        from ticket_diversity import unallocated
-        # Matches on another active ticket (e.g. this week's jackpot ladder) stay out, or storing is refused.
-        market = [leg for leg in unallocated(connection, _market_sure_pool(connection, day, now), now)
-                  if leg['fixture_id'] not in taken]
-        import prize_ladder
-        # Booking already handles tennis and ice hockey (the jackpot ladder books them), so SportyBet
-        # favourites may come from every sport whose results are settled.
-        for ticket in pack_sure_tickets(market, day, limit=room - len(made), floor=SURE_MARKET_FLOOR,
-                                        sports=prize_ladder.LADDER_SPORTS):
-            ticket['leg_source'] = 'market'
-            made.append(ticket)
     return stored + made
 
 
@@ -237,10 +224,9 @@ def choose_one_per_fixture(rows, floor=None):
         row = dict(row)
         row['preferred'] = _preferred(row)
         rank = (
-            1 if row['preferred'] else 0,
-            row['decimal_odds'] if row['preferred'] else row['probability'],
             row['probability'],
             row['confidence'] if row['confidence'] is not None else -1,
+            row['decimal_odds'],
         )
         current = chosen.get(row['fixture_id'])
         if current is None or rank > current['rank']:
@@ -348,20 +334,17 @@ def build_slip(candidates, count, at_most=False, minimum=None, minimum_product=N
     return chosen, product, joint
 
 
-SURE_MAX_LEGS = 4        # owner, 14 Nov 2026: up to 4 selections so codes reach 2.50-2.95
+SURE_MAX_LEGS = 50
 SURE_DAILY_MAX = 5       # at most 5 Sure Odds tickets per Africa/Lagos day
-SURE_SEARCH_POOL = 40    # most likely selections searched for 2-3 leg combinations
+SURE_BEAM_WIDTH = 512
 
 
 def pack_sure_tickets(candidates, day, limit=SURE_DAILY_MAX, floor=None, sports=None):
-    """Up to `limit` tickets of 2-4 selections whose combined price is in SURE_PACK_RANGE (2.50-2.95 band).
+    """Pack high-probability selections into the Sure Odds range, preferring more legs.
 
-    Every selection is at least SELECTION_FLOOR likely; there is no minimum price per selection.
-    Each ticket is the 2- or 3-leg combination of different matches with the highest joint
-    probability inside the price range (every extra leg multiplies the chance of losing).
-    One match is used once. No wager is placed.
+    The bounded search logs when it must prune alternatives; it does not guarantee
+    a globally optimal combination in that case.
     """
-    from itertools import combinations
     from ticket_diversity import event_keys
     floor = SELECTION_FLOOR if floor is None else floor
     pool = choose_one_per_fixture([
@@ -376,64 +359,32 @@ def pack_sure_tickets(candidates, day, limit=SURE_DAILY_MAX, floor=None, sports=
     tickets = []
     while len(tickets) < max(0, limit):
         open_legs = [leg for leg in ordered if not event_keys(leg) & used]
+        states = {0: [((), 1.0, 1.0, frozenset())]}
+        truncated = False
+        for index, leg in enumerate(open_legs):
+            odds, probability, keys = float(leg['decimal_odds']), float(leg['probability']), event_keys(leg)
+            for size in range(min(index, SURE_MAX_LEGS - 1), -1, -1):
+                additions = []
+                for indices, product, joint, held_keys in states.get(size, ()):
+                    new_product = product * odds
+                    if new_product <= SURE_PACK_RANGE[1] + 1e-9 and not keys & held_keys:
+                        additions.append((indices + (index,), new_product, joint * probability, held_keys | keys))
+                if additions:
+                    combined = states.get(size + 1, []) + additions
+                    if len(combined) > SURE_BEAM_WIDTH:
+                        truncated = True
+                        combined.sort(key=lambda state: (-state[2], state[1]))
+                        combined = combined[:SURE_BEAM_WIDTH]
+                    states[size + 1] = combined
+        if truncated:
+            logging.getLogger(__name__).warning('Sure Odds search pruned alternatives at %d states per leg count', SURE_BEAM_WIDTH)
         best = None
         for size in range(2, SURE_MAX_LEGS + 1):
-            # For each size, the legs priced near the per-leg share of the range (4 legs: ~1.20-1.41;
-            # 3 legs: ~1.30-1.54; 2 legs: ~1.52-1.84). The likeliest legs overall are ~1.15-1.20 and
-            # never reach 2.55 together (14 Nov 2026: that search packed 0 tickets from 297 legs).
-            # The pool is spread across that window: the likeliest leg of each 0.02 price step, then the
-            # second likeliest of each, and so on. Ranking the whole window by chance filled it with the
-            # cheapest legs, and four of those (~1.20) still miss 2.55.
-            low = SURE_PACK_RANGE[0] ** (1 / size) * 0.95
-            high = SURE_PACK_RANGE[1] ** (1 / size) * 1.08
-            steps = {}
-            for leg in open_legs:  # open_legs is already likeliest first
-                odds = float(leg['decimal_odds'])
-                if low <= odds <= high:
-                    steps.setdefault(int(odds / 0.02), []).append(leg)
-            cap = SURE_FOUR_LEG_POOL if size >= 4 else SURE_COMBO_POOL
-            # (capped: 120 candidate legs made one build take 128 s on the live data, 14 Nov 2026)
-            sized = []
-            for rank in range(max((len(group) for group in steps.values()), default=0)):
-                sized += [group[rank] for _, group in sorted(steps.items()) if rank < len(group)]
-                if len(sized) >= cap:
-                    break
-            sized = sized[:cap]
-            if len(sized) < cap and open_legs:
-                # Room left: legs outside the window that can still reach the range with the others
-                # (one short price with a longer one, e.g. 1.30 x 1.70), nearest the per-leg target first.
-                prices = [float(leg['decimal_odds']) for leg in open_legs]
-                reach_low = SURE_PACK_RANGE[0] / max(prices) ** (size - 1)
-                reach_high = SURE_PACK_RANGE[1] / min(prices) ** (size - 1)
-                target = math.sqrt(SURE_PACK_RANGE[0] * SURE_PACK_RANGE[1]) ** (1 / size)
-                taken = {id(leg) for leg in sized}
-                extra = sorted((leg for leg in open_legs if id(leg) not in taken
-                                and reach_low <= float(leg['decimal_odds']) <= reach_high),
-                               key=lambda leg: (abs(math.log(float(leg['decimal_odds']) / target)),
-                                                -float(leg['probability'])))
-                sized += extra[:cap - len(sized)]
-            # Odds, chance and match keys are read once per leg; per combination the cheap checks come first
-            # (price range, then chance against the best so far) and the same-match check only for a new best
-            # (14 Nov 2026: four-leg search took ~1 min per build otherwise).
-            facts = [(float(leg['decimal_odds']), float(leg['probability']), event_keys(leg)) for leg in sized]
-            low_end, high_end = SURE_PACK_RANGE[0] - 1e-9, SURE_PACK_RANGE[1] + 1e-9
-            for picked in combinations(range(len(sized)), size):
-                product = 1.0
-                joint = 1.0
-                for index in picked:
-                    product *= facts[index][0]
-                    joint *= facts[index][1]
-                # Packed inside SURE_PACK_RANGE, not at the range edge: SportyBet's displayed prices drift
-                # a few percent before booking, and 12 Nov tickets packed at 2.00-2.01 showed 1.98-1.99.
-                if not low_end <= product <= high_end:
-                    continue
-                rank = (joint, -size, -product)
-                if best is not None and rank <= best[0]:
-                    continue
-                keys = [facts[index][2] for index in picked]
-                if any(a & b for i, a in enumerate(keys) for b in keys[i + 1:]):
-                    continue  # two legs from the same match
-                best = (rank, [sized[index] for index in picked], product, joint)
+            for indices, product, joint, _keys in states.get(size, ()):
+                if SURE_PACK_RANGE[0] - 1e-9 <= product <= SURE_PACK_RANGE[1] + 1e-9:
+                    rank = (size, joint, -product)
+                    if best is None or rank > best[0]:
+                        best = (rank, [open_legs[i] for i in indices], product, joint)
         if best is None:
             break
         _, chosen, product, joint = best
@@ -564,7 +515,7 @@ def _ready_ticket(day, band, chosen, product, joint):
         'signature': _slip_signature(day['name'], band['id'], chosen),
         'selection_count': len(chosen),
         'combined_odds': round(product, 2),
-        'joint_probability': round(joint * 100, 1),
+        'joint_probability': joint * 100,
         'confidence': None if confidence is None else round(confidence * 100, 1),
         'preferred_only': all(leg['preferred'] for leg in chosen),
         'booking_code': None,
@@ -578,6 +529,7 @@ def _ready_ticket(day, band, chosen, product, joint):
                 'market': _label(leg['market']),
                 'odds': round(float(leg['decimal_odds']), 2),
                 'probability': round(float(leg['probability']) * 100, 1),
+                'model_summary': leg.get('model_summary'),
                 'confidence': None if leg['confidence'] is None else round(leg['confidence'] * 100, 1),
                 'preferred': leg['preferred'],
                 'starts_at': leg['starts_at'],
@@ -604,7 +556,7 @@ def _rows(connection, start, end, now=None):
             """SELECT id, sport, home, away, competition, starts_at
                FROM sports_ai_fixtures
                WHERE status IN ('scheduled', 'not_started')
-                 AND starts_at>=? AND starts_at<?""",
+                 AND julianday(starts_at)>=julianday(?) AND julianday(starts_at)<julianday(?)""",
             (start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat()),
         )
     }
@@ -612,9 +564,10 @@ def _rows(connection, start, end, now=None):
         return []
     predictions = _chunked(
         connection,
-        """SELECT p.id, p.fixture_id, p.market, p.probability, p.created_at, p.model_id
+        """SELECT p.id, p.fixture_id, p.market, p.probability, p.created_at, p.model_id, e.summary AS model_summary
            FROM sports_ai_engine_predictions p
            JOIN sports_ai_model_registry m ON m.id=p.model_id AND m.active=1
+           LEFT JOIN sports_ai_prediction_explanations e ON e.prediction_id=p.id
            WHERE p.probability>=? AND p.fixture_id IN ({marks})""",
         list(fixtures),
         (SELECTION_FLOOR,),
@@ -637,6 +590,7 @@ def _rows(connection, start, end, now=None):
             'market': row['market'],
             'probability': probability,
             'model_id': row['model_id'],
+            'model_summary': row['model_summary'],
         }
     if not latest_prediction:
         return []
@@ -673,7 +627,7 @@ def _rows(connection, start, end, now=None):
         row['id']: row
         for row in _chunked(
             connection,
-            """SELECT id, decimal_odds, observed_at, bookmaker, outcome, line
+            """SELECT id, decimal_odds, observed_at, bookmaker, market, outcome, line
                FROM sports_ai_odds_snapshots
                WHERE id IN ({marks})""",
             [item[1] for item in linked.values()],
@@ -698,10 +652,13 @@ def _rows(connection, start, end, now=None):
             continue
         if odds != odds or odds <= 1 or not quote['observed_at']:
             continue
-        if odds > LOW_ODDS_CEILING and odds < MIN_LEG_ODDS:
-            continue
         fixture = fixtures[item['fixture_id']]
         if fixture['sport'] not in BOOKABLE_SPORTS or not fixture['starts_at']:
+            continue
+        from sportybet_booking import page_market_supported
+        if not page_market_supported(fixture['sport'], item['market']):
+            continue
+        if fixture['sport'] == 'ice_hockey' and quote['market'] != 'full_match_winner':
             continue
         if fixture['sport'] == 'basketball':
             from basketball_losses import eligibility_reason
@@ -710,7 +667,7 @@ def _rows(connection, start, end, now=None):
         # Market-anchored probability: the 80% floor applies to the blend, and large
         # disagreements with SportyBet are held back (market_anchor.py).
         anchored = anchor(anchors, fixture['sport'], fixture['competition'], item['probability'], odds)
-        if anchored['gap'] > anchored['cap'] or anchored['probability'] < SELECTION_FLOOR:
+        if anchored['weight'] <= 0 or anchored['gap'] > anchored['cap'] or anchored['probability'] < SELECTION_FLOOR:
             continue
         item = {**item, 'model_probability': item['probability'], 'probability': anchored['probability']}
         outcome = quote['outcome'] if 'outcome' in quote.keys() else None
@@ -732,6 +689,7 @@ def _rows(connection, start, end, now=None):
             'odds_observed_at': str(quote['observed_at'] or ''),
             'quote_line': _line(quote['line'] if 'line' in quote.keys() else None),
             'model_id': item['model_id'] or '',
+            'model_summary': item.get('model_summary'),
             'edge': item['probability'] * odds - 1,
         })
     held = _risk_review(connection, stored)
@@ -747,8 +705,9 @@ def _rows(connection, start, end, now=None):
 def _candidates(connection, day, now):
     if day['end'] <= now.astimezone(WAT):
         return []
-    cutoff = now.astimezone(timezone.utc).isoformat()
-    return [row for row in _rows(connection, day['start'], day['end'], now) if str(row['starts_at']) > cutoff]
+    from accumulator_engine import _parse_time
+    return [row for row in _rows(connection, day['start'], day['end'], now)
+            if _parse_time(row['starts_at']) > now]
 
 
 def _booking_index(connection):
@@ -913,6 +872,9 @@ def _stored_slips(connection, day, product, now=None):
                 continue
         elif not _qualified_slip(connection, legs):
             continue
+        if not market_priced:
+            from high_odds_service import _explain_legs
+            legs = _explain_legs(connection, legs)
         odds = joint = 1.0
         for leg in legs:
             leg.update({'confidence': None if market_priced else leg.get('reliability'), 'preferred': False})
@@ -1050,7 +1012,7 @@ def _upsert_ticket(connection, day, ticket, now, product='high_odds'):
                 ('Sure-odds ticket from SportyBet favourites. Each selection is at least 70% by the SportyBet price '
                  '(margin removed). Combined odds are from 2.00 to 2.95. No wager is placed.')
                 if product == 'sure_odds' and ticket.get('leg_source') == 'market' else
-                'Sure-odds ticket. Each selection is at least 80%. Combined odds are from 2.00 to 2.95. No wager is placed.'
+                'Sure-odds ticket. Each selection is at least 80%. Combined odds are from 2.50 to 2.95. No wager is placed.'
                 if product == 'sure_odds' else
                 f'High-odds ticket. Each selection is at least 80% and priced {ticket["odds_band"]}. No wager is placed.'
             ),
@@ -1234,6 +1196,8 @@ def prepare_sure_odds_booking(now=None):
             return None
         index = _booking_index(connection)
         for ticket in tickets:
+            if ticket.get('leg_source') == 'market':
+                continue
             match = index.get(ticket['signature']) or index.get('body:' + _signature_body(ticket['signature']))
             if not match or match['code'] or match['job_status'] in ('PREPARING', 'CODE_GENERATED'):
                 continue

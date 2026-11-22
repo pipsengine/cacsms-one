@@ -115,7 +115,7 @@ class ObjectiveTwo(unittest.TestCase):
         self.assertGreater(len(tickets), 0)
         used = set()
         for t in tickets:
-            self.assertIn(len(t['legs']), (2, 3, 4))
+            self.assertTrue(2 <= len(t['legs']) <= board.SURE_MAX_LEGS)
             self.assertTrue(2.50 - 1e-9 <= t['combined_odds'] <= 2.95 + 1e-9, t['combined_odds'])
             ids = {l['fixture_id'] for l in t['legs']}
             self.assertFalse(ids & used)  # a match is used once
@@ -127,9 +127,16 @@ class ObjectiveTwo(unittest.TestCase):
         self.assertEqual([len(t['legs']) for t in tickets], [4])
         self.assertTrue(2.50 <= tickets[0]['combined_odds'] <= 2.95)
 
-    def test_short_prices_alone_never_make_a_long_ticket(self):
-        # Five 1.15s cannot reach 2.50 within 4 legs: no ticket rather than a 5-leg one.
-        self.assertEqual(board.pack_sure_tickets([leg(i, 1.15) for i in range(5)], DAY), [])
+    def test_more_than_four_high_probability_legs_can_make_a_ticket(self):
+        tickets = board.pack_sure_tickets([leg(i, 1.17) for i in range(6)], DAY, limit=1)
+        self.assertEqual([len(t['legs']) for t in tickets], [6])
+        self.assertTrue(2.50 <= tickets[0]['combined_odds'] <= 2.95)
+
+    def test_sure_ticket_does_not_exceed_booking_limit(self):
+        tickets = board.pack_sure_tickets([leg(i, 1.02) for i in range(51)], DAY, limit=1)
+        self.assertEqual([len(t['legs']) for t in tickets], [50])
+        self.assertTrue(2.50 <= tickets[0]['combined_odds'] <= 2.95)
+        self.assertAlmostEqual(tickets[0]['joint_probability'], 100 * .85 ** 50)
 
     def test_limit_counts_tickets_already_made(self):
         pool = [leg(i, 1.62) for i in range(12)]        # two make 2.62

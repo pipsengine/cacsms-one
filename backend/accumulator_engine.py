@@ -1618,11 +1618,12 @@ def retire_duplicate_tickets(connection, now=None):
     return {'retired': retired, 'kept': len(grouped), 'places_wager': False, 'at': current.isoformat()}
 
 
-def load_opportunity_rows(connection, now=None, keep_markets=False):
+def load_opportunity_rows(connection, now=None, keep_markets=False, end=None):
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
-    _monday, week_end = opportunity_week(current)
+    if end is None:
+        _monday, end = opportunity_week(current)
     rows = connection.execute(
         """SELECT o.id AS opportunity_id, o.status AS opportunity_status, o.expected_edge,
                   COALESCE(o.data_completeness, s.completeness) AS data_completeness,
@@ -1633,6 +1634,7 @@ def load_opportunity_rows(connection, now=None, keep_markets=False):
                   m.version AS model_version, m.model_name, m.sport AS model_sport, m.lifecycle AS model_lifecycle,
                   m.status AS model_status, m.active AS model_active,
                   m.metrics_json, m.calibration_status,
+                  d.expires_at AS decision_expires_at, d.products_json AS decision_products_json,
                   CAST(json_extract(d.evidence_json,'$.anchored_probability') AS REAL) AS anchored_probability
            FROM sports_ai_value_opportunities o
            JOIN sports_ai_engine_predictions p ON p.id=o.prediction_id
@@ -1641,8 +1643,8 @@ def load_opportunity_rows(connection, now=None, keep_markets=False):
            JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
            JOIN sports_ai_qualification_decisions d ON d.opportunity_id=o.id AND d.state='QUALIFIED'
            LEFT JOIN sports_ai_feature_snapshots s ON s.id=p.feature_id
-           WHERE o.status='qualified' AND f.starts_at>? AND f.starts_at<?""",
-        (current.astimezone(timezone.utc).isoformat(), week_end.astimezone(timezone.utc).isoformat()),
+           WHERE o.status='qualified' AND julianday(f.starts_at)>julianday(?) AND julianday(f.starts_at)<julianday(?)""",
+        (current.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat()),
     ).fetchall()
     from market_registry import choose_best
     material=[dict(row) for row in rows]

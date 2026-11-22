@@ -1,19 +1,7 @@
-"""Prize ladder: one booking code per prize, from ₦100,000 to ₦200,000,000 on a ₦100 stake.
+"""Prize ladder from qualified model predictions and current SportyBet prices.
 
-Practical process
-1. Pool: every sport and league, a SportyBet price LEG_MIN..LEG_MAX seen in the last few hours,
-   bookable binary markets only, one selection per match (jackpot_low.scan with wider odds).
-2. Probabilities are SportyBet prices with the margin removed; nothing relies on the model.
-3. For each prize (largest first) pick legs whose odds sit near the required average, so each leg
-   stays modest (about 1.2-1.6): no team twice, at most MAX_PER_LEAGUE per league, each match on
-   at most MAX_SHARE ladder tickets. Build to BUILD_LOW..BUILD_HIGH x the prize odds, leaving room
-   for SportyBet to drop a leg it is not showing.
-4. Booking requests a displayed code. Legs SportyBet does not show are dropped, but the booked
-   ticket must still pay at least its prize at the displayed prices, or it is not booked.
-
-Honesty: the chance of winning is roughly 1 / (prize odds) less the bookmaker margin on every
-leg - from about 1 in 2,000 for ₦100,000 to about 1 in 5-10 million for ₦200,000,000. These are
-booking codes; the system never stakes on them and single betting does not follow them.
+Each ticket is a booking code, not a wager. Joint probabilities assume independence
+and can become very small even when each individual selection is highly rated.
 """
 import json
 import math
@@ -22,16 +10,15 @@ from datetime import timedelta, timezone
 
 PRODUCT = 'prize_ladder'
 STAKE = 100
-# Owner's structure (12 Nov 2026), objective 3: six jackpots on a ₦100 stake, every selection priced
-# 1.60-2.95, matches from Monday to Sunday of the current week, one set per week.
+# Six prize targets on a ₦100 reference stake, with one ladder run per week.
 PRIZES = (1_000_000, 10_000_000, 20_000_000, 50_000_000, 100_000_000, 200_000_000)
 LEG_MIN, LEG_MAX = 1.60, 2.95
 LEG_AIM = 2.60            # preferred per-leg odds (14 Nov 2026: was 1.95): fewer legs, less margin paid
 WEEKLY_RUNS = 1
-LADDER_VERSION = 3       # 14 Nov 2026: proven selection types only, ~2.6 per leg, capped leg count
+LADDER_VERSION = 4
 # Sports whose results the system collects and settles; the league record filter applies on top.
 LADDER_SPORTS = ('football', 'basketball', 'ice_hockey', 'tennis')
-MAX_LEGS = 45             # SportyBet accepts 50; 45 leaves room
+MAX_LEGS = 50
 MIN_LEGS = 6
 MAX_PER_LEAGUE = 3
 JACKPOT_EXTRA_LEGS = 3    # when the longest proven legs run out, a jackpot may use up to 3 more, shorter legs
@@ -52,21 +39,11 @@ MAX_HOURS_AHEAD = 48      # pages list near matches; hit rate fell to 60% beyond
 # before they could be used, because legs from 45 minutes ahead were allowed.)
 MIN_LEAD_HOURS = 3
 LATER_PENALTY = 0.04      # per day ahead, on the odds-fit distance: sooner matches first
-# Booking reliability. The ladder now uses result, double chance, winner, totals (over/under),
-# BTTS, and handicap markets. Each family has its own reliability threshold based on historical
-# booking page hit rates. Any sport/market the page found < MIN_HIT_RATE is dropped.
-RELIABLE_FAMILIES = ('result', 'double', 'winner', 'total', 'btts', 'handicap')
+# Booking reliability. Over/under and BTTS lines are often not shown or not switchable on the page
+# (football totals 50%, women's totals 20% on 2026-11-11), so the ladder uses result, double chance
+# and winner markets only, and drops any sport/market the page found < MIN_HIT_RATE of the time.
+RELIABLE_FAMILIES = ('result', 'double', 'winner')
 MIN_HIT_RATE = 0.55
-# Family-specific reliability thresholds: more lenient for established markets, stricter for
-# markets that have lower page availability. Used in reliable() function.
-FAMILY_HIT_RATES = {
-    'result': 0.90,         # match result: nearly always shown
-    'double': 0.85,         # double chance: usually shown
-    'winner': 0.90,         # moneyline/winner: nearly always shown
-    'total': 0.70,          # over/under: variable (50-70% based on sport)
-    'btts': 0.65,           # BTTS: less reliable but enough quotes (198k+)
-    'handicap': 0.70,       # handicap/spreads: 1M+ quotes, moderate reliability
-}
 MIN_HIT_SAMPLES = 5    # no sport may fill more than 30% of a ticket
 FOOTBALL = ('football', 'frauenfussball')
 FOOTBALL_BONUS = 0.15     # football wins ties on fit (log-odds distance)
@@ -96,12 +73,6 @@ def family(market):
         return 'winner'
     if name in ('HOME', 'AWAY', 'DRAW'):
         return 'result'
-    if 'OVER' in name or 'UNDER' in name or name in ('TOTALS', 'O/U'):
-        return 'total'
-    if name in ('BTTS', 'GG/NG'):
-        return 'btts'
-    if 'HANDICAP' in name or 'SPREAD' in name or name == 'EUROPEAN_HANDICAP':
-        return 'handicap'
     return 'other'
 
 
@@ -130,16 +101,14 @@ def hit_rates(connection, days=7):
 
 
 def reliable(legs, rates):
-    """Keep legs the booking page reliably shows. Each market family has its own reliability threshold."""
+    """Keep legs the booking page reliably shows."""
     kept = []
     for leg in legs:
         fam = family(leg['market'])
         if fam not in RELIABLE_FAMILIES:
             continue
-        # Use family-specific threshold if available, otherwise fall back to MIN_HIT_RATE
-        threshold = FAMILY_HIT_RATES.get(fam, MIN_HIT_RATE)
         hit, total = rates.get((leg['sport'], fam), (0, 0))
-        if total >= MIN_HIT_SAMPLES and hit / total < threshold:
+        if total >= MIN_HIT_SAMPLES and hit / total < MIN_HIT_RATE:
             continue
         kept.append(leg)
     return kept
@@ -164,7 +133,7 @@ def pick(pool, prize, uses, now=None):
     """Legs for one prize: odds near the required per-leg average, landing in the build band."""
     target = prize_odds(prize)
     return pick_range(pool, target * BUILD_LOW, target * BUILD_HIGH, target * BUILD_AIM, uses, now,
-                      max_legs=leg_cap(target * BUILD_AIM) + JACKPOT_EXTRA_LEGS)
+                      max_legs=MAX_LEGS)
 
 
 def leg_cap(aim):
@@ -174,8 +143,7 @@ def leg_cap(aim):
 
 
 def pick_range(pool, low, high, aim, uses, now=None, min_legs=MIN_LEGS, max_legs=None):
-    """Legs whose combined odds land in [low, high], close to `aim`. Used by the jackpot ladder and,
-    with min_legs=2, by the category cards (category_market.py)."""
+    """Choose legs whose combined odds land in [low, high], close to `aim`."""
     cap = min(MAX_LEGS, max_legs or leg_cap(aim))
     slots = max(min_legs, min(cap, round(math.log(aim) / math.log(LEG_AIM))))
     chosen, odds, teams, leagues, sports = [], 1.0, set(), {}, {}
@@ -330,22 +298,12 @@ def build(connection, actor='sports-ai-worker', now=None, force=False, prizes=No
     if not force and _built_this_week(connection, current) >= WEEKLY_RUNS:
         return {'status': 'already_built', 'created': 0, 'places_wager': False}
     _release(connection)
-    saved = (jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS)
-    jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS = LEG_MIN, LEG_MAX
-    try:
-        pool = jackpot_low.scan(connection, current, horizon_hours=_hours_to_sunday(current),
-                                    keep=reliable_keep(connection))
-    finally:
-        jackpot_low.MIN_ODDS, jackpot_low.MAX_ODDS = saved
-    rates = hit_rates(connection)
-    earliest = (current + timedelta(hours=MIN_LEAD_HOURS)).isoformat()
-    from league_quality import filter_legs
-    pool = filter_legs(connection, [leg for leg in pool if leg['sport'] in LADDER_SPORTS])
-    import pick_scoring
-    history = pick_scoring.table()
-    pool = [leg for leg in pool if pick_scoring.proven(leg, history)]   # evidence-backed selection types only
-    candidates = [leg for leg in reliable(pool, rates)
-                  if leg['fixture_id'] not in set(exclude) and str(leg['starts_at']) >= earliest]
+    from high_odds_service import eligible, model_market_pool
+    pool, _, _ = eligible(connection, current, exclude_allocated=False)
+    pool = model_market_pool(connection, pool, current + timedelta(hours=MIN_LEAD_HOURS),
+                             current + timedelta(days=30))
+    excluded = set(exclude)
+    candidates = [leg for leg in pool if leg['sport'] in LADDER_SPORTS and leg['fixture_id'] not in excluded]
     # Matches on other products' active tickets stay out; matches on ladder tickets may be shared
     # (up to MAX_SHARE), so offer those back.
     ladder_matches = {row[0] for row in connection.execute(
@@ -393,8 +351,8 @@ def build(connection, actor='sports-ai-worker', now=None, force=False, prizes=No
             'explanation': (f"Prize ladder: ₦{STAKE} pays at least {_naira(prize)} (built at {odds:,.0f}x, "
                             f"{_naira(odds * STAKE)}). {len(legs)} legs across "
                             f"{len({l['competition'] for l in legs})} leagues; estimated chance {one_in}"
-                            f"{one_cut_note(legs)}. Selections are proven types only (history); chances are SportyBet "
-                            'prices without the margin, corrected by history. A booking code, not a wager.'),
+                            f"{one_cut_note(legs)}. Each selection uses a qualified model prediction and a "
+                            'current SportyBet price. A booking code, not a wager.'),
             'status': 'qualified',
         }
         ticket_id = _insert_ticket(connection, run_id, ticket, config, current, 'created', f'Prize ladder {_naira(prize)}')
@@ -402,9 +360,8 @@ def build(connection, actor='sports-ai-worker', now=None, force=False, prizes=No
         parameters = json.loads(row['parameters_json'] or '{}')
         import pick_scoring
         parameters.update(one_cut_probability=pick_scoring.one_cut_chance([l['probability'] for l in legs]))
-        parameters.update(product=PRODUCT, ladder_version=LADDER_VERSION, prize=prize, stake=STAKE,
-                          min_odds=prize_odds(prize), positive_edge=False,
-                          reserve=reserves(pool, legs, rates))
+        parameters.update(product=PRODUCT, leg_source='model', ladder_version=LADDER_VERSION, prize=prize, stake=STAKE,
+                          min_odds=prize_odds(prize), positive_edge=False, reserve=[])
         connection.execute('UPDATE sports_ai_accumulator_tickets SET parameters_json=?, finalized=1 WHERE id=?',
                            (json.dumps(parameters), ticket_id))
         created.append({'prize': prize, 'legs': len(legs), 'odds': round(odds, 1), 'chance': one_in})

@@ -336,7 +336,7 @@ def _sure_odds_status(connection, now):
     ).fetchone()[0]
     return {
         'message': ('No selection currently qualifies for today\'s Sure Odds tickets.' if rows and not qualified
-                    else 'No ready ticket with combined odds 2.00 to 2.95 is still to play today.'),
+                    else 'No ready ticket with combined odds 2.50 to 2.95 is still to play today.'),
         'blockers': blockers, 'qualified_selections': qualified,
         'last_ticket_at': last_ticket, 'last_collection_at': last_collection,
         'count_basis': 'Latest decisions per fixture and market; counts are not matches.',
@@ -391,6 +391,7 @@ def _sure_tickets(board, now):
                         'league': readable_league(leg.get('competition')),
                         'selection': leg.get('market'),
                         'probability': leg.get('probability'),
+                        'model_summary': leg.get('model_summary'),
                         'odds': leg.get('odds'),
                         'confidence': leg.get('confidence'),
                         'starts_at': leg.get('starts_at'),

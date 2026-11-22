@@ -3,7 +3,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -84,6 +84,13 @@ class BookingTests(unittest.TestCase):
             'fixture_id': 'pistons', 'home': 'Pistons', 'away': '76ers', 'sport': 'basketball',
             'market': 'MONEYLINE_HOME', 'selection': 'Pistons', 'decimal_odds': odds,
         }
+
+    def test_unmapped_markets_cannot_fall_through_to_home(self):
+        from sportybet_booking import page_market_supported
+        self.assertFalse(page_market_supported('football', 'BTTS_YES'))
+        self.assertFalse(page_market_supported('football', 'HOME_OVER_1.5'))
+        self.assertFalse(page_market_supported('ice_hockey', 'OVER_5.5'))
+        self.assertTrue(page_market_supported('football', 'UNDER_3.5'))
 
     def test_unqualified_queue_does_not_open_a_browser(self):
         with db.connect() as connection:
@@ -196,6 +203,7 @@ class BookingTests(unittest.TestCase):
         from sportybet_booking import FIND_LINE
 
         html = """<!doctype html><html><body>
+          <div class="market-item">O/U</div>
           <div class="match-row">Pistons vs 76ers
             <div class="af-select"><span class="af-select-input">2.5</span></div>
             <button class="m-outcome">1.95</button><button class="m-outcome">1.85</button>
@@ -235,6 +243,27 @@ class BookingTests(unittest.TestCase):
         self.assertEqual(result['seen'][0]['page_odds'], 1.95)
         self.assertEqual(clicked, 'yes')
         self.assertEqual(placed, 'no')
+
+    def test_total_is_not_clicked_without_identifiable_market_tab(self):
+        from playwright.async_api import async_playwright
+
+        async def run():
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(headless=True)
+                page = await (await browser.new_context()).new_page()
+                await page.set_content("""<div class="match-row">Pistons vs 76ers
+                    <span class="af-select-input">2.5</span>
+                    <button class="m-outcome" onclick="this.dataset.clicked='yes'">1.80</button>
+                    <button class="m-outcome">1.85</button></div>""")
+                selection = {**self.selection(1.80), 'market': 'OVER_2.5', 'selection': 'Over 2.5'}
+                with patch('sportybet_booking._reveal_fixture', new_callable=AsyncMock, return_value={}):
+                    with self.assertRaisesRegex(RuntimeError, 'Selection control missing or ambiguous'):
+                        await prepare_slip(page, [selection])
+                clicked = await page.locator('.m-outcome').first.get_attribute('data-clicked')
+                await browser.close()
+                return clicked
+
+        self.assertIsNone(asyncio.run(run()))
 
     def test_reveal_fixture_drills_through_duplicate_country_into_exact_competition(self):
         from playwright.async_api import async_playwright

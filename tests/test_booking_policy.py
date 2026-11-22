@@ -290,8 +290,7 @@ class BookingPolicyTests(unittest.TestCase):
         shown = [t for t in view['tickets'] if t.get('booking_code') == 'DASH01']
         self.assertEqual(len(shown), 1)
         self.assertEqual((shown[0]['category_id'], shown[0]['registration_state'], shown[0]['leg_count']), ('5-9.99', 'registered', 3))
-        low = next(c for c in view['categories'] if c['id'] == '5-9.99')
-        self.assertEqual(low['daily_verified'], 1)
+        self.assertNotIn('5-9.99', {c['id'] for c in view['categories']})
 
 
 

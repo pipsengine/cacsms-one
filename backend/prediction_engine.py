@@ -2714,6 +2714,35 @@ def review_degradation(connection, actor, audit, now=None):
     return {'rolled_back': rolled}
 
 
+def _quoted_board_batch(connection, fixtures, limit, current):
+    ordered = rotate_by_league(fixtures, len(fixtures))
+    if not ordered:
+        return []
+    row = connection.execute(
+        "SELECT value_json FROM sports_ai_settings WHERE key='quoted_board_cursor'",
+    ).fetchone()
+    cursor = json.loads(row['value_json']) if row and row['value_json'] else {}
+    previous = cursor.get('fixture_id')
+    start = next((index + 1 for index, fixture in enumerate(ordered)
+                  if fixture['id'] == previous), cursor.get('next_index', 0)) % len(ordered)
+    chosen = []
+    for offset in range(len(ordered)):
+        fixture = ordered[(start + offset) % len(ordered)]
+        text = str(fixture.get('competition') or '').casefold()
+        if 'simulated' in text or 'srl' in text.split():
+            continue
+        chosen.append(fixture)
+        if len(chosen) >= max(1, int(limit)):
+            break
+    if chosen:
+        connection.execute("""INSERT INTO sports_ai_settings(key,value_json,updated_at)
+            VALUES('quoted_board_cursor',?,?)
+            ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at""",
+            (json.dumps({'fixture_id': chosen[-1]['id'],
+                         'next_index': (start + offset + 1) % len(ordered)}), current.isoformat()))
+    return chosen
+
+
 def price_quoted_board(connection, now=None, limit=40):
     """Store a probability for each fresh SportyBet line when features already exist.
 
@@ -2745,15 +2774,10 @@ def price_quoted_board(connection, now=None, limit=40):
              AND EXISTS (
                SELECT 1 FROM sports_ai_feature_snapshots s
                WHERE s.fixture_id=f.id AND s.completeness>=0.5
-             )""",
+             ) ORDER BY f.id""",
         (fresh,),
     )]
-    chosen = []
-    for fixture in rotate_by_league(fixtures, max(1, int(limit))):
-        text = str(fixture.get('competition') or '').casefold()
-        if 'simulated' in text or 'srl' in text.split():
-            continue
-        chosen.append(fixture)
+    chosen = _quoted_board_batch(connection, fixtures, limit, current)
     summary = {'fixtures': 0, 'predictions': 0, 'opportunities': 0, 'rejected': 0, 'fixture_ids': [], 'sports': sorted({row['sport'] for row in chosen})}
     if not chosen:
         return summary
@@ -2785,19 +2809,17 @@ def price_quoted_board(connection, now=None, limit=40):
         )]
         seen = set()
         summary['fixtures'] += 1
-        priced_here = 0
         for quote in quotes:
             market = normalize_quote_market(fixture['sport'], fixture, quote)
-            if priced_here >= 16 or not market or market in seen or not supported_market(fixture['sport'], market):
+            if not market or market in seen or not supported_market(fixture['sport'], market):
                 continue
             try:
                 odds = float(quote['decimal_odds'])
             except (TypeError, ValueError):
                 continue
-            if not math.isfinite(odds) or odds < 1.3:
+            if not math.isfinite(odds) or odds <= 1:
                 continue
             seen.add(market)
-            priced_here += 1
             existing = connection.execute(
                 """SELECT id, probability, settlement_json FROM sports_ai_engine_predictions
                    WHERE fixture_id=? AND market=? ORDER BY created_at DESC LIMIT 1""",
@@ -2838,6 +2860,28 @@ def price_quoted_board(connection, now=None, limit=40):
                        VALUES(?,?,?,?,?,?,?,?,?,?,?,'prospective')""",
                     (prediction_id, run_id, fixture['id'], fixture['model_id'], snapshot['id'], market, market,
                      probability, json.dumps(settlement), json.dumps({'source': 'quoted_board'}), current.isoformat()),
+                )
+                if fixture['sport'] in WINNER_SPORTS:
+                    required = ('history_basis', 'home_rating', 'away_rating')
+                elif fixture['sport'] in GOAL_SPORTS:
+                    required = ('expected_home_goals', 'expected_away_goals', 'home_attack', 'away_attack',
+                                'home_defence', 'away_defence', 'league_home_goals', 'league_away_goals',
+                                'home_games', 'away_games')
+                else:
+                    required = ('expected_home_points', 'expected_away_points', 'home_score_sd', 'away_score_sd')
+                if adjusted.get('home_rest_days') is not None and adjusted.get('away_rest_days') is not None:
+                    required += ('home_games_7d', 'away_games_7d')
+                if adjusted.get('h2h_games'):
+                    required += ('h2h_avg_goals',)
+                if all(adjusted.get(key) is not None for key in required):
+                    explanation, factors, missing = _explain(fixture['sport'], market, adjusted, settlement, [])
+                else:
+                    explanation = 'The detailed model explanation was unavailable for this stored feature snapshot.'
+                    factors, missing = [], [key for key in required if adjusted.get(key) is None]
+                connection.execute(
+                    """INSERT INTO sports_ai_prediction_explanations(id,prediction_id,summary,factors_json,missing_json)
+                       VALUES(?,?,?,?,?)""",
+                    (str(uuid.uuid4()), prediction_id, explanation, json.dumps(factors), json.dumps(missing)),
                 )
                 summary['predictions'] += 1
             latest = connection.execute(

@@ -508,15 +508,6 @@ def _ticket_tick():
             healed = prize_ladder.heal(connection, 'sports-ai-worker', now=current)
             if healed:
                 print('jackpot ladder repaired', healed)
-            # Objective 3: the eight category cards, from SportyBet prices (legs 1.60-2.95), up to 5 a card a day.
-            import category_market
-            try:
-                cards = category_market.build(connection, 'sports-ai-worker', now=current)
-                print('category cards', cards.get('status'), 'created', cards.get('created'), 'skipped', cards.get('skipped'))
-                _observed('category_cards', cards)
-            except Exception as error:  # a card failure never stops the ladder or the other stages
-                _observed('category_cards', {'status': 'failed'}, failed=True, error=error)
-                _report('category cards failed', error)
             _observed('jackpot_ladder', jackpots)
         print(
             'tickets', result.get('status'),
@@ -801,7 +792,7 @@ def _remember_higher_odds_run(now, status):
 
 
 def _book_sure_odds():
-    """Build today's 2.00–2.95 tickets and request each displayed code. No wager is placed."""
+    """Build today's 2.50–2.95 tickets and request each displayed code. No wager is placed."""
     import asyncio
     from high_odds_board import prepare_sure_odds_booking
     from sportybet_booking import execute_job
