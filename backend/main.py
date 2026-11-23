@@ -421,11 +421,6 @@ def dashboard(user=Depends(auth)):
     result = cached_view('dashboard', lambda: _build_dashboard(user), ttl=30)
     return {**result, 'database': describe_database()} if isinstance(result, dict) else result
 
-def _odds_rowid_since(connection, since_iso):
-    from odds_window import first_rowid_since
-    return first_rowid_since(connection, since_iso)
-
-
 def _build_dashboard(user):
     with connect() as c:
         counts={}
@@ -477,12 +472,17 @@ def _build_dashboard(user):
         counts['failed_jobs']=c.execute("SELECT COUNT(*) FROM sports_ai_jobs WHERE status IN ('failed','dead_letter')").fetchone()[0]
         counts['providers']=[dict(item) for item in c.execute("SELECT provider_key,display_name,enabled,status,last_success_at FROM sports_ai_provider_registry ORDER BY provider_key")]
         counts['schedules']=[dict(item) for item in c.execute("SELECT name,enabled,job_kind,last_run_at,next_run_at FROM sports_ai_schedules ORDER BY COALESCE(next_run_at,'9999')")]
+        today_start=datetime.now(timezone.utc).replace(hour=0,minute=0,second=0,microsecond=0)
         counts['activity_today']={
             'fixtures':c.execute("SELECT COUNT(*) FROM sports_ai_fixtures WHERE date(observed_at)=date('now')").fetchone()[0],
             'predictions':counts['predictions_today'],
-            # rowid window from yesterday's start keeps this from reading the whole price history.
-            'odds':c.execute("SELECT COUNT(*) FROM sports_ai_odds_snapshots NOT INDEXED WHERE rowid>=? AND date(observed_at)=date('now')",
-                             (_odds_rowid_since(c, (datetime.now(timezone.utc)-timedelta(days=1)).replace(hour=0,minute=0,second=0,microsecond=0).isoformat()),)).fetchone()[0],
+            # (bookmaker, observed_at) answers this in one index range. A rowid probe of the
+            # whole price table held the disk while every writer waited.
+            'odds':c.execute(
+                """SELECT COUNT(*) FROM sports_ai_odds_snapshots
+                   WHERE bookmaker='SportyBet' AND observed_at>=? AND observed_at<?""",
+                (today_start.isoformat(), (today_start+timedelta(days=1)).isoformat()),
+            ).fetchone()[0],
             'opportunities':c.execute("SELECT COUNT(*) FROM sports_ai_value_opportunities WHERE date(evaluated_at)=date('now')").fetchone()[0],
             'tickets':c.execute("SELECT COUNT(*) FROM sports_ai_accumulator_tickets WHERE date(created_at)=date('now')").fetchone()[0],
             'results':c.execute("SELECT COUNT(*) FROM sports_ai_results WHERE date(settled_at)=date('now')").fetchone()[0],
@@ -594,10 +594,9 @@ def _build_dashboard(user):
             value_cycle={}
         discovery=c.execute("SELECT enabled FROM sports_ai_schedules WHERE id='schedule-discovery'").fetchone()
         fresh_odds=c.execute(
-            # NOT INDEXED: seek the rowid range; with an index the planner walked every row (43 s).
-            """SELECT COUNT(DISTINCT fixture_id) FROM sports_ai_odds_snapshots NOT INDEXED
-               WHERE rowid>=? AND bookmaker='SportyBet' AND observed_at>=?""",
-            (_odds_rowid_since(c, fresh_quote), fresh_quote),
+            """SELECT COUNT(DISTINCT fixture_id) FROM sports_ai_odds_snapshots
+               WHERE bookmaker='SportyBet' AND observed_at>=?""",
+            (fresh_quote,),
         ).fetchone()[0]
         blockers=[]
         for decision in governance.get('decisions') or []:

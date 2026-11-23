@@ -21,6 +21,12 @@ function clock(value) {
   return new Intl.DateTimeFormat('en-GB', {timeZone: 'Africa/Lagos', hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short'}).format(parsed);
 }
 
+function nextCycle(value) {
+  const parsed = value ? new Date(value) : null;
+  if (!parsed || Number.isNaN(parsed.getTime()) || parsed.getTime() <= Date.now()) return 'Due now';
+  return clock(value);
+}
+
 function count(value) {
   return value == null ? '—' : Number(value).toLocaleString();
 }
@@ -307,7 +313,7 @@ export default function AutonomousEngine({nav}) {
     </section>}
 
     <footer className="ae-footer">
-      <span><Clock3 size={18}/> Next cycle <b>{clock(data?.next_cycle)}</b></span>
+      <span><Clock3 size={18}/> Next cycle <b>{nextCycle(data?.next_cycle)}</b></span>
       <span><RefreshCw size={18}/> Refresh <b>Every 10 seconds</b></span>
       <span><Database size={18}/> Sources <b>Stored providers and SportyBet prices</b></span>
       <span><Cpu size={18}/> Models <b>Football and basketball registry</b></span>

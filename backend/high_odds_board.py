@@ -549,7 +549,9 @@ def _chunked(connection, sql, ids, extra=()):
 
 
 def _rows(connection, start, end, now=None):
-    moment = (now or datetime.now(timezone.utc)).isoformat()
+    current = now or datetime.now(timezone.utc)
+    moment = current.isoformat()
+    fresh_after = (current - timedelta(minutes=15)).isoformat()
     fixtures = {
         row['id']: row
         for row in connection.execute(
@@ -597,24 +599,36 @@ def _rows(connection, start, end, now=None):
     opportunities = _chunked(
         connection,
         """SELECT o.id, o.prediction_id, o.odds_id, o.evaluated_at
-           FROM sports_ai_value_opportunities o
+           FROM sports_ai_engine_predictions p
+           JOIN sports_ai_value_opportunities o ON o.prediction_id=p.id
            JOIN sports_ai_qualification_decisions d
-             ON d.prediction_id=o.prediction_id AND d.opportunity_id=o.id
-           JOIN sports_ai_engine_predictions p ON p.id=o.prediction_id
+             ON d.prediction_id=p.id AND d.market=p.market
            JOIN sports_ai_model_registry m ON m.id=p.model_id
-           WHERE julianday(d.expires_at)>julianday(?)
+           WHERE (
+               julianday(d.expires_at)>julianday(?)
+               OR d.reason_code IN ('MARKET_UNAVAILABLE','ODDS_STALE')
+             )
+             AND EXISTS (
+               SELECT 1 FROM sports_ai_odds_snapshots fresh
+               WHERE fresh.id=o.odds_id AND fresh.observed_at>=?
+             )
              AND o.odds_id IS NOT NULL AND o.prediction_id IN ({marks})
-             -- Sure Odds are about likelihood, not value (owner's structure, 12 Nov 2026): a validated
-             -- model's selection held back only on price or edge still qualifies when its market-anchored
-             -- chance is SELECTION_FLOOR or more (checked below). Missing/stale prices or data never do.
-             AND (d.state='QUALIFIED' OR d.reason_code IN ('EDGE_BELOW_MARKET','CONSERVATIVE_EV_NOT_POSITIVE','MARKET_DISAGREEMENT'))
+             -- Sure Odds are about likelihood, not value. A fresh SportyBet price replaces a missing
+             -- or stale price. Edge and disagreement holds stay eligible when the anchored chance
+             -- is still SELECTION_FLOOR or more. An uncalibrated market does not.
+             AND (
+               (d.state='QUALIFIED' AND EXISTS (SELECT 1 FROM json_each(d.products_json) WHERE value='booking'))
+               OR d.reason_code IN (
+                 'EDGE_BELOW_MARKET','CONSERVATIVE_EV_NOT_POSITIVE','MARKET_DISAGREEMENT',
+                 'MARKET_UNAVAILABLE','ODDS_STALE'
+               )
+             )
              AND m.active=1 AND m.lifecycle='active' AND m.calibration_status='validated'
              AND (m.sport!='basketball' OR EXISTS(SELECT 1 FROM sports_ai_feature_snapshots fs
                   WHERE fs.id=p.feature_id AND json_extract(fs.features_json,'$.home_games')>=10
-                    AND json_extract(fs.features_json,'$.away_games')>=10))
-             AND EXISTS (SELECT 1 FROM json_each(d.products_json) WHERE value='booking')""",
+                    AND json_extract(fs.features_json,'$.away_games')>=10))""",
         [row['id'] for row in latest_prediction.values()],
-        (moment,),
+        (moment, fresh_after),
     )
     linked = {}
     for row in opportunities:

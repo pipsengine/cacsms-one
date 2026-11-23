@@ -927,6 +927,8 @@ def _persist(connection, provider, batch):
                  record['observed_at'],now),
             )
         saved += 1
+        if seen % 40 == 0:
+            connection.commit()
     for row in batch.get('standings', []):
         connection.execute(
             """INSERT OR IGNORE INTO sports_ai_standings_snapshots

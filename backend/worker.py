@@ -148,18 +148,65 @@ def tick():
         _touch_heartbeat()
 
 
+def _sparse_prediction_tick():
+    """Predict a few still-uncovered fixtures for every sport whose own model passes."""
+    try:
+        from prediction_engine import run_analysis, sparse_uncovered_fixtures
+        with connect() as connection:
+            fixtures = sparse_uncovered_fixtures(connection)
+        grouped = {}
+        for fixture in fixtures:
+            grouped.setdefault(fixture['sport'], []).append(fixture)
+        for sport, rows in grouped.items():
+            with connect() as connection:
+                result = run_analysis(connection, 'sports-ai-worker', _audit, selected_fixtures=rows)
+            print(
+                'sparse predictions', sport,
+                'fixtures', result.get('fixtures'),
+                'predictions', result.get('predictions'),
+                'skipped', result.get('skipped'),
+            )
+    except Exception as error:
+        if 'database is locked' not in str(error):
+            _report('sparse predictions failed', error)
+
+
 def _qualify_priced_board():
     """Qualify selections that already have a fresh SportyBet price, then store the tickets."""
     try:
-        from market_registry import link_stored_quotes
+        from market_registry import link_stored_quotes, promote_ice_hockey_winner
         from qualification_engine import revalidate
         with connect() as connection:
-            linked = link_stored_quotes(connection, limit=600)
-            result = revalidate(connection, 'sports-ai-worker', limit=600, release_lock=True)
+            promoted = promote_ice_hockey_winner(connection)
+            linked = link_stored_quotes(connection, limit=2000)
+            moment = datetime.now(timezone.utc)
+            fresh = (moment - timedelta(minutes=15)).isoformat()
+            priced_fixtures = [
+                row[0] for row in connection.execute(
+                    """SELECT fixture_id FROM (
+                         SELECT q.fixture_id,
+                                ROW_NUMBER() OVER (PARTITION BY f.sport ORDER BY MIN(f.starts_at)) AS n
+                         FROM sports_ai_odds_snapshots q
+                         JOIN sports_ai_fixtures f ON f.id=q.fixture_id
+                         WHERE q.bookmaker='SportyBet' AND q.observed_at>=?
+                           AND f.sport IN ('football','basketball','ice_hockey','tennis','volleyball','frauenfussball')
+                           AND f.status='scheduled' AND f.starts_at>?
+                         GROUP BY q.fixture_id, f.sport
+                       ) ranked
+                       WHERE n<=20""",
+                    (fresh, moment.isoformat()),
+                )
+            ]
+            result = revalidate(
+                connection, 'sports-ai-worker', limit=600,
+                fixture_ids=priced_fixtures, release_lock=True,
+            )
         print(
             'priced qualification', result.get('counts', {}).get('QUALIFIED', 0),
             'linked', linked.get('qualified'),
             'checked', linked.get('checked'),
+            'ice hockey promoted', promoted,
+            'fixtures', len(priced_fixtures),
         )
         _high_odds_booking_tick()
         _ticket_tick()
@@ -178,7 +225,31 @@ def _release_stopped_jobs():
         _report('job recovery failed', error)
 
 
+def _schedule_tick():
+    """Run due schedules. The schedule lane calls this every minute.
+
+    A job left running by a stopped worker is recovered first, so it cannot pin next_run_at.
+    A lock held by a long stage waits; the next minute tries again.
+    """
+    try:
+        from operations_engine import recover_stuck_jobs, run_due_schedules
+        with connect(busy_timeout_ms=60000) as connection:
+            recovered = recover_stuck_jobs(connection)
+            ran = run_due_schedules(connection, _audit)
+        if recovered:
+            print('recovered stopped jobs', recovered)
+        if ran:
+            print('schedules', len(ran), 'places_wager False')
+    except Exception as error:
+        if 'database is locked' in str(error):
+            return
+        _report('schedule tick failed', error)
+
+
 def _run_cycle():
+    if not (_SCHEDULE_LANE and _SCHEDULE_LANE.is_alive()):
+        _schedule_tick()
+    _sparse_prediction_tick()
     from ticket_diversity import reconcile
     with connect() as connection:
         reconcile(connection)
@@ -202,6 +273,7 @@ def _run_cycle():
     result=orchestrate_once(
         _audit, collect=_collect_due_providers, predict=_process_prediction_queue,
         monitor=_monitor_accumulators,
+        schedules=not (_SCHEDULE_LANE and _SCHEDULE_LANE.is_alive()),
     )
     print('orchestrator', result.get('status'), result.get('reason', ''))
     _touch_heartbeat()
@@ -643,6 +715,26 @@ def _operator_booking():
 
 
 _BOOKING_LANE = None
+_SCHEDULE_LANE = None
+
+
+def _schedule_lane(stop):
+    """Move the schedule clock every minute, including while history and coverage are still running."""
+    while not stop.is_set():
+        _schedule_tick()
+        if stop.wait(60):
+            return
+
+
+def start_schedule_lane():
+    global _SCHEDULE_LANE
+    if _SCHEDULE_LANE and _SCHEDULE_LANE.is_alive():
+        return _SCHEDULE_LANE
+    _SCHEDULE_LANE = threading.Thread(
+        target=_schedule_lane, args=(threading.Event(),), name='schedule-lane', daemon=True,
+    )
+    _SCHEDULE_LANE.start()
+    return _SCHEDULE_LANE
 
 
 def _booking_lane(stop):
@@ -708,6 +800,7 @@ def _price_tick():
     result = collect_displayed_odds()
     if result.get('imported'):
         _odds_refresh_tick()
+        _qualify_priced_board()
     _observed('price_feed', result)
     return result
 
@@ -999,6 +1092,7 @@ if __name__=='__main__':
         start_booking_lane()
         start_account_lane()
         start_price_lane()
+        start_schedule_lane()
     if args.once:
         tick()
     else:

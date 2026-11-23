@@ -188,6 +188,29 @@ def holdout_passes(evidence):
     return sample >= MIN_SAMPLE and math.isfinite(error) and error <= MAX_CALIBRATION_ERROR
 
 
+def promote_ice_hockey_winner(connection):
+    """Switch the ice-hockey moneylines on once 30 fixtures have an overtime-winner price.
+
+    Regulation 1X2 includes a draw, so those prices do not count. Status stays
+    validated until the winner market itself reaches the existing quote floor.
+    """
+    quoted = connection.execute(
+        """SELECT COUNT(DISTINCT q.fixture_id) FROM sports_ai_odds_snapshots q
+           JOIN sports_ai_fixtures f ON f.id=q.fixture_id
+           WHERE f.sport='ice_hockey' AND q.bookmaker='SportyBet'
+             AND lower(q.market) LIKE '%winner%' AND lower(q.market) LIKE '%overtime%'
+             AND lower(q.outcome) IN ('home','away')""",
+    ).fetchone()[0]
+    if int(quoted or 0) < MIN_QUOTE_FIXTURES:
+        return 0
+    cursor = connection.execute(
+        """UPDATE sports_ai_market_registry SET status='active'
+           WHERE sport='ice_hockey' AND market_key IN ('MONEYLINE_HOME','MONEYLINE_AWAY')
+             AND status='validated'""",
+    )
+    return cursor.rowcount
+
+
 def holdout_ready(connection, sport, market):
     """True when this exact market key has its own passing holdout. A missing line does not."""
     row = connection.execute(
@@ -413,7 +436,7 @@ def store_recommendations(connection, now=None):
     return {'fixtures': len(best), 'places_wager': False}
 
 
-def link_stored_quotes(connection, now=None, limit=400):
+def link_stored_quotes(connection, now=None, limit=2000):
     """Attach fresh stored SportyBet prices to active markets. Does not create a price."""
     from sportybet_research import _assess_value
     current = now or utc_now()
@@ -439,6 +462,10 @@ def link_stored_quotes(connection, now=None, limit=400):
              JOIN sports_ai_fixtures f ON f.id=q.fixture_id
              WHERE q.bookmaker='SportyBet' AND q.observed_at>=?
                  AND f.status='scheduled' AND f.starts_at>?
+                 AND EXISTS (
+                   SELECT 1 FROM sports_ai_engine_predictions p
+                   WHERE p.fixture_id=q.fixture_id
+                 )
            ) AS priced
            WHERE rn=1
            ORDER BY starts_at
@@ -447,7 +474,9 @@ def link_stored_quotes(connection, now=None, limit=400):
     ).fetchall()
     linked = 0
     seen = set()
+    processed = 0
     for quote in quotes:
+        processed += 1
         canonical = _canonical(quote['sport'], quote['market'], quote['outcome'], quote['line'])
         if not canonical and (quote['sport'], str(quote['market']).upper()) in keys:
             canonical = str(quote['market']).upper()
@@ -461,6 +490,8 @@ def link_stored_quotes(connection, now=None, limit=400):
         )
         if status == 'qualified':
             linked += 1
+        if processed % 40 == 0:
+            connection.commit()
     return {'checked': len(seen), 'qualified': linked, 'places_wager': False}
 
 

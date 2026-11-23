@@ -103,6 +103,10 @@ def map_market(sport, market_label, selection_label, line=None, home=None, away=
     combined = f'{market} {selection}'.casefold()
     if any(marker in combined for marker in PERIOD_MARKERS):
         return {'supported': False, 'reason': 'A different period or statistic is not the full-match market.'}
+    if any(marker in combined for marker in ('2up', '2-up', 'two up', 'early payout')):
+        return {'supported': False, 'reason': 'An early-payout promotion is not the full-time result.'}
+    if '&' in market:
+        return {'supported': False, 'reason': 'A combined market is not a single full-time selection.'}
     from sport_support import WINNER_SPORTS
     if sport in WINNER_SPORTS:
         allowed = {'match winner', 'winner', 'moneyline', 'h2h', '2 way', '2-way', 'match_winner'}
@@ -324,6 +328,61 @@ def blocked_page(text):
         'unusual traffic', 'access denied', 'just a moment',
     )
     return next((marker for marker in markers if marker in folded), None)
+
+
+def _midnight(moment):
+    """A 00:00 timestamp is a match day from a source that did not publish a clock time."""
+    return moment.hour == 0 and moment.minute == 0 and moment.second == 0
+
+
+def _kickoff_gap_allowed(stored, shown):
+    """The same match. A real clock must agree within six hours; a midnight day may be the evening before or after."""
+    gap = abs((stored - shown).total_seconds())
+    if gap <= 6 * 3600:
+        return True
+    return _midnight(stored) and gap <= 26 * 3600
+
+
+def _apply_displayed_kickoff(connection, fixture_id, displayed):
+    """Store the kickoff SportyBet displayed when this fixture only had a day, or a football clock on that same day."""
+    row = connection.execute(
+        'SELECT starts_at, sport FROM sports_ai_fixtures WHERE id=?', (fixture_id,),
+    ).fetchone()
+    if not row or not displayed:
+        return False
+    try:
+        stored = parse_time(row['starts_at'])
+        shown = parse_time(displayed)
+    except (TypeError, ValueError):
+        return False
+    if abs((stored - shown).total_seconds()) <= 15 * 60:
+        return False
+    if not _kickoff_gap_allowed(stored, shown):
+        return False
+    # Tennis and esports publish several sessions for the same names. Only a missing
+    # clock, or a football match on the same day, takes the displayed kickoff.
+    if not _midnight(stored) and row['sport'] != 'football':
+        return False
+    if not _midnight(stored) and stored.date() != shown.date():
+        return False
+    shown_text = shown.isoformat()
+    connection.execute('UPDATE sports_ai_fixtures SET starts_at=? WHERE id=?', (shown_text, fixture_id))
+    connection.execute(
+        """UPDATE sports_ai_fixture_source_map SET time_precision='instant'
+           WHERE fixture_id=? AND time_precision='date'""",
+        (fixture_id,),
+    )
+    connection.execute(
+        """UPDATE sports_ai_accumulator_legs SET starts_at=?
+           WHERE fixture_id=? AND starts_at>?""",
+        (shown_text, fixture_id, datetime.now(timezone.utc).isoformat()),
+    )
+    connection.execute(
+        """UPDATE sports_ai_qualification_decisions SET starts_at=?
+           WHERE fixture_id=? AND state IN ('QUALIFIED','AWAITING_DATA','MONITORING')""",
+        (shown_text, fixture_id),
+    )
+    return True
 
 
 def _same_team(left, right):
@@ -750,8 +809,14 @@ def _ensure_displayed_fixture(connection, row, now):
 def accept_displayed_quotes(connection, observation_ids, actor, now=None):
     """Import structured SportyBet prices when one stored fixture is clearly the same match."""
     now = now or datetime.now(timezone.utc)
+    # Historical fixtures are not candidates: a displayed price only matches a kickoff
+    # within six hours. Loading all 138k rows on every page aborted the football walk.
+    window_start = (now - timedelta(days=1)).isoformat()
+    window_end = (now + timedelta(days=21)).isoformat()
     fixtures = [dict(row) for row in connection.execute(
-        'SELECT id,sport,competition,home,away,starts_at,status FROM sports_ai_fixtures',
+        """SELECT id,sport,competition,home,away,starts_at,status FROM sports_ai_fixtures
+           WHERE starts_at>=? AND starts_at<=?""",
+        (window_start, window_end),
     )]
     by_token = {}
     for fixture in fixtures:
@@ -790,11 +855,12 @@ def accept_displayed_quotes(connection, observation_ids, actor, now=None):
             observed = parse_time(row['starts_at']) if row.get('starts_at') else None
         except (TypeError, ValueError):
             kickoff = observed = None
-        if not kickoff or not observed or abs((kickoff - observed).total_seconds()) > 6 * 3600:
+        if not kickoff or not observed or not _kickoff_gap_allowed(kickoff, observed):
             skipped += 1
             if index % 15 == 0:
                 connection.commit()
             continue
+        _apply_displayed_kickoff(connection, best['fixture_id'], row['starts_at'])
         try:
             connection.execute(
                 """UPDATE sports_ai_sportybet_observations
@@ -811,6 +877,9 @@ def accept_displayed_quotes(connection, observation_ids, actor, now=None):
                 import_observation(connection, observation_id, actor, now)
             imported += 1
         except (ValueError, LookupError, sqlite3.IntegrityError):
+            skipped += 1
+        except sqlite3.OperationalError:
+            connection.rollback()
             skipped += 1
         if index % 15 == 0:
             connection.commit()
@@ -879,12 +948,11 @@ def unattended_status(connection, now=None):
             except (TypeError, ValueError):
                 authorized = False
     recent_cutoff = (now - timedelta(hours=6)).isoformat()
-    from odds_window import first_rowid_since
-    recent = connection.execute(
-        """SELECT COUNT(*) FROM sports_ai_odds_snapshots NOT INDEXED
-           WHERE rowid>=? AND bookmaker=? AND observed_at>=?""",  # rowid window: no full-table scan
-        (first_rowid_since(connection, recent_cutoff), BOOKMAKER, recent_cutoff),
+    latest = connection.execute(
+        'SELECT MAX(observed_at) FROM sports_ai_odds_snapshots WHERE bookmaker=?',
+        (BOOKMAKER,),
     ).fetchone()[0]
+    recent = bool(latest and str(latest) >= recent_cutoff)
     operational = bool(authorized and recent)
     if operational:
         reason = 'Automatic collection is storing the prices SportyBet displays. No wager is placed.'

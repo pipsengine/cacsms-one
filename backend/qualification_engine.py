@@ -9,6 +9,52 @@ from datetime import datetime, timedelta, timezone
 from sport_support import GOAL_SPORTS, WINNER_SPORTS
 
 STATES = ('QUALIFIED', 'MONITORING', 'REJECTED', 'AWAITING_DATA', 'EXPIRED', 'SUSPENDED')
+
+# The latest SportyBet line for this prediction. Opportunity rows only exist for the
+# first few hundred quotes the linker saw, so a stored price has to be readable on its own.
+_SNAPSHOT_PRICE_JOIN = """LEFT JOIN sports_ai_odds_snapshots q ON q.id=COALESCE(
+             (SELECT q2.id FROM sports_ai_odds_snapshots q2
+              WHERE q2.fixture_id=f.id AND q2.bookmaker='SportyBet' AND q2.decimal_odds>1
+                AND lower(q2.market) NOT LIKE '%2up%'
+                AND q2.market NOT LIKE '%&%'
+                AND (
+                  (lower(q2.market)='spreads' AND upper(q2.outcome)=p.market)
+                  OR (lower(q2.market) IN ('h2h','1x2','full_match_winner','moneyline') AND (
+                       (p.market IN ('HOME','MONEYLINE_HOME') AND lower(q2.outcome)='home')
+                       OR (p.market='DRAW' AND lower(q2.outcome)='draw')
+                       OR (p.market IN ('AWAY','MONEYLINE_AWAY') AND lower(q2.outcome)='away')
+                  ))
+                  OR (lower(q2.market)='btts' AND (
+                       (p.market='BTTS_YES' AND lower(q2.outcome)='yes')
+                       OR (p.market='BTTS_NO' AND lower(q2.outcome)='no')
+                  ))
+                  OR (lower(q2.market)='odd_even' AND (
+                       (p.market='ODD_GOALS' AND lower(q2.outcome)='odd')
+                       OR (p.market='EVEN_GOALS' AND lower(q2.outcome)='even')
+                  ))
+                  OR (lower(q2.market)='double_chance' AND (
+                       (p.market='DOUBLE_CHANCE_1X' AND lower(q2.outcome) IN ('homeordraw','1x'))
+                       OR (p.market='DOUBLE_CHANCE_12' AND lower(q2.outcome) IN ('homeoraway','12'))
+                       OR (p.market='DOUBLE_CHANCE_X2' AND lower(q2.outcome) IN ('draworaway','x2'))
+                  ))
+                  OR (lower(q2.market) IN ('draw_no_bet','dnb') AND (
+                       (p.market='DNB_HOME' AND lower(q2.outcome)='home')
+                       OR (p.market='DNB_AWAY' AND lower(q2.outcome)='away')
+                  ))
+                  OR (lower(q2.market)='totals' AND (
+                       (p.market LIKE 'OVER_%' AND upper(q2.outcome)='OVER' AND q2.line IS NOT NULL
+                         AND abs(q2.line - CAST(substr(p.market, 6) AS REAL)) < 0.001)
+                       OR (p.market LIKE 'UNDER_%' AND upper(q2.outcome)='UNDER' AND q2.line IS NOT NULL
+                         AND abs(q2.line - CAST(substr(p.market, 7) AS REAL)) < 0.001)
+                  ))
+                  OR (lower(q2.market)='european_handicap' AND q2.line IS NOT NULL AND (
+                       (p.market LIKE 'EUROPEAN_HOME_%' AND upper(q2.outcome)='HOME')
+                       OR (p.market LIKE 'EUROPEAN_DRAW_%' AND upper(q2.outcome)='DRAW')
+                       OR (p.market LIKE 'EUROPEAN_AWAY_%' AND upper(q2.outcome)='AWAY')
+                  ) AND abs(q2.line - CAST(substr(p.market, 15) AS REAL)) < 0.001)
+                )
+              ORDER BY q2.observed_at DESC LIMIT 1),
+             o.odds_id)"""
 CALIBRATED = {
     'football': {'HOME', 'DRAW', 'AWAY'},
     'frauenfussball': {'HOME', 'DRAW', 'AWAY'},
@@ -443,7 +489,7 @@ def qualified_decision_rows(connection, now):
              WHERE o2.prediction_id=p.id AND q2.bookmaker='SportyBet' AND q2.decimal_odds>1
              ORDER BY q2.observed_at DESC LIMIT 1
            )
-           LEFT JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
+           """ + _SNAPSHOT_PRICE_JOIN + """
            WHERE d.state='QUALIFIED' AND f.starts_at>?""",
         (moment,),
     ).fetchall()
@@ -452,6 +498,7 @@ def qualified_decision_rows(connection, now):
 def candidate_rows(connection, now, limit=100):
     """Each modelled sport gets its own share, so football kickoffs do not crowd the others out."""
     moment = now.isoformat()
+    fresh = (now - timedelta(minutes=15)).isoformat()
     per_sport = max(1, min(int(limit), 250))
     return connection.execute(
         """SELECT * FROM (
@@ -476,7 +523,8 @@ def candidate_rows(connection, now, limit=100):
                   ) AS market_registry_active,
                   ROW_NUMBER() OVER (
                     PARTITION BY f.sport
-                    ORDER BY CASE WHEN EXISTS (
+                    ORDER BY CASE WHEN q.decimal_odds>1 AND q.observed_at>=? THEN 0 ELSE 1 END,
+                    CASE WHEN EXISTS (
                       SELECT 1 FROM sports_ai_qualification_decisions d
                       WHERE d.prediction_id=p.id AND d.market=p.market AND d.state='QUALIFIED'
                     ) THEN 0 ELSE 1 END,
@@ -500,7 +548,7 @@ def candidate_rows(connection, now, limit=100):
              WHERE o2.prediction_id=p.id AND q2.bookmaker='SportyBet' AND q2.decimal_odds>1
              ORDER BY q2.observed_at DESC LIMIT 1
            )
-           LEFT JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
+           """ + _SNAPSHOT_PRICE_JOIN + """
            WHERE f.status='scheduled' AND f.starts_at>?
              AND EXISTS (
                SELECT 1 FROM sports_ai_sports s
@@ -524,7 +572,7 @@ def candidate_rows(connection, now, limit=100):
            ) ranked
            WHERE ranked.sport_rank<=?
            ORDER BY ranked.sport_rank, ranked.starts_at""",
-        (moment, per_sport),
+        (fresh, moment, per_sport),
     ).fetchall()
 
 
@@ -671,7 +719,7 @@ def rows_for_fixtures(connection, now, fixture_ids):
               WHERE o2.prediction_id=p.id AND q2.bookmaker='SportyBet' AND q2.decimal_odds>1
               ORDER BY q2.observed_at DESC LIMIT 1
             )
-            LEFT JOIN sports_ai_odds_snapshots q ON q.id=o.odds_id
+            """ + _SNAPSHOT_PRICE_JOIN + f"""
             WHERE f.id IN ({marks}) AND f.starts_at>?
               AND p.created_at=(
                 SELECT MAX(p2.created_at) FROM sports_ai_engine_predictions p2

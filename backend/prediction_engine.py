@@ -2020,9 +2020,48 @@ def record_result_gaps(connection, now=None):
     return payload
 
 
-def run_analysis(connection, actor, audit, deadline=None, fixture_id=None, coverage=False, limit=8):
+def sparse_uncovered_fixtures(connection, per_sport=6):
+    """Upcoming fixtures whose active model has not predicted them yet.
+
+    Each sport whose own holdout still passes gets its own short batch. A sport
+    under the sample or calibration ceiling is left out.
+    """
+    from market_registry import MAX_CALIBRATION_ERROR, MIN_SAMPLE
+    chosen = []
+    models = connection.execute(
+        """SELECT sport, metrics_json FROM sports_ai_model_registry
+           WHERE active=1 AND status='active'""",
+    ).fetchall()
+    for model in models:
+        try:
+            metrics = json.loads(model['metrics_json'] or '{}')
+            sample = int(metrics.get('holdout_fixtures') or 0)
+            error = float(metrics.get('calibration_error'))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if sample < MIN_SAMPLE or error > MAX_CALIBRATION_ERROR:
+            continue
+        rows = connection.execute(
+            f"""SELECT * FROM sports_ai_fixtures f
+                WHERE f.sport=? AND {upcoming_fixture_sql('f')}
+                  AND NOT EXISTS (
+                    SELECT 1 FROM sports_ai_engine_predictions p
+                    JOIN sports_ai_model_registry m ON m.id=p.model_id AND m.active=1
+                    WHERE p.fixture_id=f.id)
+                  AND {_not_recently_skipped_sql('f')}
+                ORDER BY {upcoming_order_sql('f')}
+                LIMIT ?""",
+            (model['sport'], per_sport),
+        ).fetchall()
+        chosen.extend(dict(row) for row in rows)
+    return chosen
+
+
+def run_analysis(connection, actor, audit, deadline=None, fixture_id=None, coverage=False, limit=8, selected_fixtures=None):
     now = datetime.now(timezone.utc)
-    if fixture_id:
+    if selected_fixtures is not None:
+        fixtures = [dict(row) for row in selected_fixtures]
+    elif fixture_id:
         selected = connection.execute(
             'SELECT * FROM sports_ai_fixtures WHERE id=?', (fixture_id,),
         ).fetchone()

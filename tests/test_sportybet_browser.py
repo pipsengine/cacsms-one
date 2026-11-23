@@ -118,6 +118,8 @@ class SportyBetResearchTests(unittest.TestCase):
 
     def test_market_mapping_keeps_lines_and_periods_distinct(self):
         self.assertEqual(map_market('football', '1X2', 'Home')['canonical_market'], 'HOME')
+        self.assertFalse(map_market('football', '1X2 - 2UP', 'Home')['supported'])
+        self.assertFalse(map_market('football', 'Over/Under & GG/NG', 'Over 1.5', 1.5)['supported'])
         self.assertEqual(map_market('football', 'Double Chance', '1X')['canonical_market'], 'DOUBLE_CHANCE_1X')
         self.assertEqual(map_market('football', 'double chance', 'Home or Draw')['canonical_market'], 'DOUBLE_CHANCE_1X')
         self.assertEqual(map_market('football', 'double chance', 'Home or Away')['canonical_market'], 'DOUBLE_CHANCE_12')

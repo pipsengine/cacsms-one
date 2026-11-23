@@ -244,4 +244,8 @@ def link_results(connection, now=None, limit=1500, days=45):
         )
         counts['linked'] += 1
         counts['linked_by_kickoff'] += how == 'kickoff'
+        if counts['linked'] % 20 == 0:
+            # Each batch releases the single writer lock so the heartbeat, the schedule
+            # lane and a price insert can commit while the rest of the links continue.
+            connection.commit()
     return counts

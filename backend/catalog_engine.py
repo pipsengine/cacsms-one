@@ -795,11 +795,13 @@ def _link_league(connection, record):
 
 def sync_persisted_batch(connection, provider, batch):
     touched = set()
+    pending = 0
     for record in batch.get('fixtures') or []:
         observed = record.get('observed_at') or utc_now()
         _ensure_team(connection, record['sport'], record['home'], record.get('source_url', ''), provider['provider_key'], observed)
         _ensure_team(connection, record['sport'], record['away'], record.get('source_url', ''), provider['provider_key'], observed)
         league_id = _link_league(connection, {**record, 'provider_key': provider['provider_key']})
+        pending += 1
         canonical = '|'.join((
             record['sport'], normalize_name(record['home']), normalize_name(record['away']),
             str(record.get('starts_at') or '')[:10],
@@ -809,30 +811,37 @@ def sync_persisted_batch(connection, provider, batch):
                WHERE provider_id=? AND external_id=?""",
             (provider['id'], record['external_id']),
         ).fetchone()
-        if not mapped:
-            continue
-        connection.execute(
-            'UPDATE sports_ai_fixtures SET league_id=COALESCE(?, league_id), canonical_key=? WHERE id=?',
-            (league_id, canonical, mapped['fixture_id']),
-        )
-        others = connection.execute(
-            """SELECT COUNT(*) FROM sports_ai_fixture_source_map
-               WHERE fixture_id=? AND provider_id!=?""",
-            (mapped['fixture_id'], provider['id']),
-        ).fetchone()[0]
-        connection.execute(
-            """INSERT INTO sports_ai_fixture_reconciliations
-               (id,fixture_id,provider_key,external_id,status,detail,observed_at)
-               VALUES(?,?,?,?,?,?,?)
-               ON CONFLICT(fixture_id, provider_key, external_id) DO UPDATE SET
-               status=excluded.status, detail=excluded.detail, observed_at=excluded.observed_at""",
-            (str(uuid.uuid4()), mapped['fixture_id'], provider['provider_key'], record['external_id'],
-             'matched' if others else 'single_source',
-             'Another authorized source already identifies this fixture' if others else '',
-             observed),
-        )
-        if league_id:
-            touched.add(league_id)
+        if mapped:
+            connection.execute(
+                'UPDATE sports_ai_fixtures SET league_id=COALESCE(?, league_id), canonical_key=? WHERE id=?',
+                (league_id, canonical, mapped['fixture_id']),
+            )
+            others = connection.execute(
+                """SELECT COUNT(*) FROM sports_ai_fixture_source_map
+                   WHERE fixture_id=? AND provider_id!=?""",
+                (mapped['fixture_id'], provider['id']),
+            ).fetchone()[0]
+            connection.execute(
+                """INSERT INTO sports_ai_fixture_reconciliations
+                   (id,fixture_id,provider_key,external_id,status,detail,observed_at)
+                   VALUES(?,?,?,?,?,?,?)
+                   ON CONFLICT(fixture_id, provider_key, external_id) DO UPDATE SET
+                   status=excluded.status, detail=excluded.detail, observed_at=excluded.observed_at""",
+                (str(uuid.uuid4()), mapped['fixture_id'], provider['provider_key'], record['external_id'],
+                 'matched' if others else 'single_source',
+                 'Another authorized source already identifies this fixture' if others else '',
+                 observed),
+            )
+            if league_id:
+                touched.add(league_id)
+        # A full provider import is thousands of fixtures. One transaction holds the
+        # single writer lock for minutes, so the price feed and ticket builder time out.
+        if pending >= 40:
+            for league_id in touched:
+                refresh_league(connection, league_id)
+            touched.clear()
+            connection.commit()
+            pending = 0
     for league_id in touched:
         refresh_league(connection, league_id)
 

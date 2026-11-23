@@ -851,8 +851,11 @@ def command_centre(connection):
     }
 
 
-def orchestrate_once(audit, collect=None, predict=None, monitor=None, owner=None, now=None):
-    """One scheduler pass. A second live worker does not enter while the lease is valid."""
+def orchestrate_once(audit, collect=None, predict=None, monitor=None, owner=None, now=None, schedules=True):
+    """One scheduler pass. A second live worker does not enter while the lease is valid.
+
+    schedules=False when the schedule lane already runs due jobs on its own minute.
+    """
     current = _now(now)
     owner = owner or f"worker:{os.getpid()}"
     with connect() as connection:
@@ -860,7 +863,7 @@ def orchestrate_once(audit, collect=None, predict=None, monitor=None, owner=None
             return {'status': 'skipped', 'reason': 'another worker holds the scheduler lease'}
         recovered = recover_stuck_jobs(connection, current)
         workflows = sync_workflows(connection, current)
-        schedules = run_due_schedules(connection, audit, current)
+        ran_schedules = run_due_schedules(connection, audit, current) if schedules else []
         health = refresh_provider_health(connection, current)
         notes = dispatch_notifications(connection, current)
         evaluation = None
@@ -897,7 +900,7 @@ def orchestrate_once(audit, collect=None, predict=None, monitor=None, owner=None
         'owner': owner,
         'recovered_jobs': recovered,
         'workflows': workflows,
-        'schedules': schedules,
+        'schedules': ran_schedules,
         'providers': len(health),
         'notifications': notes,
         'model_evaluation': evaluation,

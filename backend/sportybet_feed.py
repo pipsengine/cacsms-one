@@ -145,20 +145,18 @@ def _competitions_from_rows(rows):
     return found
 
 
-def _analysed_tournament_ids(connection, limit=12):
+def _analysed_tournament_ids(connection, limit=40):
     """Tournament ids for football leagues that already have a stored feature snapshot."""
     try:
         rows = connection.execute(
-            """SELECT DISTINCT s.external_id
+            """SELECT s.external_id
                FROM sports_ai_league_sources s
                JOIN sports_ai_leagues l ON l.id=s.league_id
-               WHERE s.provider_key='sportybet'
-                 AND s.external_id LIKE 'sr:%'
-                 AND EXISTS (
-                   SELECT 1 FROM sports_ai_fixtures f
-                   JOIN sports_ai_feature_snapshots snap ON snap.fixture_id=f.id
-                   WHERE f.sport='football' AND f.competition=l.name
-                 )
+               JOIN sports_ai_fixtures f ON f.sport='football' AND f.competition=l.name AND f.status='scheduled'
+               JOIN sports_ai_feature_snapshots snap ON snap.fixture_id=f.id
+               WHERE s.provider_key='sportybet' AND s.external_id LIKE 'sr:%'
+               GROUP BY s.external_id
+               ORDER BY COUNT(DISTINCT f.id) DESC
                LIMIT ?""",
             (max(1, int(limit)),),
         ).fetchall()
@@ -335,8 +333,91 @@ def _collect_if_due():
         return {'status': 'waiting', 'reason': str(busy), 'imported': 0}
 
 
+# Tickets are built from these three. The other sports are collected afterwards so a
+# rugby or esports page cannot hold the browser until the football prices go stale.
+PRIORITY_SECTIONS = (
+    ('football', 'https://www.sportybet.com/ng/sport/football'),
+    ('basketball', 'https://www.sportybet.com/ng/sport/basketball'),
+    ('ice_hockey', 'https://www.sportybet.com/ng/sport/iceHockey'),
+)
+# These already have a passing model. Their pages are read after the three ticket
+# sports and before the rest of the menu, so a rugby page cannot push their prices
+# past the 15-minute qualification window.
+MODEL_PRICE_SECTIONS = (
+    ('tennis', 'https://www.sportybet.com/ng/sport/tennis'),
+    ('volleyball', 'https://www.sportybet.com/ng/sport/volleyball'),
+)
+_PRIORITY_CODES = {code for code, _url in PRIORITY_SECTIONS + MODEL_PRICE_SECTIONS}
+_REST_CURSOR = 'feed_rest_cursor'
+# Ticket sports are qualified on a 15-minute price. The other sports give the browser back
+# once those prices are this old, and the next pass continues where this one stopped.
+_PRIORITY_FRESH = timedelta(minutes=8)
+
+
+def _priority_quote_age(now=None):
+    current = now or datetime.now(timezone.utc)
+    with connect() as connection:
+        latest = connection.execute(
+            """SELECT MAX(q.observed_at) FROM sports_ai_odds_snapshots q
+               JOIN sports_ai_fixtures f ON f.id=q.fixture_id
+               WHERE q.bookmaker=? AND f.sport IN ('football','basketball','ice_hockey')""",
+            (BOOKMAKER,),
+        ).fetchone()[0]
+    if not latest:
+        return None
+    try:
+        observed = datetime.fromisoformat(str(latest).replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=timezone.utc)
+    return current - observed
+
+
+def _priority_prices_aging():
+    age = _priority_quote_age()
+    return age is None or age >= _PRIORITY_FRESH
+
+
+def _read_rest_cursor():
+    with connect() as connection:
+        row = connection.execute(
+            'SELECT value_json FROM sports_ai_settings WHERE key=?',
+            (_REST_CURSOR,),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        return json.loads(row['value_json'] or 'null') or None
+    except json.JSONDecodeError:
+        return None
+
+
+def _remember_rest_cursor(code):
+    with connect() as connection:
+        if not code:
+            connection.execute('DELETE FROM sports_ai_settings WHERE key=?', (_REST_CURSOR,))
+            return
+        connection.execute(
+            """INSERT INTO sports_ai_settings(key,value_json,updated_at) VALUES(?,?,?)
+               ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at""",
+            (_REST_CURSOR, json.dumps(code), datetime.now(timezone.utc).isoformat()),
+        )
+
+
+def _rotate_sections(sections, start_after):
+    sections = list(sections)
+    codes = [code for code, _url in sections]
+    if start_after not in codes:
+        return sections
+    index = codes.index(start_after) + 1
+    if index >= len(sections):
+        return sections
+    return sections[index:] + sections[:index]
+
+
 @holds_browser_slot('feed', wait=45)
-def _collect_displayed_odds():
+def _walk_sections(sections, discover=False, skip=(), pause_when=None, start_after=None):
     from playwright.sync_api import sync_playwright
     imported = 0
     blocked = []
@@ -345,28 +426,122 @@ def _collect_displayed_odds():
         browser = playwright.chromium.launch(headless=True)
         try:
             page = browser.new_page()
-            for sport, url in _discover_sections(page):
-                def publish_batch(rows):
+            if discover:
+                skip_codes = set(skip)
+                sections = [(code, url) for code, url in _discover_sections(page) if code not in skip_codes]
+            if start_after:
+                sections = _rotate_sections(sections, start_after)
+            paused = False
+            last_sport = None
+            for sport, url in sections or []:
+                if pause_when and pause_when():
+                    paused = True
+                    print('sportybet walk paused', sport, 'priority prices aging', 'places_wager', False)
+                    break
+                def publish_batch(rows, page_url=url):
                     nonlocal imported
                     if not rows:
                         return
-                    with connect() as connection:
-                        published = publish_quotes(connection, rows, url)
+                    with connect(busy_timeout_ms=120000) as connection:
+                        published = publish_quotes(connection, rows, page_url)
                     imported += published['imported']
                 try:
                     result = _read_section(page, sport, url, on_rows=publish_batch)
                 except Exception as error:
-                    errors.append({'sport': sport, 'error': str(error)[:300]})
+                    message = str(error)[:300]
+                    print('sportybet section failed', sport, message)
+                    errors.append({'sport': sport, 'error': message})
                     continue
                 if result.get('blocked'):
                     blocked.append(sport)
+                    last_sport = sport
                     continue
                 publish_batch(result['rows'])
+                last_sport = sport
         finally:
             browser.close()
+    return {'imported': imported, 'blocked': blocked, 'errors': errors, 'paused': paused, 'last_sport': last_sport}
+
+
+def _build_priced_tickets():
+    """Qualify and store tickets once the active sports have a displayed price."""
+    print('priority prices stored, building tickets', 'places_wager', False)
+    try:
+        import worker
+        worker._qualify_priced_board()
+    except Exception as error:
+        print('priority tickets failed', str(error)[:300])
+
+
+def _collect_displayed_odds():
+    priority = _walk_sections(PRIORITY_SECTIONS)
+    if priority.get('imported'):
+        _build_priced_tickets()
+    model_priced = {'imported': 0, 'blocked': [], 'errors': []}
+    try:
+        model_priced = _walk_sections(MODEL_PRICE_SECTIONS)
+    except Exception as error:
+        model_priced = {'imported': 0, 'blocked': [], 'errors': [{'sport': 'model', 'error': str(error)[:300]}]}
+    if model_priced.get('imported'):
+        _build_priced_tickets()
+    rest = {'imported': 0, 'blocked': [], 'errors': []}
+    if _priority_prices_aging():
+        print('other sports deferred', 'places_wager', False)
+    else:
+        try:
+            rest = _walk_sections(
+                (), discover=True, skip=_PRIORITY_CODES,
+                pause_when=_priority_prices_aging, start_after=_read_rest_cursor(),
+            )
+            if rest.get('paused') and rest.get('last_sport'):
+                _remember_rest_cursor(rest['last_sport'])
+            elif not rest.get('paused'):
+                _remember_rest_cursor(None)
+        except Exception as error:
+            rest = {'imported': 0, 'blocked': [], 'errors': [{'sport': 'rest', 'error': str(error)[:300]}]}
+    imported = int(priority.get('imported') or 0) + int(model_priced.get('imported') or 0) + int(rest.get('imported') or 0)
+    blocked = list(priority.get('blocked') or []) + list(model_priced.get('blocked') or []) + list(rest.get('blocked') or [])
+    errors = list(priority.get('errors') or []) + list(model_priced.get('errors') or []) + list(rest.get('errors') or [])
     status = 'blocked' if blocked and not imported else 'collected' if imported else 'empty'
     _record(status, imported, blocked, errors)
     return {'status': status, 'imported': imported, 'blocked': blocked, 'errors': errors}
+
+
+def _capture_named_market(page, label):
+    """Click one market tab and keep the events feed that click loads."""
+    found = {}
+
+    def remember(response):
+        if response.status == 200 and 'pcUpcomingEvents' in response.url and 'payload' not in found:
+            try:
+                found['payload'] = response.json()
+                found['url'] = response.url
+            except Exception:
+                return
+
+    page.on('response', remember)
+    try:
+        clicked = page.evaluate(
+            """(label) => {
+              const nodes = [...document.querySelectorAll('.market-item, button, a, span, div, li')];
+              const node = nodes.find(item => {
+                const text = (item.innerText || '').trim();
+                const box = item.getBoundingClientRect();
+                return text === label && box.width > 20 && box.height > 8;
+              });
+              if (!node) return '';
+              node.click();
+              return label;
+            }""",
+            label,
+        )
+        if not clicked:
+            print('sportybet market tab missing', label)
+            return None
+        page.wait_for_timeout(2500)
+        return found or None
+    finally:
+        page.remove_listener('response', remember)
 
 
 def _read_section(page, sport, url, on_rows=None):
@@ -405,25 +580,48 @@ def _read_section(page, sport, url, on_rows=None):
                 rows.extend(chunk)
         seen_ids = set()
         for body in _pages(page, captured.get('url'), payload):
-            accept(body)
+            try:
+                accept(body)
+            except Exception as error:
+                print('sportybet page failed', sport, str(error)[:300])
             for item in tournaments_from_events(body):
                 if item.get('id'):
                     seen_ids.add(item['id'])
         if sport == 'football':
-            menu = _football_menu(page, captured.get('url') or url)
-            with connect() as connection:
-                register_football_leagues(connection, menu, url)
+            menu = []
+            try:
+                menu = _football_menu(page, captured.get('url') or url)
+                with connect(busy_timeout_ms=120000) as connection:
+                    register_football_leagues(connection, menu, url)
+            except Exception as error:
+                print('football menu failed', str(error)[:300])
             for item in menu:
                 if not item.get('id') or item['id'] in seen_ids or int(item.get('events') or 0) <= 0:
                     continue
-                for body in _pages(page, _tournament_url(captured.get('url') or url, item['id']), None):
-                    accept(body)
+                try:
+                    for body in _pages(page, _tournament_url(captured.get('url') or url, item['id']), None):
+                        accept(body)
+                except Exception as error:
+                    print('football league failed', item.get('id'), str(error)[:200])
             sample = captured.get('url') or url
-            with connect() as connection:
+            with connect(busy_timeout_ms=120000) as connection:
                 extra_ids = _analysed_tournament_ids(connection)
             for tournament_id in extra_ids:
-                for body in _pages(page, _tournament_url(sample, tournament_id, ANALYSED_MARKET_IDS), None):
-                    accept(body)
+                try:
+                    for body in _pages(page, _tournament_url(sample, tournament_id, ANALYSED_MARKET_IDS), None):
+                        accept(body)
+                except Exception as error:
+                    print('football league failed', tournament_id, str(error)[:200])
+        if sport == 'ice_hockey':
+            # The list page shows regulation 1X2, which includes a draw. The model
+            # prices the match winner after overtime, and that tab is a separate feed.
+            found = _capture_named_market(page, 'Winner (incl. overtime)')
+            if found and found.get('url'):
+                try:
+                    for body in _pages(page, found['url'], found.get('payload')):
+                        accept(body)
+                except Exception as error:
+                    print('ice hockey winner failed', str(error)[:200])
         return {'blocked': None, 'rows': rows}
     finally:
         page.remove_listener('response', remember)
@@ -504,7 +702,9 @@ def _due():
     # only while the publication window is open.
     with connect() as connection:
         latest = connection.execute(
-            "SELECT MAX(observed_at) FROM sports_ai_odds_snapshots WHERE bookmaker=?",
+            """SELECT MAX(q.observed_at) FROM sports_ai_odds_snapshots q
+               JOIN sports_ai_fixtures f ON f.id=q.fixture_id
+               WHERE q.bookmaker=? AND f.sport IN ('football','basketball','ice_hockey')""",
             (BOOKMAKER,),
         ).fetchone()[0]
     if not latest:

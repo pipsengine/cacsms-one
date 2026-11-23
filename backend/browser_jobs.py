@@ -133,6 +133,21 @@ def list_observations(job_id):
         )]
 
 
+def _prices_are_authorized(connection):
+    """Authorization only. Counting stored prices scans the odds table and must not run inside a write."""
+    row = connection.execute(
+        """SELECT expires_at FROM sports_ai_collection_authorizations
+           WHERE bookmaker='SportyBet' AND scope='unattended_extraction'
+             AND status='authorized' AND evidence<>''
+           ORDER BY created_at DESC LIMIT 1""",
+    ).fetchone()
+    if not row:
+        return False
+    if not row['expires_at']:
+        return True
+    return str(row['expires_at']) > now().isoformat()
+
+
 def enqueue_authorized_jobs(connection):
     """Queue explicitly configured pages. An empty allowlist queues nothing."""
     queued = 0
@@ -143,18 +158,24 @@ def enqueue_authorized_jobs(connection):
             queued += 1
         except ValueError as error:
             skipped.append({'url': url, 'reason': str(error)})
+    if queued:
+        reason = 'Authorized pages were queued. Odds are not inferred from generic page text.'
+    elif _prices_are_authorized(connection):
+        reason = (
+            'Displayed SportyBet prices are collected on the price walk. '
+            'No extra research page is configured. No wager is placed.'
+        )
+    else:
+        reason = (
+            'No research page is configured. SportyBet prices are collected only after unattended collection is authorized. '
+            'Page text is not converted into odds.'
+        )
     return {
         'status': 'queued' if queued else 'skipped',
         'queued': queued,
         'skipped': skipped,
         'authorized_domains': sorted(allowlist()),
-        'reason': (
-            'No authorized pages were queued. Permitted API providers continue on their own schedule. '
-            'SportyBet is not visited unless unattended collection is authorized and its domain is explicitly allowlisted. '
-            'Page text is not converted into odds.'
-            if not queued else
-            'Authorized pages were queued. Odds are not inferred from generic page text.'
-        ),
+        'reason': reason,
     }
 
 

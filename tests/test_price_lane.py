@@ -62,12 +62,24 @@ class PriceLaneTests(unittest.TestCase):
         future=(datetime.now(timezone.utc)+timedelta(minutes=1)).isoformat()
         with patch.object(worker,'connect',self.connection(worker._leader_name(),future)), \
              patch.object(sportybet_feed,'collect_displayed_odds',return_value={'status':'collected','imported':2}), \
-             patch.object(worker,'_odds_refresh_tick') as refresh, patch.object(worker,'_observed'), \
+             patch.object(worker,'_odds_refresh_tick') as refresh, \
+             patch.object(worker,'_qualify_priced_board') as qualify, patch.object(worker,'_observed'), \
              patch.object(worker,'_booking_tick') as book, patch.object(worker,'_single_betting_fast') as bets:
             worker._price_tick()
             refresh.assert_called_once()
+            qualify.assert_called_once()
             book.assert_not_called()
             bets.assert_not_called()
+
+    def test_empty_price_pass_does_not_requalify(self):
+        future=(datetime.now(timezone.utc)+timedelta(minutes=1)).isoformat()
+        with patch.object(worker,'connect',self.connection(worker._leader_name(),future)), \
+             patch.object(sportybet_feed,'collect_displayed_odds',return_value={'status':'empty','imported':0}), \
+             patch.object(worker,'_odds_refresh_tick') as refresh, \
+             patch.object(worker,'_qualify_priced_board') as qualify, patch.object(worker,'_observed'):
+            worker._price_tick()
+            refresh.assert_not_called()
+            qualify.assert_not_called()
 
     def test_overlapping_collectors_yield_and_release_the_guard(self):
         sportybet_feed._COLLECT_LOCK.acquire()
