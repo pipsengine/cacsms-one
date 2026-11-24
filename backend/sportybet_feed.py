@@ -529,7 +529,9 @@ def _collect_displayed_odds():
         _build_priced_tickets()
     model_priced = {'imported': 0, 'blocked': [], 'errors': []}
     try:
-        model_priced = _walk_sections(MODEL_PRICE_SECTIONS, leagues=False)
+        model_priced = _walk_sections(
+            MODEL_PRICE_SECTIONS, leagues=False, pause_when=_priority_prices_aging,
+        )
     except Exception as error:
         model_priced = {'imported': 0, 'blocked': [], 'errors': [{'sport': 'model', 'error': str(error)[:300]}]}
     if model_priced.get('imported'):

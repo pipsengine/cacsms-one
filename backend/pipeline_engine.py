@@ -74,6 +74,8 @@ def classify_observations(connection):
     was generated before kickoff, was available when the forecast was stored, uses the
     fixture kickoff as its cutoff, and no final result was already stored.
     """
+    if connection.in_transaction:
+        connection.commit()
     rows = connection.execute(
         """SELECT p.id, p.created_at, p.feature_id, f.starts_at,
                   s.generated_at, s.cutoff_at, r.settled_at
@@ -104,6 +106,8 @@ def classify_observations(connection):
             'UPDATE sports_ai_engine_predictions SET observation_class=? WHERE id=?',
             updates[offset:offset + 1000],
         )
+        if connection.in_transaction:
+            connection.commit()
     summary = connection.execute(
         """SELECT
              SUM(CASE WHEN observation_class='live_observed' THEN 1 ELSE 0 END) AS live_observed,
@@ -123,6 +127,8 @@ def classify_observations(connection):
 
 def enqueue_odds_refresh(connection, now=None, limit=80):
     """Queue fixtures whose active forecast has no current SportyBet price. No price is created."""
+    if connection.in_transaction:
+        connection.commit()
     current = _now(now) or datetime.now(timezone.utc)
     minutes = freshness_minutes(connection)
     fresh_after = (current - timedelta(minutes=minutes)).isoformat()
@@ -180,6 +186,8 @@ def enqueue_odds_refresh(connection, now=None, limit=80):
             (row['fixture_id'], priority, reason, current.isoformat()),
         )
         queued += 1
+    if connection.in_transaction:
+        connection.commit()
     queued += _enqueue_validated_prices(connection, current, fresh_after, limit)
     return {'queued': queued, 'places_wager': False, 'odds_invented': 0}
 
@@ -187,6 +195,8 @@ def enqueue_odds_refresh(connection, now=None, limit=80):
 def _enqueue_validated_prices(connection, current, fresh_after, limit):
     """Queue an analysed fixture whose own passing market has no fresh SportyBet price."""
     from prediction_engine import upcoming_fixture_sql
+    if connection.in_transaction:
+        connection.commit()
     rows = connection.execute(
         f"""SELECT f.id AS fixture_id, f.starts_at
             FROM sports_ai_fixtures f

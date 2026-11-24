@@ -792,6 +792,8 @@ def revalidate(connection, actor='sports-ai-worker', now=None, limit=400, fixtur
         if outcome == 'changed':
             changed += 1
         counts[item['result']['state']] += 1
+        if release_lock and connection.in_transaction:
+            connection.commit()
     summary = {
         'checked': len(prepared), 'changed': changed, 'expired': expired,
         'counts': counts, 'policy_version': policy['version'], 'evaluated_at': current.isoformat(),

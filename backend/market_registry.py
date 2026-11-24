@@ -490,8 +490,10 @@ def link_stored_quotes(connection, now=None, limit=2000):
         )
         if status == 'qualified':
             linked += 1
-        if processed % 40 == 0:
+        if processed % 40 == 0 and connection.in_transaction:
             connection.commit()
+    if connection.in_transaction:
+        connection.commit()
     return {'checked': len(seen), 'qualified': linked, 'places_wager': False}
 
 

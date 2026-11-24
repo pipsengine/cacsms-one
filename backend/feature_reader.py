@@ -20,6 +20,12 @@ class FeatureReader:
         self.connection = connection
         self.cache = {}
 
+    def __getattr__(self, name):
+        # Training passes this reader into the history scan. That scan commits
+        # the writer lock first, so the reader has to expose the connection's
+        # transaction state.
+        return getattr(self.connection, name)
+
     def execute(self, sql, params=()):
         # No writes go through this reader. Cache only the repeated source
         # queries, not the many cutoff-specific metric queries.

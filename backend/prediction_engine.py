@@ -2413,6 +2413,9 @@ def classify_cohorts(connection):
            SET cohort='historical'
            WHERE cohort IS NULL OR cohort=''""",
     )
+    if connection.in_transaction:
+        # The summary walks every forecast. It must not keep the writer lock while it does.
+        connection.commit()
     row = connection.execute(
         """SELECT
              SUM(CASE WHEN cohort='prospective' THEN 1 ELSE 0 END) AS prospective,

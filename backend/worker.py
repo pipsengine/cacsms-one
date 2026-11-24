@@ -177,8 +177,6 @@ def _qualify_priced_board():
         from market_registry import link_stored_quotes, promote_ice_hockey_winner
         from qualification_engine import revalidate
         with connect() as connection:
-            promoted = promote_ice_hockey_winner(connection)
-            linked = link_stored_quotes(connection, limit=2000)
             moment = datetime.now(timezone.utc)
             fresh = (moment - timedelta(minutes=15)).isoformat()
             priced_fixtures = [
@@ -197,6 +195,8 @@ def _qualify_priced_board():
                     (fresh, moment.isoformat()),
                 )
             ]
+            promoted = promote_ice_hockey_winner(connection)
+            linked = link_stored_quotes(connection, limit=2000)
             result = revalidate(
                 connection, 'sports-ai-worker', limit=600,
                 fixture_ids=priced_fixtures, release_lock=True,
