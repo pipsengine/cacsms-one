@@ -1636,6 +1636,52 @@ async def _top_up_from_reserves(page, booked, seen, policy, limit=50, chunk=3):
     return added
 
 
+def _displayed_sure_product(booked, seen):
+    """Product of the prices SportyBet put on the slip. None when a clicked leg has no price."""
+    shown = {(item.get('fixture_id'), item.get('market')): item.get('page_odds') for item in seen}
+    product = 1.0
+    for leg in booked:
+        try:
+            odds = float(shown[(leg.get('fixture_id'), leg.get('market'))])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not odds > 1:
+            return None
+        product *= odds
+    return product
+
+
+def _sure_next_supplement(product, spares, used_fixtures, legs_now):
+    """One more selection that moves a short Sure Odds slip toward 2.50–2.95.
+
+    A leg that would push the displayed total above 2.95 is left out. None means
+    no stored selection can close the gap without leaving the range.
+    """
+    from high_odds_board import SURE_COMBINED_MAX, SURE_COMBINED_MIN, SURE_MAX_LEGS
+    if legs_now >= SURE_MAX_LEGS or product is None or product > SURE_COMBINED_MAX + 1e-9:
+        return None
+    if SURE_COMBINED_MIN - 1e-9 <= product <= SURE_COMBINED_MAX + 1e-9:
+        return None
+    best = None
+    for leg in spares:
+        if leg.get('fixture_id') in used_fixtures or not page_market_supported(leg.get('sport'), leg.get('market')):
+            continue
+        try:
+            odds = float(leg['decimal_odds'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not 1 < odds <= SURE_COMBINED_MAX:
+            continue
+        updated = product * odds
+        if updated > SURE_COMBINED_MAX + 1e-9:
+            continue
+        inside = updated + 1e-9 >= SURE_COMBINED_MIN
+        rank = (inside, updated)
+        if best is None or rank > best[0]:
+            best = (rank, leg)
+    return None if best is None else best[1]
+
+
 def _sure_price_problem(booked, seen):
     """Reject a Sure Odds slip before requesting a code if dropped/moved legs break its band."""
     from high_odds_board import SURE_COMBINED_MAX, SURE_COMBINED_MIN, SURE_MAX_LEGS
@@ -1655,6 +1701,44 @@ def _sure_price_problem(booked, seen):
         return (f'Displayed Sure Odds total {product:.2f} is outside {SURE_COMBINED_MIN:.2f}–{SURE_COMBINED_MAX:.2f}. '
                 'No code was requested.')
     return None
+
+
+async def _top_up_sure_slip(page, booked, seen, policy):
+    """Add selections SportyBet is showing until the displayed total is inside 2.50–2.95.
+
+    A dropped leg leaves the stored ticket short. More qualifying selections are
+    clicked, one match each, until the slip reaches the range or none can.
+    No wager is placed.
+    """
+    from datetime import datetime, timezone
+    from high_odds_board import SURE_COMBINED_MAX, SURE_COMBINED_MIN, SURE_MAX_LEGS, _candidates, _today_window
+
+    now = datetime.now(timezone.utc)
+    day = _today_window(now)[0]
+    with connect() as connection:
+        spares = _candidates(connection, day, now)
+    added = []
+    refused = set()
+    while len(booked) + len(added) < SURE_MAX_LEGS:
+        product = _displayed_sure_product(booked + added, seen)
+        if product is not None and SURE_COMBINED_MIN - 1e-9 <= product <= SURE_COMBINED_MAX + 1e-9:
+            break
+        used = {item.get('fixture_id') for item in booked + added} | refused
+        choice = _sure_next_supplement(product, spares, used, len(booked) + len(added))
+        if choice is None:
+            break
+        sport = 'football' if choice.get('sport') == 'frauenfussball' else choice.get('sport')
+        await _open_sport(page, sport, None, reuse=True)
+        part = await prepare_slip(
+            page, [choice], book=False, skip_unpriced=True,
+            max_move=float(policy['max_price_move']) if policy['accept_displayed_odds'] else None,
+        )
+        if part.get('status') != 'SELECTED' or not part.get('seen'):
+            refused.add(choice.get('fixture_id'))
+            continue
+        seen.extend(part['seen'])
+        added.append(choice)
+    return added
 
 
 def _prize_short(booked, seen):
@@ -1877,6 +1961,7 @@ async def _execute_job(job_id, page_url=None):
                 seen = []
                 skipped = []
                 reserve_added = []
+                sure_added = []
                 result = None
                 flexible = policy['drop_unavailable_legs'] or _flexible_high_odds(selections)
                 needed = minimum if policy['drop_unavailable_legs'] else 15
@@ -1905,6 +1990,16 @@ async def _execute_job(job_id, page_url=None):
                             seen = await _keep_slip_selections(page, seen, selections)
                             reserve_added[:] = [item for item in reserve_added
                                                 if item.get('fixture_id') in {s.get('fixture_id') for s in seen}]
+                            clicked = {item.get('fixture_id') for item in seen}
+                            booked = [item for item in selections if item.get('fixture_id') in clicked]
+                    if sure_ticket and _sure_price_problem(booked, seen):
+                        # A missing leg or a shorter displayed price leaves the total under 2.50.
+                        # Add other qualifying selections the page is showing until it is back in range.
+                        added = await _top_up_sure_slip(page, booked, seen, policy)
+                        if added:
+                            selections = selections + added
+                            sure_added.extend(added)
+                            seen = await _keep_slip_selections(page, seen, selections)
                             clicked = {item.get('fixture_id') for item in seen}
                             booked = [item for item in selections if item.get('fixture_id') in clicked]
                     if flexible and len(booked) < needed:
@@ -2006,6 +2101,21 @@ async def _execute_job(job_id, page_url=None):
                     _log_booking(connection, job_id, 'policy', f'Dropped {len(dropped)} selection(s) SportyBet did not offer or that had kicked off',
                                  ticket_id=ticket_id, session_id=session_id,
                                  detail={'dropped': [f"{i.get('home')} vs {i.get('away')} {i.get('market')}" for i in dropped]})
+                if ticket_id and sure_added:
+                    shown = {(item.get('fixture_id'), item.get('market')): item.get('page_odds') for item in result.get('seen') or []}
+                    priced = []
+                    for leg in sure_added:
+                        if leg.get('fixture_id') not in {item.get('fixture_id') for item in booked}:
+                            continue
+                        page_odds = shown.get((leg.get('fixture_id'), leg.get('market')))
+                        priced.append({**leg, 'decimal_odds': float(page_odds or leg['decimal_odds'])})
+                    if priced:
+                        from prize_ladder import add_legs
+                        add_legs(connection, ticket_id, priced)
+                        _log_booking(connection, job_id, 'policy',
+                                     f'Added {len(priced)} selection(s) so the displayed Sure Odds total stays inside 2.50–2.95',
+                                     ticket_id=ticket_id, session_id=session_id,
+                                     detail={'added': [f"{i.get('home')} vs {i.get('away')} {i.get('market')}" for i in priced]})
                 moved = [item for item in result.get('seen') or [] if item.get('page_odds') is not None
                          and abs(float(item['page_odds']) - float(item.get('stored_odds') or 0)) > 0.000001]
                 if ticket_id and moved:

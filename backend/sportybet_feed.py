@@ -349,29 +349,51 @@ MODEL_PRICE_SECTIONS = (
 )
 _PRIORITY_CODES = {code for code, _url in PRIORITY_SECTIONS + MODEL_PRICE_SECTIONS}
 _REST_CURSOR = 'feed_rest_cursor'
+_FOOTBALL_CURSOR = 'feed_football_league_cursor'
 # Ticket sports are qualified on a 15-minute price. The other sports give the browser back
 # once those prices are this old, and the next pass continues where this one stopped.
 _PRIORITY_FRESH = timedelta(minutes=8)
+_PRIORITY_SPORTS = ('football', 'basketball', 'ice_hockey')
+_age_cache = {'at': None, 'age': None}
 
 
 def _priority_quote_age(now=None):
+    """Age of the stalest ticket sport. A fresh football page does not hide a stale basketball page."""
     current = now or datetime.now(timezone.utc)
+    cached_at = _age_cache['at']
+    if now is None and cached_at is not None and (current - cached_at).total_seconds() < 30:
+        return _age_cache['age']
+    window = (current - timedelta(minutes=20)).isoformat()
     with connect() as connection:
-        latest = connection.execute(
-            """SELECT MAX(q.observed_at) FROM sports_ai_odds_snapshots q
+        rows = connection.execute(
+            """SELECT f.sport, MAX(q.observed_at) AS latest
+               FROM sports_ai_odds_snapshots q
                JOIN sports_ai_fixtures f ON f.id=q.fixture_id
-               WHERE q.bookmaker=? AND f.sport IN ('football','basketball','ice_hockey')""",
-            (BOOKMAKER,),
-        ).fetchone()[0]
-    if not latest:
-        return None
-    try:
-        observed = datetime.fromisoformat(str(latest).replace('Z', '+00:00'))
-    except ValueError:
-        return None
-    if observed.tzinfo is None:
-        observed = observed.replace(tzinfo=timezone.utc)
-    return current - observed
+               WHERE q.bookmaker=? AND q.observed_at>=? AND f.sport IN ('football','basketball','ice_hockey')
+               GROUP BY f.sport""",
+            (BOOKMAKER, window),
+        ).fetchall()
+    latest = {row['sport']: row['latest'] for row in rows}
+    ages = []
+    for sport in _PRIORITY_SPORTS:
+        stamp = latest.get(sport)
+        if not stamp:
+            age = None
+            break
+        try:
+            observed = datetime.fromisoformat(str(stamp).replace('Z', '+00:00'))
+        except ValueError:
+            age = None
+            break
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=timezone.utc)
+        ages.append(current - observed)
+    else:
+        age = max(ages) if ages else None
+    if now is None:
+        _age_cache['at'] = current
+        _age_cache['age'] = age
+    return age
 
 
 def _priority_prices_aging():
@@ -405,6 +427,32 @@ def _remember_rest_cursor(code):
         )
 
 
+def _read_football_cursor():
+    with connect() as connection:
+        row = connection.execute(
+            'SELECT value_json FROM sports_ai_settings WHERE key=?',
+            (_FOOTBALL_CURSOR,),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        return json.loads(row['value_json'] or 'null') or None
+    except json.JSONDecodeError:
+        return None
+
+
+def _remember_football_cursor(code):
+    with connect() as connection:
+        if not code:
+            connection.execute('DELETE FROM sports_ai_settings WHERE key=?', (_FOOTBALL_CURSOR,))
+            return
+        connection.execute(
+            """INSERT INTO sports_ai_settings(key,value_json,updated_at) VALUES(?,?,?)
+               ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at""",
+            (_FOOTBALL_CURSOR, json.dumps(code), datetime.now(timezone.utc).isoformat()),
+        )
+
+
 def _rotate_sections(sections, start_after):
     sections = list(sections)
     codes = [code for code, _url in sections]
@@ -417,7 +465,7 @@ def _rotate_sections(sections, start_after):
 
 
 @holds_browser_slot('feed', wait=45)
-def _walk_sections(sections, discover=False, skip=(), pause_when=None, start_after=None):
+def _walk_sections(sections, discover=False, skip=(), pause_when=None, start_after=None, leagues=True):
     from playwright.sync_api import sync_playwright
     imported = 0
     blocked = []
@@ -446,7 +494,7 @@ def _walk_sections(sections, discover=False, skip=(), pause_when=None, start_aft
                         published = publish_quotes(connection, rows, page_url)
                     imported += published['imported']
                 try:
-                    result = _read_section(page, sport, url, on_rows=publish_batch)
+                    result = _read_section(page, sport, url, on_rows=publish_batch, leagues=leagues)
                 except Exception as error:
                     message = str(error)[:300]
                     print('sportybet section failed', sport, message)
@@ -474,16 +522,26 @@ def _build_priced_tickets():
 
 
 def _collect_displayed_odds():
-    priority = _walk_sections(PRIORITY_SECTIONS)
+    # The main lists first. A full football league crawl takes longer than the
+    # 15-minute price window and was leaving basketball and ice hockey unpriced.
+    priority = _walk_sections(PRIORITY_SECTIONS, leagues=False)
     if priority.get('imported'):
         _build_priced_tickets()
     model_priced = {'imported': 0, 'blocked': [], 'errors': []}
     try:
-        model_priced = _walk_sections(MODEL_PRICE_SECTIONS)
+        model_priced = _walk_sections(MODEL_PRICE_SECTIONS, leagues=False)
     except Exception as error:
         model_priced = {'imported': 0, 'blocked': [], 'errors': [{'sport': 'model', 'error': str(error)[:300]}]}
     if model_priced.get('imported'):
         _build_priced_tickets()
+    deep = {'imported': 0, 'blocked': [], 'errors': []}
+    if _priority_prices_aging():
+        print('football leagues deferred', 'places_wager', False)
+    else:
+        try:
+            deep = _walk_sections((PRIORITY_SECTIONS[0],), leagues=True)
+        except Exception as error:
+            deep = {'imported': 0, 'blocked': [], 'errors': [{'sport': 'football', 'error': str(error)[:300]}]}
     rest = {'imported': 0, 'blocked': [], 'errors': []}
     if _priority_prices_aging():
         print('other sports deferred', 'places_wager', False)
@@ -499,9 +557,18 @@ def _collect_displayed_odds():
                 _remember_rest_cursor(None)
         except Exception as error:
             rest = {'imported': 0, 'blocked': [], 'errors': [{'sport': 'rest', 'error': str(error)[:300]}]}
-    imported = int(priority.get('imported') or 0) + int(model_priced.get('imported') or 0) + int(rest.get('imported') or 0)
-    blocked = list(priority.get('blocked') or []) + list(model_priced.get('blocked') or []) + list(rest.get('blocked') or [])
-    errors = list(priority.get('errors') or []) + list(model_priced.get('errors') or []) + list(rest.get('errors') or [])
+    imported = (
+        int(priority.get('imported') or 0) + int(model_priced.get('imported') or 0)
+        + int(deep.get('imported') or 0) + int(rest.get('imported') or 0)
+    )
+    blocked = (
+        list(priority.get('blocked') or []) + list(model_priced.get('blocked') or [])
+        + list(deep.get('blocked') or []) + list(rest.get('blocked') or [])
+    )
+    errors = (
+        list(priority.get('errors') or []) + list(model_priced.get('errors') or [])
+        + list(deep.get('errors') or []) + list(rest.get('errors') or [])
+    )
     status = 'blocked' if blocked and not imported else 'collected' if imported else 'empty'
     _record(status, imported, blocked, errors)
     return {'status': status, 'imported': imported, 'blocked': blocked, 'errors': errors}
@@ -544,7 +611,69 @@ def _capture_named_market(page, label):
         page.remove_listener('response', remember)
 
 
-def _read_section(page, sport, url, on_rows=None):
+def _ordered_from(items, start_after):
+    if not start_after or start_after not in items:
+        return list(items)
+    index = items.index(start_after) + 1
+    return items[index:] + items[:index]
+
+
+def _football_deep(page, sample, seen_ids, accept):
+    """Leagues that were not on the main list. Stops while basketball or ice hockey still need a fresh price."""
+    menu = []
+    try:
+        menu = _football_menu(page, sample)
+        with connect(busy_timeout_ms=120000) as connection:
+            register_football_leagues(connection, menu, sample)
+    except Exception as error:
+        print('football menu failed', str(error)[:300])
+    ordered = [
+        item for item in menu
+        if item.get('id') and item['id'] not in seen_ids and int(item.get('events') or 0) > 0
+    ]
+    cursor = _read_football_cursor()
+    extras_only = isinstance(cursor, str) and cursor.startswith('market:')
+    if not extras_only:
+        ordered = _ordered_from([item['id'] for item in ordered], cursor)
+        by_id = {item['id']: item for item in menu}
+        ordered = [by_id[item_id] for item_id in ordered if item_id in by_id]
+    else:
+        ordered = []
+    completed = None
+    for item in ordered:
+        if _priority_prices_aging():
+            print('football leagues paused', item.get('id'), 'priority prices aging', 'places_wager', False)
+            if completed:
+                _remember_football_cursor(completed)
+            return
+        try:
+            for body in _pages(page, _tournament_url(sample, item['id']), None):
+                accept(body)
+        except Exception as error:
+            print('football league failed', item.get('id'), str(error)[:200])
+        completed = item['id']
+    with connect(busy_timeout_ms=120000) as connection:
+        extra_ids = _analysed_tournament_ids(connection)
+    if extras_only:
+        extra_ids = _ordered_from(extra_ids, cursor[len('market:'):] or None)
+    for tournament_id in extra_ids:
+        if _priority_prices_aging():
+            print('football leagues paused', tournament_id, 'priority prices aging', 'places_wager', False)
+            if completed and str(completed).startswith('market:'):
+                _remember_football_cursor(completed)
+            elif not extras_only:
+                _remember_football_cursor('market:')
+            return
+        try:
+            for body in _pages(page, _tournament_url(sample, tournament_id, ANALYSED_MARKET_IDS), None):
+                accept(body)
+        except Exception as error:
+            print('football league failed', tournament_id, str(error)[:200])
+        completed = 'market:' + tournament_id
+    _remember_football_cursor(None)
+
+
+def _read_section(page, sport, url, on_rows=None, leagues=True):
     from source_permissions import require
     require(url, 'odds-feed')
     captured = {}
@@ -579,49 +708,34 @@ def _read_section(page, sport, url, on_rows=None):
             else:
                 rows.extend(chunk)
         seen_ids = set()
-        for body in _pages(page, captured.get('url'), payload):
-            try:
-                accept(body)
-            except Exception as error:
-                print('sportybet page failed', sport, str(error)[:300])
-            for item in tournaments_from_events(body):
-                if item.get('id'):
-                    seen_ids.add(item['id'])
-        if sport == 'football':
-            menu = []
-            try:
-                menu = _football_menu(page, captured.get('url') or url)
-                with connect(busy_timeout_ms=120000) as connection:
-                    register_football_leagues(connection, menu, url)
-            except Exception as error:
-                print('football menu failed', str(error)[:300])
-            for item in menu:
-                if not item.get('id') or item['id'] in seen_ids or int(item.get('events') or 0) <= 0:
-                    continue
-                try:
-                    for body in _pages(page, _tournament_url(captured.get('url') or url, item['id']), None):
-                        accept(body)
-                except Exception as error:
-                    print('football league failed', item.get('id'), str(error)[:200])
-            sample = captured.get('url') or url
-            with connect(busy_timeout_ms=120000) as connection:
-                extra_ids = _analysed_tournament_ids(connection)
-            for tournament_id in extra_ids:
-                try:
-                    for body in _pages(page, _tournament_url(sample, tournament_id, ANALYSED_MARKET_IDS), None):
-                        accept(body)
-                except Exception as error:
-                    print('football league failed', tournament_id, str(error)[:200])
+        # Two minutes on the main list, then the next ticket sport. The league crawl
+        # continues afterwards and stops once any ticket sport's price is aging.
+        deadline = None if leagues else datetime.now(timezone.utc) + timedelta(minutes=2)
         if sport == 'ice_hockey':
             # The list page shows regulation 1X2, which includes a draw. The model
             # prices the match winner after overtime, and that tab is a separate feed.
             found = _capture_named_market(page, 'Winner (incl. overtime)')
             if found and found.get('url'):
                 try:
-                    for body in _pages(page, found['url'], found.get('payload')):
+                    for body in _pages(page, found['url'], found.get('payload'), deadline):
                         accept(body)
                 except Exception as error:
                     print('ice hockey winner failed', str(error)[:200])
+        if sport == 'football' and leagues:
+            accept(payload)
+            for item in tournaments_from_events(payload):
+                if item.get('id'):
+                    seen_ids.add(item['id'])
+            _football_deep(page, captured.get('url') or url, seen_ids, accept)
+        else:
+            for body in _pages(page, captured.get('url'), payload, deadline):
+                try:
+                    accept(body)
+                except Exception as error:
+                    print('sportybet page failed', sport, str(error)[:300])
+                for item in tournaments_from_events(body):
+                    if item.get('id'):
+                        seen_ids.add(item['id'])
         return {'blocked': None, 'rows': rows}
     finally:
         page.remove_listener('response', remember)
@@ -635,8 +749,11 @@ def page_count(total, page_size):
     return min(PAGE_CEILING, max(1, (int(total) + size - 1) // size))
 
 
-def _pages(page, first_url, first_payload):
-    """Read every page of the feed. A lower division on a later page is kept."""
+def _pages(page, first_url, first_payload, deadline=None):
+    """Read every page of the feed. A lower division on a later page is kept.
+
+    ``deadline`` stops a long list so the next ticket sport still gets a fresh price.
+    """
     if not first_url:
         if first_payload:
             yield first_payload
@@ -648,6 +765,9 @@ def _pages(page, first_url, first_payload):
     total = int((((first_payload or {}).get('data') or {}).get('totalNum')) or 0)
     last = page_count(total, 100)
     for number in range(1, last + 1):
+        if deadline is not None and datetime.now(timezone.utc) >= deadline:
+            print('sportybet list paused', 'page', number, 'places_wager', False)
+            break
         query['pageNum'] = str(number)
         target = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ''))
         try:

@@ -309,7 +309,13 @@ EUROPEAN_KEYS = frozenset({'ucl', 'uel', 'uecl'})
 
 
 def _final_rows(connection, sport, cutoff, keys):
-    """Completed matches before cutoff whose competition maps to one of keys."""
+    """Completed matches before cutoff whose competition maps to one of keys.
+
+    This reads every final for the sport. Commit first so the writer lock is not
+    held while that history is walked; ticket booking waits on the same lock.
+    """
+    if connection.in_transaction:
+        connection.commit()
     kept = []
     for raw in connection.execute(
         """SELECT f.id,f.competition,f.home,f.away,f.starts_at,f.statistics_json,f.observed_at,f.source,
@@ -2117,6 +2123,10 @@ def run_analysis(connection, actor, audit, deadline=None, fixture_id=None, cover
     from feature_reader import FeatureReader
     feature_reader = FeatureReader(connection)
     for fixture in fixtures:
+        if connection.in_transaction:
+            # Feature history is a full scan. Release the writer lock before it so
+            # a fresh price can still be linked and booked.
+            connection.commit()
         from analysis_coverage import record_attempt
         if deadline and datetime.now(timezone.utc) > deadline:
             raise TimeoutError('Prediction job exceeded its timeout')

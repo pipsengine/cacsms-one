@@ -786,6 +786,10 @@ def latest_report(connection, fixture_id):
 
 def analyse_upcoming_batch(connection, actor, audit, limit=8):
     """Analyse a bounded set of upcoming fixtures that are stale or unanalysed."""
+    if connection.in_transaction:
+        # The fixture scan below is slow. Drop the writer lock first so a booking
+        # can store a ticket while these reports are built.
+        connection.commit()
     limit = max(1, min(int(limit), 40))
     rows = connection.execute(
         f"""SELECT f.id, f.home, f.away FROM sports_ai_fixtures f

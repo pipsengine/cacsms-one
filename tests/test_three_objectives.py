@@ -121,6 +121,20 @@ class ObjectiveTwo(unittest.TestCase):
             self.assertFalse(ids & used)  # a match is used once
             used |= ids
 
+    def test_short_line_does_not_block_the_selections_the_odds_require(self):
+        # Eight matches. The 95% price is 1.05, and eight of those make 1.48.
+        # The 82% price is 1.22. The ticket uses as many of each as the 2.50-2.95 range holds.
+        rows = []
+        for index in range(8):
+            rows.append({**leg(index, 1.05, 0.95), 'market': 'OVER_0.5'})
+            rows.append({**leg(index, 1.22, 0.82), 'market': 'HOME'})
+        tickets = board.pack_sure_tickets(rows, DAY, limit=1)
+        self.assertEqual(len(tickets), 1)
+        legs = tickets[0]['legs']
+        self.assertGreaterEqual(len(legs), 5)
+        self.assertTrue(2.50 <= tickets[0]['combined_odds'] <= 2.95)
+        self.assertEqual(len({leg['fixture_id'] for leg in legs}), len(legs))
+
     def test_four_selections_when_three_cannot_reach_the_range(self):
         # 1.28 x 3 = 2.10 (too short), 1.28 x 4 = 2.68: a 4-selection code in 2.50-2.95.
         tickets = board.pack_sure_tickets([leg(i, 1.28) for i in range(8)], DAY, limit=1)

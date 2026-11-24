@@ -339,52 +339,106 @@ SURE_DAILY_MAX = 5       # at most 5 Sure Odds tickets per Africa/Lagos day
 SURE_BEAM_WIDTH = 512
 
 
-def pack_sure_tickets(candidates, day, limit=SURE_DAILY_MAX, floor=None, sports=None):
-    """Pack high-probability selections into the Sure Odds range, preferring more legs.
+def _trim_sure_states(bucket, width=SURE_BEAM_WIDTH):
+    """Keep a spread of combined prices so a short line cannot crowd out the longer ticket."""
+    if len(bucket) <= width:
+        return bucket
+    best = {}
+    for product, joint, chosen in bucket:
+        key = round(float(product), 4)
+        current = best.get(key)
+        if current is None or joint > current[1]:
+            best[key] = (product, joint, chosen)
+    ordered = sorted(best.values(), key=lambda state: state[0])
+    if len(ordered) <= width:
+        return ordered
+    step = (len(ordered) - 1) / (width - 1)
+    return [ordered[round(index * step)] for index in range(width)]
 
-    The bounded search logs when it must prune alternatives; it does not guarantee
-    a globally optimal combination in that case.
+
+def _fixtures_in_order(legs):
+    grouped = {}
+    order = []
+    for leg in legs:
+        fixture_id = leg.get('fixture_id')
+        if fixture_id not in grouped:
+            grouped[fixture_id] = []
+            order.append(fixture_id)
+        grouped[fixture_id].append(leg)
+    return [grouped[fixture_id] for fixture_id in order]
+
+
+def _pack_one_sure_ticket(legs):
+    """One ticket: as many selections as fit in the combined range, one market per match."""
+    states = {0: [(1.0, 1.0, ())]}
+    trimmed = False
+    ceiling = SURE_PACK_RANGE[1] + 1e-9
+    for choices in _fixtures_in_order(legs):
+        proposals = {}
+
+        def consider(size, product, joint, chosen):
+            key = (size, round(float(product), 4))
+            current = proposals.get(key)
+            if current is None or joint > current[1]:
+                proposals[key] = (product, joint, chosen)
+
+        for size, bucket in states.items():
+            for product, joint, chosen in bucket:
+                consider(size, product, joint, chosen)
+                if size >= SURE_MAX_LEGS:
+                    continue
+                for leg in choices:
+                    new_product = product * float(leg['decimal_odds'])
+                    if new_product <= ceiling:
+                        consider(size + 1, new_product, joint * float(leg['probability']), chosen + (leg,))
+        grouped = {}
+        for size, _product_key in proposals:
+            grouped.setdefault(size, []).append(proposals[(size, _product_key)])
+        states = {}
+        for size, bucket in grouped.items():
+            kept = _trim_sure_states(bucket)
+            if len(kept) < len(bucket):
+                trimmed = True
+            states[size] = kept
+    if trimmed:
+        logging.getLogger(__name__).warning(
+            'Sure Odds search pruned alternatives at %d prices per leg count', SURE_BEAM_WIDTH,
+        )
+    best = None
+    for size, bucket in states.items():
+        if size < 2:
+            continue
+        for product, joint, chosen in bucket:
+            if SURE_PACK_RANGE[0] - 1e-9 <= product <= SURE_PACK_RANGE[1] + 1e-9:
+                rank = (size, joint, -product)
+                if best is None or rank > best[0]:
+                    best = (rank, list(chosen), product, joint)
+    return best
+
+
+def pack_sure_tickets(candidates, day, limit=SURE_DAILY_MAX, floor=None, sports=None):
+    """Pack qualifying selections into the Sure Odds range.
+
+    Every price at or above 80% is available. A match is used once. The ticket
+    takes as many selections as fit inside the combined range, up to 50.
     """
     from ticket_diversity import event_keys
     floor = SELECTION_FLOOR if floor is None else floor
-    pool = choose_one_per_fixture([
-        row for row in candidates
-        if float(row['probability']) >= floor
-        and row.get('sport') in (sports or BOOKABLE_SPORTS)
-        and 1 < float(row['decimal_odds']) <= SURE_COMBINED_MAX
-    ], floor=floor)
-    ordered = sorted(pool, key=lambda leg: (-float(leg['probability']), float(leg['decimal_odds']), leg.get('starts_at') or ''))
+    pool = []
+    for row in candidates:
+        if float(row['probability']) < floor or row.get('sport') not in (sports or BOOKABLE_SPORTS):
+            continue
+        if not 1 < float(row['decimal_odds']) <= SURE_COMBINED_MAX:
+            continue
+        leg = dict(row)
+        leg['preferred'] = _preferred(leg)
+        pool.append(leg)
     band = {'id': '2-2.95', 'odds_label': '2.50–2.95'}
     used = set()
     tickets = []
     while len(tickets) < max(0, limit):
-        open_legs = [leg for leg in ordered if not event_keys(leg) & used]
-        states = {0: [((), 1.0, 1.0, frozenset())]}
-        truncated = False
-        for index, leg in enumerate(open_legs):
-            odds, probability, keys = float(leg['decimal_odds']), float(leg['probability']), event_keys(leg)
-            for size in range(min(index, SURE_MAX_LEGS - 1), -1, -1):
-                additions = []
-                for indices, product, joint, held_keys in states.get(size, ()):
-                    new_product = product * odds
-                    if new_product <= SURE_PACK_RANGE[1] + 1e-9 and not keys & held_keys:
-                        additions.append((indices + (index,), new_product, joint * probability, held_keys | keys))
-                if additions:
-                    combined = states.get(size + 1, []) + additions
-                    if len(combined) > SURE_BEAM_WIDTH:
-                        truncated = True
-                        combined.sort(key=lambda state: (-state[2], state[1]))
-                        combined = combined[:SURE_BEAM_WIDTH]
-                    states[size + 1] = combined
-        if truncated:
-            logging.getLogger(__name__).warning('Sure Odds search pruned alternatives at %d states per leg count', SURE_BEAM_WIDTH)
-        best = None
-        for size in range(2, SURE_MAX_LEGS + 1):
-            for indices, product, joint, _keys in states.get(size, ()):
-                if SURE_PACK_RANGE[0] - 1e-9 <= product <= SURE_PACK_RANGE[1] + 1e-9:
-                    rank = (size, joint, -product)
-                    if best is None or rank > best[0]:
-                        best = (rank, [open_legs[i] for i in indices], product, joint)
+        open_legs = [leg for leg in pool if not event_keys(leg) & used]
+        best = _pack_one_sure_ticket(open_legs)
         if best is None:
             break
         _, chosen, product, joint = best

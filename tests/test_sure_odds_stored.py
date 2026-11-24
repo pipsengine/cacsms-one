@@ -159,3 +159,19 @@ class StoredSureOddsTests(unittest.TestCase):
         shown=[{**leg,'page_odds':1.6} for leg in booked]
         self.assertIsNone(_sure_price_problem(booked,shown))
         self.assertIsNotNone(_sure_price_problem(booked,[]))
+
+    def test_a_short_slip_is_filled_with_another_selection_inside_the_range(self):
+        from sportybet_booking import _sure_next_supplement
+        # The stored four-leg ticket lost one leg. 1.27 x 1.27 x 1.26 = 2.03.
+        product = 1.27 * 1.27 * 1.26
+        self.assertLess(product, 2.50)
+        spares = [
+            {'fixture_id': 'too-long', 'sport': 'football', 'market': 'HOME', 'decimal_odds': 1.80},
+            {'fixture_id': 'fits', 'sport': 'football', 'market': 'HOME', 'decimal_odds': 1.30},
+            {'fixture_id': 'used', 'sport': 'football', 'market': 'HOME', 'decimal_odds': 1.25},
+        ]
+        choice = _sure_next_supplement(product, spares, {'used'}, 3)
+        self.assertEqual(choice['fixture_id'], 'fits')
+        self.assertTrue(2.50 <= product * choice['decimal_odds'] <= 2.95)
+        self.assertIsNone(_sure_next_supplement(product, [spares[0]], set(), 3))
+        self.assertIsNone(_sure_next_supplement(2.70, spares, set(), 4))

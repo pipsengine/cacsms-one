@@ -806,12 +806,14 @@ def _price_tick():
 
 
 def _price_lane(stop):
-    while not stop.wait(60):
+    while not stop.is_set():
         try:
             _price_tick()
         except Exception as error:
             _observed('price_feed', {'status': 'failed'}, failed=True, error=error)
             _report('price feed failed', error)
+        if stop.wait(60):
+            return
 
 
 def start_price_lane():
