@@ -1358,6 +1358,43 @@ async def _focus_market(page, item):
     return label
 
 
+DISMISS_SELECTION_LIMIT = '''() => {
+  const text = document.body ? (document.body.innerText || '') : '';
+  const open = /bet limit reached|over 50 selections/i.test(text);
+  if (!open) return {open: false, clicked: false};
+  const dialogs = [...document.querySelectorAll('.es-dialog, .es-dialog-wrap, .m-dialog, [role="dialog"]')]
+    .filter(node => /bet limit reached|over 50 selections/i.test(node.innerText || ''));
+  const root = dialogs[0] || document.body;
+  const nodes = [...root.querySelectorAll('button, a, span, div, .es-dialog-btn')];
+  const button = nodes.find(node => {
+    const label = (node.innerText || '').replace(/\\s+/g, ' ').trim();
+    if (!/^ok$/i.test(label)) return false;
+    const box = node.getBoundingClientRect();
+    return box.width > 8 && box.height > 8 && box.width < 320 && box.height < 90;
+  });
+  if (button) button.click();
+  return {open: true, clicked: !!button};
+}'''
+
+
+async def dismiss_selection_limit(page):
+    """Close SportyBet's 50-selection dialog. The slip underneath is left as it is.
+
+    Returns True when that dialog was on screen. The OK control is a text node, not always a button.
+    """
+    opened = False
+    for _ in range(4):
+        try:
+            state = await page.evaluate(DISMISS_SELECTION_LIMIT)
+        except Exception:
+            return opened
+        if not state or not state.get('open'):
+            return opened
+        opened = True
+        await page.wait_for_timeout(400)
+    return opened
+
+
 async def prepare_slip(page, selections, book=True, skip_unpriced=False, max_move=None):
     """Select each ticket outcome at its current displayed price. Never place a wager.
 
@@ -1427,25 +1464,27 @@ async def prepare_slip(page, selections, book=True, skip_unpriced=False, max_mov
             try:
                 await page.locator(f'[data-sports-ai-pick="{marker}"]').click(timeout=8000)
             except Exception as error:
-                note = ''
-                try:
-                    note = await page.locator('body').inner_text(timeout=3000)
-                except Exception:
-                    note = str(error)
-                if 'over 50 selections' not in note.casefold():
-                    raise
-                await page.evaluate(
-                    '''() => {
-                      const button = [...document.querySelectorAll('button, .es-dialog-btn')]
-                        .find(node => /^ok$/i.test((node.innerText || '').trim()));
-                      if (button) button.click();
-                    }'''
-                )
+                limited = await dismiss_selection_limit(page)
+                if not limited:
+                    note = ''
+                    try:
+                        note = await page.locator('body').inner_text(timeout=3000)
+                    except Exception:
+                        note = str(error)
+                    if 'over 50 selections' not in note.casefold() and 'bet limit reached' not in note.casefold():
+                        raise
                 seen.pop()
                 if skip_unpriced:
                     skipped.extend(selections[index:])
                     break
                 raise
+            if await dismiss_selection_limit(page):
+                # The click landed after the slip was already full. That selection is not on the slip.
+                seen.pop()
+                if skip_unpriced:
+                    skipped.extend(selections[index:])
+                    break
+                raise RuntimeError('Bet limit reached')
             await page.wait_for_timeout(400)
             continue
         if skip_unpriced and hits.get('matched') != 1:
@@ -1556,13 +1595,20 @@ async def _ready_book_control(page, attempts=30, pause_ms=1500):
 
 
 async def request_displayed_code(page, selections, seen, accept_displayed=False):
+    await dismiss_selection_limit(page)
     controls, control = await _ready_book_control(page)
     if controls != 1:
         raise RuntimeError('Booking-code control missing or ambiguous')
     name = (control or {}).get('name') or ''
     if not control or control.get('disabled') or not BOOK.search(name) or re.search(r'place\s*bet|bet\s*now|\bpay\b|deposit|confirm\s*bet', name, re.I):
         raise RuntimeError('The booking-code control is not the allowed share control')
-    await page.locator('[data-sports-ai-book="1"]').click()
+    try:
+        await page.locator('[data-sports-ai-book="1"]').click(timeout=8000)
+    except Exception:
+        # The 50-selection dialog sits on top of Book Bet. Close it and press Book Bet once.
+        if not await dismiss_selection_limit(page):
+            raise
+        await page.locator('[data-sports-ai-book="1"]').click(timeout=8000)
     try:
         await page.wait_for_selector('.booking-code-share, [data-booking-code]', timeout=8000)
         await page.wait_for_timeout(800)
@@ -2120,12 +2166,21 @@ async def _execute_job(job_id, page_url=None):
                 except ValueError as error:
                     result = {**result, 'status': 'FAILED', 'error': str(error),
                               'reason_code': 'QUALIFICATION_LAPSED'}
+            if result['status'] == 'CODE_GENERATED' and ticket_id:
+                # The code is already on the screen. Store it before any leg rewrite, so a
+                # database error cannot throw away a code SportyBet displayed.
+                _store_displayed_code(connection, ticket_id, result['code'], str(shot))
             if result['status'] == 'CODE_GENERATED' and ticket_id and reserve_added:
                 from prize_ladder import add_legs
-                add_legs(connection, ticket_id, reserve_added)
-                _log_booking(connection, job_id, 'policy', f'Replaced unavailable legs with {len(reserve_added)} reserve selection(s)',
-                             ticket_id=ticket_id, session_id=session_id,
-                             detail={'added': [f"{i.get('home')} vs {i.get('away')} {i.get('market')}" for i in reserve_added]})
+                try:
+                    add_legs(connection, ticket_id, reserve_added)
+                except Exception as error:
+                    _log_booking(connection, job_id, 'policy', f'Reserve legs were not stored: {error}'[:500],
+                                 level='warning', ticket_id=ticket_id, session_id=session_id)
+                else:
+                    _log_booking(connection, job_id, 'policy', f'Replaced unavailable legs with {len(reserve_added)} reserve selection(s)',
+                                 ticket_id=ticket_id, session_id=session_id,
+                                 detail={'added': [f"{i.get('home')} vs {i.get('away')} {i.get('market')}" for i in reserve_added]})
             if result['status'] == 'CODE_GENERATED':
                 dropped = (result.get('skipped') or []) + started_legs
                 if ticket_id and dropped:
@@ -2163,10 +2218,11 @@ async def _execute_job(job_id, page_url=None):
                                                       'stored': i.get('stored_odds'), 'displayed': i['page_odds']} for i in moved]})
                 _set_job(connection, job_id, 'CODE_GENERATED', code=result['code'], screenshot=str(shot), odds_json=json.dumps(result['seen']), reason_code='CODE_VERIFIED')
                 if ticket_id:
-                    # Store before rewriting leg prices. Applying page odds first can
-                    # push a sure-odds total outside 2.50–2.95 and discard the code.
-                    _store_displayed_code(connection, ticket_id, result['code'], str(shot))
-                    _apply_displayed_prices(connection, ticket_id, result.get('seen') or [])
+                    try:
+                        _apply_displayed_prices(connection, ticket_id, result.get('seen') or [])
+                    except Exception as error:
+                        _log_booking(connection, job_id, 'policy', f'Displayed prices were not copied onto the ticket: {error}'[:500],
+                                     level='warning', ticket_id=ticket_id, session_id=session_id)
                     _record_diagnostic(connection, ticket_id, 'CODE_VERIFIED', 'SportyBet displayed one booking code and it matched the expected format.', _now())
                 _log_booking(connection, job_id, 'published', 'SportyBet displayed a booking code', ticket_id=ticket_id, session_id=session_id, detail={'evidence': str(shot)})
                 _close_session(connection, session_id, 'CODE_GENERATED', 'Displayed booking code stored')

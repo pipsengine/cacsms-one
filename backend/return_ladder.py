@@ -873,18 +873,13 @@ async def book_slip(page, selections):
                     clicked.add(item.get('fixture_id'))
         clicked = {item.get('fixture_id') for item in seen}
         booked = [item for item in selections if item.get('fixture_id') in clicked]
-        await page.evaluate(
-            '''() => {
-              const button = [...document.querySelectorAll('button, .es-dialog-btn')]
-                .find(node => /^ok$/i.test((node.innerText || '').trim()));
-              if (button) button.click();
-            }'''
-        )
+        from sportybet_booking import dismiss_selection_limit
+        await dismiss_selection_limit(page)
         shown = await _read_win(page)
         payout = shown.get('win')
         reserves = list(parameters.get('reserve') or [])
         while (
-            reserves and len(booked) < MAX_LEGS and target
+            reserves and len(booked) < MAX_LEGS and await _slip_count(page) < MAX_LEGS and target
             and (payout is None or (target >= CAP and payout < CAP) or (target < CAP and payout < target * 0.90))
         ):
             chunk, reserves = reserves[:3], reserves[3:]

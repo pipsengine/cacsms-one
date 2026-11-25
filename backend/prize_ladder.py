@@ -6,7 +6,7 @@ and can become very small even when each individual selection is highly rated.
 import json
 import math
 import uuid
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 PRODUCT = 'prize_ladder'
 STAKE = 100
@@ -416,6 +416,11 @@ def reserve_legs(connection, ticket_id):
 def add_legs(connection, ticket_id, legs):
     """Store reserve legs that were placed on the booked slip, so the ticket matches its code."""
     for leg in legs:
+        price = float(leg['decimal_odds'])
+        observed = leg.get('odds_observed_at') or datetime.now(timezone.utc).isoformat()
+        probability = leg.get('probability')
+        if probability is None:
+            probability = 1 / price
         connection.execute(
             """INSERT INTO sports_ai_accumulator_legs
                (id,ticket_id,opportunity_id,fixture_id,sport,competition,home,away,starts_at,market,selection,
@@ -424,8 +429,8 @@ def add_legs(connection, ticket_id, legs):
                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (str(uuid.uuid4()), ticket_id, leg.get('opportunity_id') or f"reserve:{leg['fixture_id']}", leg['fixture_id'],
              leg['sport'], leg.get('competition') or '', leg['home'], leg['away'], leg['starts_at'], leg['market'],
-             leg.get('selection') or leg['market'], float(leg['decimal_odds']), leg.get('probability'), leg.get('edge'),
-             'SportyBet', leg.get('odds_observed_at'), leg.get('quote_market') or leg['market'],
+             leg.get('selection') or leg['market'], price, probability, leg.get('edge'),
+             'SportyBet', observed, leg.get('quote_market') or leg['market'],
              leg.get('quote_outcome') or leg['market'], leg.get('quote_line'), leg.get('model_id') or 'market-price',
              leg.get('model_version') or '', None, None, 'binary', json.dumps({'decision': 'reserve'})),
         )
