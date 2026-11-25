@@ -2067,6 +2067,8 @@ app.include_router(build_acquisition_router(auth))
 app.include_router(build_accumulator_router(auth, require_admin_key))
 from high_odds_api import build_high_odds_router
 app.include_router(build_high_odds_router(auth, require_admin_key))
+from return_ladder import build_router as build_return_ladder_router
+app.include_router(build_return_ladder_router(auth))
 app.include_router(build_operations_router(auth, require_admin_key))
 app.include_router(build_sportybet_router(auth, require_admin_key))
 app.include_router(build_browser_router(auth))

@@ -263,9 +263,14 @@ def create_job(connection, selections, high_odds=False):
     if ticket_id and policy['enforce_match_exposure']:
         from ticket_diversity import assert_available
         ticket = connection.execute('SELECT family_id,status,parameters_json FROM sports_ai_accumulator_tickets WHERE id=?', (ticket_id,)).fetchone()
-        if ticket and json.loads(ticket['parameters_json'] or '{}').get('diversity_retired'):
+        parameters = json.loads(ticket['parameters_json'] or '{}') if ticket else {}
+        if parameters.get('diversity_retired'):
             raise ValueError('This ticket was retired because a match is already allocated to another ticket.')
-        assert_available(connection, selections, ignore_family=ticket['family_id'] if ticket else None)
+        # Return-ladder codes share the short favourites on purpose: each code is a
+        # different length of the same basketball board, and the three ₦200m codes
+        # only swap the longer legs.
+        if parameters.get('product') != 'return_ladder':
+            assert_available(connection, selections, ignore_family=ticket['family_id'] if ticket else None)
     if ticket_id:
         linked = connection.execute(
             """SELECT id, status FROM sports_ai_booking_jobs
@@ -582,7 +587,7 @@ def next_ticket_id(connection, now):
              -- Owner's structure (12 Nov 2026): codes only for Sure Odds (objective 2), the category
              -- cards (objective 3; registered in sports_ai_high_odds_tickets, no product tag) and the
              -- weekly jackpot ladder (objective 3; product prize_ladder).
-             AND (json_extract(t.parameters_json, '$.product') IN ('sure_odds','prize_ladder','category_market')
+             AND (json_extract(t.parameters_json, '$.product') IN ('sure_odds','prize_ladder','category_market','return_ladder')
                   OR EXISTS (SELECT 1 FROM sports_ai_high_odds_tickets h WHERE h.ticket_id=t.id))
              AND NOT (
                COALESCE(json_extract(t.parameters_json, '$.product'), '') IN ('sure_odds','prize_ladder','category_market')
@@ -752,7 +757,7 @@ def _new_category_ticket(connection, ticket_id):
     ).fetchone())
 
 
-MARKET_PRODUCTS = ('jackpot_low', 'prize_ladder', 'category_market')
+MARKET_PRODUCTS = ('jackpot_low', 'prize_ladder', 'category_market', 'return_ladder')
 
 
 def _market_priced(connection, ticket_id):
@@ -1419,7 +1424,28 @@ async def prepare_slip(page, selections, book=True, skip_unpriced=False, max_mov
                 'stored_odds': item['decimal_odds'],
                 'page_odds': float(hits.get('shown') or item['decimal_odds']), 'control': control,
             })
-            await page.locator(f'[data-sports-ai-pick="{marker}"]').click()
+            try:
+                await page.locator(f'[data-sports-ai-pick="{marker}"]').click(timeout=8000)
+            except Exception as error:
+                note = ''
+                try:
+                    note = await page.locator('body').inner_text(timeout=3000)
+                except Exception:
+                    note = str(error)
+                if 'over 50 selections' not in note.casefold():
+                    raise
+                await page.evaluate(
+                    '''() => {
+                      const button = [...document.querySelectorAll('button, .es-dialog-btn')]
+                        .find(node => /^ok$/i.test((node.innerText || '').trim()));
+                      if (button) button.click();
+                    }'''
+                )
+                seen.pop()
+                if skip_unpriced:
+                    skipped.extend(selections[index:])
+                    break
+                raise
             await page.wait_for_timeout(400)
             continue
         if skip_unpriced and hits.get('matched') != 1:
@@ -1529,7 +1555,7 @@ async def _ready_book_control(page, attempts=30, pause_ms=1500):
     return controls, control
 
 
-async def request_displayed_code(page, selections, seen):
+async def request_displayed_code(page, selections, seen, accept_displayed=False):
     controls, control = await _ready_book_control(page)
     if controls != 1:
         raise RuntimeError('Booking-code control missing or ambiguous')
@@ -1545,7 +1571,7 @@ async def request_displayed_code(page, selections, seen):
     if await page.locator('.m-pop-main, .booking-code-share').count():
         names = [item['home'] for item in selections] + [item['away'] for item in selections]
         check = await page.evaluate(SLIP_CONTAINS, {'names': names})
-        if not check['ok'] and not _odds_confirm_slip(check.get('odds'), selections, seen):
+        if not accept_displayed and not check['ok'] and not _odds_confirm_slip(check.get('odds'), selections, seen):
             prices = {item.get('fixture_id'): item.get('page_odds') for item in seen}
             expected = 1.0
             priced = 0
@@ -1833,7 +1859,13 @@ async def execute_job(job_id, page_url=None, slot_wait=60):
         async with async_browser_slot('booking', wait=slot_wait):
             try:
                 # A frozen SportyBet page must not hold the slot and the queue: hard limit per booking.
-                return await asyncio.wait_for(_execute_job(job_id, page_url), timeout=JOB_TIMEOUT_SECONDS)
+                # A return-ladder slip searches the whole upcoming board, so it gets a longer limit.
+                timeout = JOB_TIMEOUT_SECONDS
+                with connect() as connection:
+                    linked = _ticket_on_job(connection, job_id)
+                    if _ticket_product(connection, linked) == 'return_ladder':
+                        timeout = 20 * 60
+                return await asyncio.wait_for(_execute_job(job_id, page_url), timeout=timeout)
             except asyncio.TimeoutError:
                 message = f'Booking stopped after {JOB_TIMEOUT_SECONDS // 60} minutes; the page did not finish. Retried with fresh legs.'
                 with connect() as connection:
@@ -1900,9 +1932,10 @@ async def _execute_job(job_id, page_url=None):
         from ticket_diversity import assert_available, TicketExposureConflict
         linked_id = selections[0].get('ticket_id') if selections else None
         sure_ticket = bool(linked_id and _ticket_product(connection, linked_id) == 'sure_odds')
+        ladder_ticket = bool(linked_id and _ticket_product(connection, linked_id) == 'return_ladder')
         linked_ticket = connection.execute('SELECT family_id,parameters_json FROM sports_ai_accumulator_tickets WHERE id=?', (linked_id,)).fetchone() if linked_id else None
         try:
-            if policy['enforce_match_exposure']:
+            if policy['enforce_match_exposure'] and not ladder_ticket:
                 if linked_ticket and json.loads(linked_ticket['parameters_json'] or '{}').get('diversity_retired'):
                     raise TicketExposureConflict('This ticket was retired because its matches overlap another active ticket.')
                 assert_available(connection, selections, ignore_family=linked_ticket['family_id'] if linked_ticket else None)
@@ -1965,6 +1998,11 @@ async def _execute_job(job_id, page_url=None):
                 result = None
                 flexible = policy['drop_unavailable_legs'] or _flexible_high_odds(selections)
                 needed = minimum if policy['drop_unavailable_legs'] else 15
+                if ladder_ticket:
+                    import return_ladder
+                    result = await return_ladder.book_slip(page, selections)
+                    reserve_added.extend(result.get('added') or [])
+                    sports = []
                 for index, sport in enumerate(sports):
                     await _open_sport(page, sport, page_url if len(sports) == 1 else None, reuse=index > 0)
                     group = [item for item in selections if page_sport(item) == sport]

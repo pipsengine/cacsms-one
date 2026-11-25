@@ -19,7 +19,8 @@ export default defineConfig({
     proxy: {
       '/api/sports-ai': {
         target: 'http://127.0.0.1:8011',
-        changeOrigin: true
+        changeOrigin: true,
+        timeout: 180000
       }
     }
   }
