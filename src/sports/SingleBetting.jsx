@@ -354,7 +354,7 @@ export function SingleBettingEngine(){
         <Kpi icon={AlertTriangle} tone="red" label="Exceptions" value={c.exceptions} valueTone="red" foot={c.exceptions?'(Removed from queue today)':'(No Action Required)'} className="center"/>
       </div>
       <div className="sb-a-main">
-        <Card className="sb-queue" icon={<Target size={22}/>} title="Execution Queue (Live – Single Selections)" sub="Qualified selections from the shared intelligence pipeline, executed autonomously.">
+        <Card className="sb-queue" icon={<Target size={22}/>} title="Execution Queue (Live – Single Selections)" sub="Single execution is off. Bets already sent stay here until they settle.">
           <div className="sb-tabs" role="tablist">{tabs.map(([k,l,n])=><button key={k} role="tab" aria-selected={tab===k} className={tab===k?'on':''} onClick={()=>setTab(k)}>{l}<span>{n}</span></button>)}</div>
           <div className="sb-table-scroll sb-scroll">{tab==='queue'?<QueueTable queue={data.queue} auto={auto} c={c} s={s} filters={data.last_cycle?.rejected}/>:tab==='placed'?<PlacedTable rows={data.recent}/>:tab==='plan'?<PlanTable plan={plan}/>:<ExecutionsTable orders={live?.orders||[]}/>}</div>
         </Card>

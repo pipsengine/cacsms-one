@@ -849,6 +849,7 @@ async def book_slip(page, selections):
         part = await prepare_slip(page, selections, book=False, skip_unpriced=True, max_move=0.35)
         seen.extend(part.get('seen') or [])
         skipped.extend(part.get('skipped') or [])
+        limited = bool(part.get('selection_limit'))
         clicked = {item.get('fixture_id') for item in seen}
         for url, group in groups.items():
             if url.rstrip('/') == MAIN_PAGE.rstrip('/') or len(clicked) >= MAX_LEGS or await _slip_count(page) >= MAX_LEGS:
@@ -866,6 +867,7 @@ async def book_slip(page, selections):
                 )
                 await _open_board(page, url, False)
             part = await prepare_slip(page, missing, book=False, skip_unpriced=True, max_move=0.35)
+            limited = limited or bool(part.get('selection_limit'))
             skipped.extend(part.get('skipped') or [])
             for item in part.get('seen') or []:
                 if item.get('fixture_id') not in clicked:
@@ -877,7 +879,13 @@ async def book_slip(page, selections):
         await dismiss_selection_limit(page)
         shown = await _read_win(page)
         payout = shown.get('win')
-        reserves = list(parameters.get('reserve') or [])
+        # The dialog means the slip is already full. When that slip already shows a payout
+        # inside the booking band, book it. Do not click another price.
+        ready = target and payout is not None and (
+            (target >= CAP and payout >= CAP * 0.90)
+            or (target < CAP and target * 0.80 <= payout <= target * 1.15)
+        )
+        reserves = [] if limited and ready else list(parameters.get('reserve') or [])
         while (
             reserves and len(booked) < MAX_LEGS and await _slip_count(page) < MAX_LEGS and target
             and (payout is None or (target >= CAP and payout < CAP) or (target < CAP and payout < target * 0.90))

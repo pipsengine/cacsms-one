@@ -1436,8 +1436,7 @@ def build_single_betting_router(auth, require_admin_key):
     @router.post('/execution/resume')
     def resume(actor: str = Depends(auth), x_sports_admin_key: str | None = Header(default=None)):
         require_admin_key(x_sports_admin_key)
-        with connect() as connection:
-            return set_paused(connection, False, actor)
+        raise HTTPException(409, 'Single-bet execution has been removed.')
 
     @router.post('/real-money/submit')
     def real_money(actor: str = Depends(auth)):

@@ -1358,41 +1358,73 @@ async def _focus_market(page, item):
     return label
 
 
-DISMISS_SELECTION_LIMIT = '''() => {
-  const text = document.body ? (document.body.innerText || '') : '';
-  const open = /bet limit reached|over 50 selections/i.test(text);
+CLICK_LIMIT_OK = '''() => {
+  const body = document.body ? (document.body.innerText || '') : '';
+  const open = /bet limit reached|over 50 selections/i.test(body);
   if (!open) return {open: false, clicked: false};
-  const dialogs = [...document.querySelectorAll('.es-dialog, .es-dialog-wrap, .m-dialog, [role="dialog"]')]
-    .filter(node => /bet limit reached|over 50 selections/i.test(node.innerText || ''));
-  const root = dialogs[0] || document.body;
-  const nodes = [...root.querySelectorAll('button, a, span, div, .es-dialog-btn')];
-  const button = nodes.find(node => {
-    const label = (node.innerText || '').replace(/\\s+/g, ' ').trim();
-    if (!/^ok$/i.test(label)) return false;
+  const labelOf = node => (node.innerText || '').replace(/[\\u200b\\s]+/g, ' ').trim();
+  const inDialog = node => {
+    let parent = node;
+    for (let depth = 0; depth < 8 && parent; depth += 1) {
+      const text = parent.innerText || '';
+      if (/over 50 selections|bet limit reached/i.test(text) && text.length < 600) return true;
+      parent = parent.parentElement;
+    }
+    return false;
+  };
+  const candidates = [...document.querySelectorAll('button, a, span, div, p')].filter(node => {
+    if (!/^ok$/i.test(labelOf(node)) || !inDialog(node)) return false;
     const box = node.getBoundingClientRect();
-    return box.width > 8 && box.height > 8 && box.width < 320 && box.height < 90;
+    return box.width > 8 && box.height > 8 && box.width < 640 && box.height < 160 && box.bottom > 0;
+  }).sort((left, right) => {
+    const a = left.getBoundingClientRect();
+    const b = right.getBoundingClientRect();
+    return (a.width * a.height) - (b.width * b.height);
   });
-  if (button) button.click();
-  return {open: true, clicked: !!button};
+  const button = candidates[0];
+  if (!button) return {open: true, clicked: false};
+  const box = button.getBoundingClientRect();
+  const point = {bubbles: true, cancelable: true, view: window, clientX: box.left + box.width / 2, clientY: box.top + box.height / 2};
+  for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) button.dispatchEvent(new MouseEvent(type, point));
+  button.click();
+  return {open: true, clicked: true, x: point.clientX, y: point.clientY};
 }'''
 
 
-async def dismiss_selection_limit(page):
-    """Close SportyBet's 50-selection dialog. The slip underneath is left as it is.
+async def limit_dialog_open(page):
+    try:
+        return bool(await page.evaluate(
+            '''() => /bet limit reached|over 50 selections/i.test(document.body ? document.body.innerText || '' : '')'''
+        ))
+    except Exception:
+        return False
 
-    Returns True when that dialog was on screen. The OK control is a text node, not always a button.
+
+async def dismiss_selection_limit(page):
+    """Close SportyBet's "Bet Limit Reached" dialog and leave the 50 selections underneath.
+
+    Returns True when that dialog was on screen. OK is confirmed gone before this returns,
+    unless the control could not be clicked.
     """
-    opened = False
+    if not await limit_dialog_open(page):
+        return False
     for _ in range(4):
+        point = None
         try:
-            state = await page.evaluate(DISMISS_SELECTION_LIMIT)
+            state = await page.evaluate(CLICK_LIMIT_OK)
+            if state and state.get('x') is not None:
+                point = state
         except Exception:
-            return opened
-        if not state or not state.get('open'):
-            return opened
-        opened = True
-        await page.wait_for_timeout(400)
-    return opened
+            state = None
+        if point:
+            try:
+                await page.mouse.click(float(point['x']), float(point['y']))
+            except Exception:
+                pass
+        await page.wait_for_timeout(450)
+        if not await limit_dialog_open(page):
+            return True
+    return True
 
 
 async def prepare_slip(page, selections, book=True, skip_unpriced=False, max_move=None):
@@ -1409,6 +1441,7 @@ async def prepare_slip(page, selections, book=True, skip_unpriced=False, max_mov
         raise RuntimeError('Page is blocked. No booking code was requested.')
     seen = []
     skipped = []
+    hit_limit = False
     for index, item in enumerate(selections):
         marker = f'pick-{index}'
         async def find_price(focus=True):
@@ -1474,6 +1507,7 @@ async def prepare_slip(page, selections, book=True, skip_unpriced=False, max_mov
                     if 'over 50 selections' not in note.casefold() and 'bet limit reached' not in note.casefold():
                         raise
                 seen.pop()
+                hit_limit = True
                 if skip_unpriced:
                     skipped.extend(selections[index:])
                     break
@@ -1481,6 +1515,7 @@ async def prepare_slip(page, selections, book=True, skip_unpriced=False, max_mov
             if await dismiss_selection_limit(page):
                 # The click landed after the slip was already full. That selection is not on the slip.
                 seen.pop()
+                hit_limit = True
                 if skip_unpriced:
                     skipped.extend(selections[index:])
                     break
@@ -1511,10 +1546,11 @@ async def prepare_slip(page, selections, book=True, skip_unpriced=False, max_mov
         opened = revealed.get('clicked') or 'none'
         raise RuntimeError(f"Selection control missing or ambiguous: {item['home']} vs {item['away']} (league control: {opened})")
     if not book:
-        return {'status': 'SELECTED', 'seen': seen, 'code': None, 'skipped': skipped}
+        return {'status': 'SELECTED', 'seen': seen, 'code': None, 'skipped': skipped, 'selection_limit': hit_limit}
     booked = [item for item in selections if item not in skipped]
     result = await request_displayed_code(page, booked, seen)
     result['skipped'] = skipped
+    result['selection_limit'] = hit_limit
     return result
 
 
@@ -1594,8 +1630,11 @@ async def _ready_book_control(page, attempts=30, pause_ms=1500):
     return controls, control
 
 
-async def request_displayed_code(page, selections, seen, accept_displayed=False):
+async def _click_book_bet(page):
+    """Press Book Bet. A "Bet Limit Reached" dialog is closed first. Place Bet is never pressed."""
     await dismiss_selection_limit(page)
+    if await limit_dialog_open(page):
+        raise RuntimeError('Bet limit reached and the dialog stayed open, so Book Bet was not pressed')
     controls, control = await _ready_book_control(page)
     if controls != 1:
         raise RuntimeError('Booking-code control missing or ambiguous')
@@ -1605,10 +1644,26 @@ async def request_displayed_code(page, selections, seen, accept_displayed=False)
     try:
         await page.locator('[data-sports-ai-book="1"]').click(timeout=8000)
     except Exception:
-        # The 50-selection dialog sits on top of Book Bet. Close it and press Book Bet once.
-        if not await dismiss_selection_limit(page):
+        await dismiss_selection_limit(page)
+        if await limit_dialog_open(page):
+            raise RuntimeError('Bet limit reached and the dialog stayed open, so Book Bet was not pressed')
+        clicked = await page.evaluate(
+            '''() => {
+              const node = document.querySelector('[data-sports-ai-book="1"]');
+              if (!node) return false;
+              const name = (node.innerText || '').replace(/\\s+/g, ' ').trim();
+              if (!/^(book(\\s*bet)?|booking\\s*code|share\\s*code)$/i.test(name)) return false;
+              if (/place\\s*bet|bet\\s*now|\\bpay\\b|deposit|confirm\\s*bet/i.test(name)) return false;
+              node.click();
+              return true;
+            }'''
+        )
+        if not clicked:
             raise
-        await page.locator('[data-sports-ai-book="1"]').click(timeout=8000)
+
+
+async def request_displayed_code(page, selections, seen, accept_displayed=False):
+    await _click_book_bet(page)
     try:
         await page.wait_for_selector('.booking-code-share, [data-booking-code]', timeout=8000)
         await page.wait_for_timeout(800)

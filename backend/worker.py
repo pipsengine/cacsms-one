@@ -295,7 +295,6 @@ def _run_cycle():
     _learning_tick()
     if not RETIRED_DRAWS_AND_ROLLOVER:
         _rollover_tick()
-    _single_betting_tick()
     _publication_tick()
     _pipeline_snapshot_tick()
 
@@ -764,24 +763,8 @@ def _booking_lane(stop):
 
 
 def _account_lane(stop):
-    """Single Betting live lane: session health, balance, Bet History, then one rehearsal or submission.
-
-    It runs only when the execution mode is LIVE_REHEARSAL or LIVE. Real money is submitted
-    only under an active authorization; see sportybet_account.submission_gate.
-    """
-    from sportybet_account import run_once
-    while not stop.wait(30):
-        _single_betting_fast()
-        try:
-            result = run_once()
-            if result.get('status') not in ('paper', 'idle', 'waiting_for_login'):
-                print('account lane', result.get('status'), result.get('kind', ''), result.get('detail', ''))
-                _observed('single_live', {'status': result.get('status')})
-        except Exception as error:
-            if 'database is locked' in str(error):
-                continue
-            _observed('single_live', {'status': 'failed'}, failed=True, error=error)
-            _report('account lane failed', error)
+    """Single-bet execution has been removed. This lane does not queue or submit a stake."""
+    return
 
 
 _ACCOUNT_LANE = None

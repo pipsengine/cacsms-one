@@ -1151,50 +1151,8 @@ def recover_interrupted(connection, now=None):
 
 
 def run_once(now=None):
-    """One live-lane step: recover, keep the session checked, then execute the head of the queue."""
-    from single_betting import next_for_execution, apply_execution
-    current = _now(now)
-    with _connect() as connection:
-        # The worker lane can start while the API process is still applying migration 051
-        # (it backs up the database first). Wait quietly instead of failing every 30 seconds.
-        if not connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sports_ai_single_live_orders'",
-        ).fetchone():
-            return {'status': 'paper', 'reason': 'waiting for migration 051'}
-        recover_interrupted(connection, current)
-        mode = execution_mode(connection)
-        row = account(connection)
-    if mode == 'PAPER':
-        return {'status': 'paper'}
-    if row['status'] in ('NOT_CONNECTED', 'AWAITING_LOGIN'):
-        return {'status': 'waiting_for_login'}
-    with _connect() as connection:
-        unclear = connection.execute(
-            "SELECT 1 FROM sports_ai_single_live_orders WHERE kind='SUBMISSION' AND status IN ('UNKNOWN','SUBMITTING') "
-            "AND updated_at<? LIMIT 1", ((current - timedelta(minutes=2)).isoformat(),),
-        ).fetchone()
-    # An unclear order is looked up in Bet History within minutes, not at the next 20-minute check.
-    if not session_fresh(row, current) or (unclear and not session_fresh(row, current, minutes=UNCLEAR_CHECK_MINUTES)):
-        checked = check_session(capture_history=True)
-        if checked['status'] != 'CONNECTED':
-            return {'status': 'session_' + checked['status'].lower()}
-    with _connect() as connection:
-        bet = next_for_execution(connection, current)
-        if not bet:
-            return {'status': 'idle'}
-        kind = 'REHEARSAL'
-        if mode == 'LIVE':
-            reasons, _grant = submission_gate(connection, current)
-            if not reasons:
-                kind = 'SUBMISSION'
-            elif any('authorization' in r or 'LIVE' in r for r in reasons):
-                kind = 'REHEARSAL'
-            else:
-                return {'status': 'gated', 'reasons': reasons}
-    outcome, order_status, detail = asyncio.run(execute_async(bet, kind, current))
-    with _connect() as connection:
-        apply_execution(connection, bet, outcome, order_status, detail, kind)
-    return {'status': outcome.lower(), 'kind': kind, 'detail': detail}
+    """Single-bet execution has been removed. No rehearsal and no stake is submitted."""
+    return {'status': 'retired', 'places_wager': False}
 
 
 # ---------------------------------------------------------------- test rehearsal
@@ -1375,6 +1333,8 @@ def build_account_router(auth, require_admin_key):
     @router.post('/mode')
     def post_mode(body: ModeIn, actor: str = Depends(auth), x_sports_admin_key: str | None = Header(default=None)):
         admin(x_sports_admin_key)
+        if body.mode != 'PAPER':
+            raise HTTPException(409, 'Single-bet execution has been removed.')
         try:
             with connect(busy_timeout_ms=OPERATOR_WRITE_WAIT_MS) as connection:
                 return set_execution_mode(connection, body.mode, actor)
@@ -1384,11 +1344,7 @@ def build_account_router(auth, require_admin_key):
     @router.post('/authorize')
     def post_authorize(body: GrantIn, actor: str = Depends(auth), x_sports_admin_key: str | None = Header(default=None)):
         admin(x_sports_admin_key)
-        try:
-            with connect(busy_timeout_ms=OPERATOR_WRITE_WAIT_MS) as connection:
-                return grant_authorization(connection, actor, body.acknowledgement, body.hours)
-        except ValueError as error:
-            raise HTTPException(409, str(error))
+        raise HTTPException(409, 'Single-bet execution has been removed.')
 
     @router.post('/revoke')
     def post_revoke(actor: str = Depends(auth), x_sports_admin_key: str | None = Header(default=None)):
